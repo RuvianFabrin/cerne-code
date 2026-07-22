@@ -1,5 +1,6 @@
 mod ast_tools;
 pub mod background;
+pub mod computer;
 mod subagent;
 pub mod tools;
 mod verifier;
@@ -294,6 +295,11 @@ pub async fn run_turn(
     let mcp_servers = crate::mcp::load_servers(&app_data_dir).unwrap_or_default();
     tool_specs.extend(state.mcp_clients.tool_specs(&mcp_servers).await);
 
+    let has_vision = providers::supports_vision(&cfg, api_key.clone(), &session.model).await;
+    if has_vision {
+        tool_specs.extend(computer::tool_specs());
+    }
+
     let (context_length, is_estimated_length) = match session.context_length {
         Some(len) => (len, false),
         None => (DEFAULT_CONTEXT_LENGTH, true),
@@ -402,6 +408,7 @@ pub async fn run_turn(
                     true
                 };
 
+            let mut tool_images: Vec<String> = Vec::new();
             let result = if !approved {
                 Err(anyhow::anyhow!("Ação negada pelo usuário."))
             } else if call.function.name == "load_skill" {
@@ -514,6 +521,23 @@ pub async fn run_turn(
                     )),
                     _ => Err(anyhow::anyhow!("task_summary e how_to_verify obrigatorios")),
                 }
+            } else if call.function.name.starts_with("computer_use_") {
+                if !has_vision {
+                    Err(anyhow::anyhow!(
+                        "computer_use requer um modelo com suporte a visao. O modelo atual nao suporta imagens."
+                    ))
+                } else {
+                    computer::execute(&call.function.name, &args).map(|outcome| {
+                        tool_images = outcome
+                            .screenshot_base64
+                            .map(|b64| vec![format!("data:image/png;base64,{b64}")])
+                            .unwrap_or_default();
+                        tools::ToolOutcome {
+                            observation: outcome.text,
+                            pending_edit: None,
+                        }
+                    })
+                }
             } else {
                 tools::execute_tool(
                     &call.function.name,
@@ -576,7 +600,7 @@ pub async fn run_turn(
                 tool_calls: None,
                 tool_call_id: Some(call.id.clone()),
                 name: Some(call.function.name.clone()),
-                images: Vec::new(),
+                images: tool_images,
                 display_content: None,
             });
 

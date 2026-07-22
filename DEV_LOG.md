@@ -332,7 +332,7 @@ Cada tarefa abaixo pode ser feita em um chat separado. Leia a tarefa inteira ant
 
 ---
 
-#### Tarefa 12.4.1 — Verificação de visão do modelo
+#### Tarefa 12.4.1 — Verificação de visão do modelo ✅ IMPLEMENTADO
 
 **Objetivo:** Antes de registrar as tools de computer_use, verificar se o modelo da sessão suporta visão. Se não suporta, as tools não aparecem na lista de tools disponíveis.
 
@@ -347,7 +347,7 @@ Cada tarefa abaixo pode ser feita em um chat separado. Leia a tarefa inteira ant
 
 ---
 
-#### Tarefa 12.4.2 — Tool `computer_use_screenshot`
+#### Tarefa 12.4.2 — Tool `computer_use_screenshot` ✅ IMPLEMENTADO
 
 **Objetivo:** Capturar screenshot de uma janela específica ou da tela inteira e retornar como imagem para o modelo.
 
@@ -379,7 +379,7 @@ Cada tarefa abaixo pode ser feita em um chat separado. Leia a tarefa inteira ant
 
 ---
 
-#### Tarefa 12.4.3 — Tool `computer_use_click` (com verificação pré-clique)
+#### Tarefa 12.4.3 — Tool `computer_use_click` (com verificação pré-clique) ✅ IMPLEMENTADO
 
 **Objetivo:** Clicar em coordenadas de tela, mas ANTES de clicar, capturar screenshot com marcador visual na posição alvo e enviar ao modelo para confirmar.
 
@@ -421,7 +421,7 @@ Cada tarefa abaixo pode ser feita em um chat separado. Leia a tarefa inteira ant
 
 ---
 
-#### Tarefa 12.4.4 — Tool `computer_use_type_text`
+#### Tarefa 12.4.4 — Tool `computer_use_type_text` ✅ IMPLEMENTADO
 
 **Objetivo:** Digitar texto no elemento focado.
 
@@ -445,7 +445,7 @@ Cada tarefa abaixo pode ser feita em um chat separado. Leia a tarefa inteira ant
 
 ---
 
-#### Tarefa 12.4.5 — Tool `computer_use_press_key`
+#### Tarefa 12.4.5 — Tool `computer_use_press_key` ✅ IMPLEMENTADO
 
 **Objetivo:** Pressionar tecla ou combinação (Ctrl+C, Enter, Tab, etc.).
 
@@ -468,7 +468,7 @@ Cada tarefa abaixo pode ser feita em um chat separado. Leia a tarefa inteira ant
 
 ---
 
-#### Tarefa 12.4.6 — Tool `computer_use_list_windows`
+#### Tarefa 12.4.6 — Tool `computer_use_list_windows` ✅ IMPLEMENTADO
 
 **Objetivo:** Listar janelas abertas com PID, título, posição e tamanho.
 
@@ -570,7 +570,7 @@ Cada tarefa abaixo pode ser feita em um chat separado. Leia a tarefa inteira ant
 
 ---
 
-#### Tarefa 12.4.10 — Exibição de screenshots inline no chat
+#### Tarefa 12.4.10 — Exibição de screenshots inline no chat ✅ IMPLEMENTADO
 
 **Objetivo:** Mostrar os screenshots capturados pelo computer_use diretamente no chat, para o usuário ver o que o modelo está "enxergando".
 
@@ -587,18 +587,18 @@ Cada tarefa abaixo pode ser feita em um chat separado. Leia a tarefa inteira ant
 
 ### 12.5 — Ordem recomendada de implementação
 
-| Ordem | Tarefa | Dependência | Risco |
-|:-----:|--------|:-----------:|:-----:|
-| 1 | 12.4.1 — Verificação de visão | Nenhuma | Baixo |
-| 2 | 12.4.6 — list_windows | Nenhuma | Baixo |
-| 3 | 12.4.2 — screenshot | 12.4.1 | Baixo |
-| 4 | 12.4.10 — Screenshots no chat | 12.4.2 | Baixo |
-| 5 | 12.4.5 — press_key | 12.4.1 | Médio |
-| 6 | 12.4.4 — type_text | 12.4.1 | Médio |
-| 7 | 12.4.3 — click (com verificação) | 12.4.2 | **Alto** |
-| 8 | 12.4.9 — Autorização de janelas | 12.4.3 | Médio |
-| 9 | 12.4.8 — Browser CDP | Nenhuma | Baixo |
-| 10 | 12.4.7 — AX tree | 12.4.6 | **Alto** |
+| Ordem | Tarefa | Dependência | Risco | Status |
+|:-----:|--------|:-----------:|:-----:|:------:|
+| 1 | 12.4.1 — Verificação de visão | Nenhuma | Baixo | ✅ |
+| 2 | 12.4.6 — list_windows | Nenhuma | Baixo | ✅ |
+| 3 | 12.4.2 — screenshot | 12.4.1 | Baixo | ✅ |
+| 4 | 12.4.10 — Screenshots no chat | 12.4.2 | Baixo | ✅ |
+| 5 | 12.4.5 — press_key | 12.4.1 | Médio | ✅ |
+| 6 | 12.4.4 — type_text | 12.4.1 | Médio | ✅ |
+| 7 | 12.4.3 — click (com verificação) | 12.4.2 | **Alto** | ✅ |
+| 8 | 12.4.9 — Autorização de janelas | 12.4.3 | Médio | ⬜ |
+| 9 | 12.4.8 — Browser CDP | Nenhuma | Baixo | ⬜ |
+| 10 | 12.4.7 — AX tree | 12.4.6 | **Alto** | ⬜ |
 
 ### 12.6 — O que NÃO fazer
 

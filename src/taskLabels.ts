@@ -21,6 +21,12 @@ const TOOL_VERBS: Record<string, string> = {
   task: "Delegou a um sub-agente",
   verify_completion: "Verificou a conclusão da tarefa",
   todo_list: "Atualizou a lista de tarefas",
+  computer_use_screenshot: "Capturou a tela",
+  computer_use_click: "Clicou na tela",
+  computer_use_type_text: "Digitou texto na tela",
+  computer_use_press_key: "Pressionou tecla",
+  computer_use_list_windows: "Listou janelas abertas",
+  computer_use_scroll: "Rolou a tela",
 };
 
 export function toolNameFromLabel(rawLabel: string): string {
