@@ -98,7 +98,14 @@ complexa (varios arquivos mexidos, projeto criado do zero, refactor grande), cha
 verify_completion pra um verificador independente confirmar com evidencia real (rodando teste/ \
 build, nao so lendo codigo) antes de voce alegar sucesso pro usuario - NAO use isso pra um pedido \
 simples que uma unica chamada de ferramenta ja resolve e confirma. Se o veredito vier REFUTADO, \
-NAO alegue sucesso - continue trabalhando a partir da evidencia que o verificador trouxe.";
+NAO alegue sucesso - continue trabalhando a partir da evidencia que o verificador trouxe. \
+Quando usar computer_use (screenshot, click, type, key, scroll, list_windows): voce so ve o \
+MONITOR PRIMARIO do usuario. Antes de comecar qualquer automacao de tela, SEMPRE faca um \
+screenshot primeiro e descreva o que ve. Se a aplicacao que voce precisa controlar nao estiver \
+visivel no monitor primario, use ask para pedir ao usuario: 'Nao vejo a aplicacao [X] no monitor \
+primario. Pode move-la para a tela principal?' Nao prossiga sem confirmacao. As coordenadas de \
+click sao relativas ao canto superior esquerdo do monitor primario (0,0). Nao tente interagir com \
+janelas que estao em outro monitor - peça ao usuario para move-las.";
 
 const COMPACTION_SYSTEM_PROMPT: &str = "Voce resume trechos antigos de uma conversa entre um \
 usuario e um agente de codigo, para liberar espaco de contexto. Escreva um resumo denso e factual \

@@ -24,7 +24,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
     vec![
         spec(
             "computer_use_screenshot",
-            "Captura screenshot da tela inteira ou de uma janela especifica. Retorna a imagem para voce analisar visualmente. Use ANTES de qualquer click ou type para ver o estado atual da tela. REQUER modelo com suporte a visao.",
+            "Captura screenshot do MONITOR PRIMARIO apenas. Retorna a imagem + metadata (resolucao, offset, total de monitores). SEMPRE use esta tool ANTES de qualquer click/type para ver o estado atual. Se a aplicacao alvo nao estiver visivel no monitor primario, peça ao usuario para move-la. REQUER modelo com visao.",
             json!({
                 "type": "object",
                 "properties": {
@@ -35,7 +35,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         ),
         spec(
             "computer_use_click",
-            "Clica em coordenadas de tela (pixels). SEMPRE chame computer_use_screenshot ANTES para ver onde vai clicar. O resultado inclui um screenshot pos-clique para confirmar o efeito. REQUER modelo com visao.",
+            "Clica em coordenadas do MONITOR PRIMARIO (pixels relativos ao screenshot). SEMPRE chame computer_use_screenshot ANTES. As coordenadas sao relativas ao canto superior esquerdo do monitor primario (0,0). O resultado inclui screenshot pos-clique. REQUER modelo com visao.",
             json!({
                 "type": "object",
                 "properties": {
@@ -131,13 +131,20 @@ fn rgba_to_base64(img: image::RgbaImage) -> Result<String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(buf.into_inner()))
 }
 
-fn capture_screen_base64(window_title: Option<&str>) -> Result<(String, u32, u32)> {
+fn capture_screen_base64(window_title: Option<&str>) -> Result<(String, u32, u32, String)> {
     use xcap::Monitor;
 
     let monitors = Monitor::all().map_err(|e| anyhow!("falha ao listar monitores: {e}"))?;
+    let total = monitors.len();
     let monitor = monitors
         .first()
         .ok_or_else(|| anyhow!("nenhum monitor encontrado"))?;
+
+    let mon_x = monitor.x().unwrap_or(0);
+    let mon_y = monitor.y().unwrap_or(0);
+    let mon_w = monitor.width().unwrap_or(0);
+    let mon_h = monitor.height().unwrap_or(0);
+    let mon_name = monitor.name().unwrap_or_default();
 
     let img = if let Some(title) = window_title {
         use xcap::Window;
@@ -157,14 +164,17 @@ fn capture_screen_base64(window_title: Option<&str>) -> Result<(String, u32, u32
 
     let (w, h) = (img.width(), img.height());
     let b64 = rgba_to_base64(img)?;
-    Ok((b64, w, h))
+    let meta = format!(
+        "monitor_primario=\"{mon_name}\" res={mon_w}x{mon_h} offset_virtual=({mon_x},{mon_y}) total_monitores={total} screenshot={w}x{h}px"
+    );
+    Ok((b64, w, h, meta))
 }
 
 fn exec_screenshot(args: &Value) -> Result<ComputerOutcome> {
     let window_title = args["window_title"].as_str();
-    let (b64, w, h) = capture_screen_base64(window_title)?;
+    let (b64, w, h, meta) = capture_screen_base64(window_title)?;
     Ok(ComputerOutcome {
-        text: format!("Screenshot capturado ({w}x{h}px). Analise a imagem para decidir a proxima acao."),
+        text: format!("Screenshot do MONITOR PRIMARIO capturado ({w}x{h}px). {meta}. IMPORTANTE: so o monitor primario e visivel. Se a aplicacao alvo nao estiver neste monitor, peça ao usuario para move-la. Analise a imagem para decidir a proxima acao."),
         screenshot_base64: Some(b64),
     })
 }
@@ -198,9 +208,9 @@ fn exec_click(args: &Value) -> Result<ComputerOutcome> {
 
     std::thread::sleep(std::time::Duration::from_millis(300));
 
-    let (b64, w, h) = capture_screen_base64(None)?;
+    let (b64, w, h, meta) = capture_screen_base64(None)?;
     Ok(ComputerOutcome {
-        text: format!("Clique {button_str} em ({x},{y}) executado. Screenshot pos-clique ({w}x{h}px) anexado — verifique se o efeito foi o esperado."),
+        text: format!("Clique {button_str} em ({x},{y}) executado no monitor primario. {meta}. Screenshot pos-clique ({w}x{h}px) anexado — verifique se o efeito foi o esperado."),
         screenshot_base64: Some(b64),
     })
 }
@@ -224,7 +234,7 @@ fn exec_type_text(args: &Value) -> Result<ComputerOutcome> {
         .map_err(|e| anyhow!("falha ao digitar: {e}"))?;
 
     std::thread::sleep(std::time::Duration::from_millis(200));
-    let (b64, w, h) = capture_screen_base64(None)?;
+    let (b64, w, h, _meta) = capture_screen_base64(None)?;
     Ok(ComputerOutcome {
         text: format!(
             "Texto digitado ({} chars). Screenshot pos-digitacao ({w}x{h}px) anexado.",
@@ -346,7 +356,7 @@ fn exec_press_key(args: &Value) -> Result<ComputerOutcome> {
     }
 
     std::thread::sleep(std::time::Duration::from_millis(200));
-    let (b64, w, h) = capture_screen_base64(None)?;
+    let (b64, w, h, _meta) = capture_screen_base64(None)?;
     let mod_str = if modifiers.is_empty() {
         String::new()
     } else {
@@ -482,7 +492,7 @@ fn exec_scroll(args: &Value) -> Result<ComputerOutcome> {
     }
 
     std::thread::sleep(std::time::Duration::from_millis(200));
-    let (b64, w, h) = capture_screen_base64(None)?;
+    let (b64, w, h, _meta) = capture_screen_base64(None)?;
     Ok(ComputerOutcome {
         text: format!("Scroll {direction} ({amount}) executado. Screenshot pos-scroll ({w}x{h}px) anexado."),
         screenshot_base64: Some(b64),
