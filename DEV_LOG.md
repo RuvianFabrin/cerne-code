@@ -2,6 +2,7 @@
 
 > **Data:** 2026-07-22
 > **Branch:** main (c:\cerne)
+> **Commit:** `312efd2`
 > **Build:** `src-tauri\target\release\bundle\` (NSIS + MSI)
 
 ---
@@ -204,7 +205,7 @@ TodoCards e tool steps apareciam todos agrupados após a mensagem do usuário, e
 
 ---
 
-## 11. Ferramentas testadas (17/17 ✅)
+## 11. Ferramentas testadas (19/19 ✅)
 
 | # | Ferramenta | Resultado |
 |---|-----------|-----------|
@@ -230,41 +231,384 @@ TodoCards e tool steps apareciam todos agrupados após a mensagem do usuário, e
 
 ---
 
-## 12. Próxima feature planejada: `computer_use` (automação de tela)
+## 12. Próxima feature: `computer_use` (automação de tela)
 
-### Objetivo
-Permitir que o LLM controle o PC do usuário (screenshots, mouse, teclado) para fazer testes em sistemas/web sem intervenção humana.
+> ⚠️ **LEIA COM ATENÇÃO ANTES DE IMPLEMENTAR QUALQUER TAREFA DESTE PLANO.**
+> Esta feature dá ao LLM controle real sobre mouse, teclado e tela do usuário.
+> Um erro de implementação pode causar perda de dados, cliques em botões errados,
+> ou execução de ações destrutivas sem intenção. Cada tarefa abaixo tem regras
+> de segurança que NÃO podem ser ignoradas ou simplificadas.
 
-### Fases propostas
+### 12.0 — Princípios de segurança (NÃO NEGOCIÁVEIS)
 
-**Fase 1 — MVP Windows** (~1 sessão de trabalho)
-- Tools: `screenshot`, `click`, `type_text`, `press_key`, `list_windows`
-- Crates: `enigo` (mouse/teclado cross-platform), `xcap` (screenshot cross-platform), `windows` crate (EnumWindows, GetWindowRect)
-- Sem AX tree ainda — só coordenadas pixel
+1. **Screenshot antes de toda ação** — Antes de clicar, digitar ou pressionar tecla, o sistema DEVE capturar um screenshot e enviar ao modelo para que ele confirme visualmente que o alvo está correto. Nunca clicar "às cegas" em coordenadas calculadas sem verificação visual.
 
-**Fase 2 — AX tree Windows**
-- Tool: `get_window_state` com element_index
-- Crate: `uiautomation` (Windows UI Automation)
-- Permite clicar em elementos pelo nome/role em vez de coordenadas cruas
+2. **Verificação de posição do mouse** — Após mover o cursor (se houver cursor visível), capturar screenshot com crosshair/marcador na posição alvo e enviar ao modelo para confirmar ANTES de executar o clique. O modelo deve responder "posição correta" ou "posição errada, ajustar para X,Y".
 
-**Fase 3 — macOS + Linux**
-- macOS: `core-graphics` + `accessibility` crate
-- Linux: `atspi` + `x11`/`wayland` crates
+3. **Requisito de visão** — Se o provider/modelo da sessão NÃO suporta visão (imagens), as ferramentas de `computer_use` DEVEM ser desabilitadas e retornar erro claro: `"computer_use requer um modelo com suporte a visão (ex: qwen-vl, gpt-4o, claude-3). O modelo atual não suporta imagens."` Sem visão, o modelo não pode interpretar screenshots e vai clicar em posições aleatórias.
 
-**Fase 4 — Browser interaction**
-- CDP (Chrome DevTools Protocol) para Chromium/Edge
-- Executar JavaScript, ler DOM, clicar em elementos CSS
+4. **Nunca executar ações destrutivas sem confirmação** — Fechar janelas, deletar arquivos via UI, formatar campos, enviar formulários com dados reais, clicar em "Sim" em diálogos de confirmação do SO — tudo isso DEVE pausar e pedir aprovação explícita do usuário via `ask`, mesmo em modo Automático.
 
-### Considerações de segurança
-- Confirmação antes de ações destrutivas (fechar janelas, deletar arquivos via UI)
-- Sandbox de coordenadas (limitar área de atuação)
-- Log de todas as ações para auditoria
+5. **Log de auditoria** — Toda ação de computer_use (screenshot, click, type, key) deve ser registrada no tasks.json com timestamp, coordenadas, e resultado. O usuário deve poder revisar o histórico completo.
 
-### Referências
-- Qwen Code `computer_use` tools: `computer_use__click`, `computer_use__type_text`, `computer_use__get_window_state`, etc.
-- `enigo` crate: https://crates.io/crates/enigo
-- `xcap` crate: https://crates.io/crates/xcap
-- `uiautomation` crate: https://crates.io/crates/uiautomation
+6. **Rate limiting** — Máximo de 1 ação de mouse/teclado por segundo para evitar loops descontrolados. Se o modelo tentar chamar click 10x seguidas, o sistema deve recusar após a 3ª e pedir explicação.
+
+7. **Área de atuação limitada** — Por padrão, o computer_use só pode interagir com janelas que o usuário explicitamente autorizou (via `allow_window` tool ou configuração). Sem autorização, retorna erro. Isso previne o modelo de clicar acidentalmente em janelas de banco de dados, email, etc.
+
+### 12.1 — O que já existe no projeto
+
+**`scripts/cdp.mjs`** — Cliente CDP (Chrome DevTools Protocol) funcional que já faz:
+- `screenshot` — captura PNG da página WebView2
+- `eval` — executa JavaScript na página
+- `click` — clique em coordenadas CSS via `Input.dispatchMouseEvent`
+- `type` — digita texto via `Input.insertText`
+- `key` — pressiona teclas via `Input.dispatchKeyEvent`
+- `list` — lista alvos CDP
+
+**Limitação:** só funciona com a própria WebView2 do Cerne (via `--remote-debugging-port`), não com apps externos. Para apps externos precisa de automação de SO (Win32/X11/CGEvent).
+
+**Como ativar CDP no dev:**
+```powershell
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222"
+npm run tauri dev
+# noutro terminal:
+node scripts/cdp.mjs screenshot out.png
+```
+
+### 12.2 — Arquitetura proposta
+
+```
+┌─────────────────────────────────────────────────┐
+│  LLM (modelo com visão)                         │
+│  ↓ chama tool                                    │
+│  computer_use_screenshot / click / type / key    │
+├─────────────────────────────────────────────────┤
+│  Backend Rust (src-tauri/src/agent/computer.rs)  │
+│  ┌───────────────────────────────────────────┐  │
+│  │ 1. Verifica se modelo tem visão           │  │
+│  │ 2. Verifica se janela está autorizada     │  │
+│  │ 3. Rate limiting (1 ação/seg)             │  │
+│  │ 4. Screenshot pré-ação (se click/type)    │  │
+│  │ 5. Envia screenshot ao modelo p/ validar  │  │
+│  │ 6. Executa ação via crate de SO           │  │
+│  │ 7. Screenshot pós-ação p/ confirmar       │  │
+│  │ 8. Log no tasks.json                      │  │
+│  └───────────────────────────────────────────┘  │
+│  ↓ usa crates por plataforma                     │
+│  ┌─────────┬──────────┬──────────┐              │
+│  │ Windows │  macOS   │  Linux   │              │
+│  │ enigo   │  enigo   │  enigo   │ ← mouse/kbd  │
+│  │ xcap    │  xcap    │  xcap    │ ← screenshot │
+│  │ uiauto  │  AX API  │  atspi   │ ← AX tree   │
+│  │ windows │  CGWin   │  x11/wl  │ ← windows   │
+│  └─────────┴──────────┴──────────┘              │
+├─────────────────────────────────────────────────┤
+│  Frontend Vue                                    │
+│  - Mostra screenshots inline no chat             │
+│  - Mostra cursor overlay (opcional)              │
+│  - Card de autorização de janela                 │
+│  - Histórico de ações (auditoria)                │
+└─────────────────────────────────────────────────┘
+```
+
+### 12.3 — Crates Rust por plataforma
+
+| Funcionalidade | Crate | Win | Mac | Linux | Notas |
+|---|---|:---:|:---:|:---:|---|
+| Mouse + teclado | `enigo` | ✅ | ✅ | ✅ | Cross-platform, bem mantida |
+| Screenshot tela | `xcap` | ✅ | ✅ | ✅ | Captura monitor inteiro ou janela |
+| Screenshot janela | `xcap` | ✅ | ✅ | ✅ | `Monitor::capture_image()` ou por window |
+| Listar janelas | `window_enumerator` | ✅ | ❌ | ❌ | Win-only; Mac/Linux usar FFI |
+| Listar janelas (Mac) | `core-graphics` | ❌ | ✅ | ❌ | `CGWindowListCopyWindowInfo` |
+| Listar janelas (Linux) | `x11rb` | ❌ | ❌ | ✅ | X11; Wayland precisa `wlroots` |
+| AX tree (Win) | `uiautomation` | ✅ | ❌ | ❌ | UI Automation COM |
+| AX tree (Mac) | `accessibility-sys` | ❌ | ✅ | ❌ | Accessibility API |
+| AX tree (Linux) | `atspi` | ❌ | ❌ | ✅ | AT-SPI2 D-Bus |
+| CDP (browser) | `chromiumoxide` | ✅ | ✅ | ✅ | CDP client Rust nativo |
+
+### 12.4 — Tarefas de implementação (independentes)
+
+Cada tarefa abaixo pode ser feita em um chat separado. Leia a tarefa inteira antes de começar.
+
+---
+
+#### Tarefa 12.4.1 — Verificação de visão do modelo
+
+**Objetivo:** Antes de registrar as tools de computer_use, verificar se o modelo da sessão suporta visão. Se não suporta, as tools não aparecem na lista de tools disponíveis.
+
+**Onde implementar:**
+- `src-tauri/src/agent/mod.rs` — na função `run_turn`, antes de montar a lista de tools, checar `session.provider` + `session.model` contra uma lista de modelos com visão conhecida, OU usar o endpoint de capabilities do provider.
+- `src-tauri/src/providers/mod.rs` — adicionar função `supports_vision(provider, model) -> bool` que consulta a API do provider (ex: OpenRouter `/models` retorna `architecture.input_modalities`).
+- Para providers custom (como o Qwen do usuário), adicionar campo `supports_vision: bool` na configuração do custom provider em `config.rs`.
+
+**Regra de segurança:** Se `supports_vision` retorna false, as tools `computer_use_*` NÃO são incluídas na lista de tools enviada ao modelo. O modelo nem sabe que elas existem. Se o modelo tentar chamar mesmo assim (hallucinação), o `execute_tool` retorna erro claro.
+
+**Teste:** Criar sessão com modelo sem visão (ex: qwen3-8b text-only), verificar que computer_use não aparece. Criar sessão com modelo com visão, verificar que aparece.
+
+---
+
+#### Tarefa 12.4.2 — Tool `computer_use_screenshot`
+
+**Objetivo:** Capturar screenshot de uma janela específica ou da tela inteira e retornar como imagem para o modelo.
+
+**Tool spec:**
+```json
+{
+  "name": "computer_use_screenshot",
+  "description": "Captura screenshot de uma janela ou da tela inteira. REQUER modelo com visão.",
+  "parameters": {
+    "window_title": { "type": "string", "description": "Título parcial da janela (opcional, vazio = tela inteira)" },
+    "pid": { "type": "integer", "description": "PID do processo (opcional, alternativa a window_title)" }
+  }
+}
+```
+
+**Implementação:**
+- Usar `xcap` para capturar a tela ou janela específica
+- Converter para PNG base64
+- Retornar como conteúdo de imagem na resposta da tool (o modelo precisa receber como imagem, não como texto)
+- **Importante:** a resposta da tool precisa ser uma mensagem com `content` no formato multi-part (texto + image_url base64), igual ao que já existe para imagens do usuário em `providers/mod.rs::to_wire_messages`
+
+**Arquivos:**
+- `src-tauri/src/agent/computer.rs` — NOVO módulo
+- `src-tauri/src/agent/tools.rs` — adicionar tool spec em `always_tool_specs()` (condicional a visão)
+- `src-tauri/src/agent/mod.rs` — handler especial (igual `ask`/`task`, precisa retornar imagem)
+- `Cargo.toml` — adicionar `xcap`
+
+**Teste:** Chamar screenshot sem argumentos, verificar que o modelo recebe e descreve o que vê na tela.
+
+---
+
+#### Tarefa 12.4.3 — Tool `computer_use_click` (com verificação pré-clique)
+
+**Objetivo:** Clicar em coordenadas de tela, mas ANTES de clicar, capturar screenshot com marcador visual na posição alvo e enviar ao modelo para confirmar.
+
+**Tool spec:**
+```json
+{
+  "name": "computer_use_click",
+  "description": "Clica em coordenadas de tela. Antes de clicar, captura screenshot com crosshair na posição para verificação. REQUER modelo com visão.",
+  "parameters": {
+    "x": { "type": "integer", "description": "Coordenada X em pixels de tela" },
+    "y": { "type": "integer", "description": "Coordenada Y em pixels de tela" },
+    "button": { "type": "string", "enum": ["left", "right", "middle"], "description": "Botão do mouse (default: left)" },
+    "window_title": { "type": "string", "description": "Janela alvo (para validação de área autorizada)" }
+  }
+}
+```
+
+**Fluxo de segurança (OBRIGATÓRIO):**
+1. Capturar screenshot da tela/janela alvo
+2. Desenhar crosshair vermelho (ou círculo) nas coordenadas (x, y) no screenshot
+3. Enviar screenshot marcado ao modelo como parte do resultado da tool ANTES de executar o clique
+4. O modelo analisa e responde na próxima chamada se a posição está correta
+5. Se o modelo chamar `computer_use_click` novamente com as mesmas coordenadas, isso serve como confirmação implícita → executar o clique real
+6. Se o modelo chamar com coordenadas diferentes, repetir o processo
+
+**Alternativa mais simples (Fase 1):** Executar o clique imediatamente mas capturar screenshot PÓS-clique e incluir no resultado da tool. O modelo vê o resultado e pode desfazer se clicou errado. Menos seguro mas mais rápido.
+
+**Implementação:**
+- `enigo` para o clique real (`Mouse::click`)
+- `xcap` para screenshot pré e pós
+- `image` crate para desenhar o crosshair no screenshot
+- Rate limiting: mínimo 1 segundo entre cliques
+
+**Arquivos:**
+- `src-tauri/src/agent/computer.rs`
+- `Cargo.toml` — adicionar `enigo`, `image`
+
+**⚠️ REGRA CRÍTICA:** NUNCA clicar sem antes ter um screenshot da tela atual. O modelo precisa ver o estado atual da tela para decidir onde clicar. Se não houver screenshot recente (últimos 5 segundos), capturar um automaticamente antes de executar.
+
+---
+
+#### Tarefa 12.4.4 — Tool `computer_use_type_text`
+
+**Objetivo:** Digitar texto no elemento focado.
+
+**Tool spec:**
+```json
+{
+  "name": "computer_use_type_text",
+  "description": "Digita texto via teclado. O elemento alvo deve estar focado antes (via click). REQUER modelo com visão.",
+  "parameters": {
+    "text": { "type": "string", "description": "Texto a digitar" }
+  }
+}
+```
+
+**Regras de segurança:**
+- Screenshot pré-ação para confirmar que o campo certo está focado
+- Máximo 500 caracteres por chamada (evitar loops de digitação infinita)
+- Log completo do texto digitado no tasks.json
+
+**Implementação:** `enigo` → `Keyboard::type_text`
+
+---
+
+#### Tarefa 12.4.5 — Tool `computer_use_press_key`
+
+**Objetivo:** Pressionar tecla ou combinação (Ctrl+C, Enter, Tab, etc.).
+
+**Tool spec:**
+```json
+{
+  "name": "computer_use_press_key",
+  "description": "Pressiona uma tecla ou combinação. REQUER modelo com visão.",
+  "parameters": {
+    "key": { "type": "string", "description": "Nome da tecla: return, tab, escape, up, down, left, right, space, delete, home, end, pageup, pagedown, f1-f12, ou letra/dígito" },
+    "modifiers": { "type": "array", "items": { "type": "string" }, "description": "Modificadores: ctrl, shift, alt, win/cmd" }
+  }
+}
+```
+
+**Regras de segurança:**
+- Combinações perigosas bloqueadas por padrão: `Alt+F4`, `Ctrl+Shift+Esc`, `Win+R` + comandos destrutivos
+- Lista de bloqueio configurável pelo usuário em Configurações
+- Screenshot pós-ação para confirmar o efeito
+
+---
+
+#### Tarefa 12.4.6 — Tool `computer_use_list_windows`
+
+**Objetivo:** Listar janelas abertas com PID, título, posição e tamanho.
+
+**Tool spec:**
+```json
+{
+  "name": "computer_use_list_windows",
+  "description": "Lista janelas visíveis na tela com PID, título e geometria. Use para descobrir o PID/título antes de screenshot ou click.",
+  "parameters": {}
+}
+```
+
+**Implementação por plataforma:**
+- **Windows:** `windows` crate → `EnumWindows` + `GetWindowText` + `GetWindowRect`
+- **macOS:** `core-graphics` → `CGWindowListCopyWindowInfo`
+- **Linux:** `x11rb` → `_NET_CLIENT_LIST` + `_NET_WM_NAME`
+
+**Sem risco de segurança** — só leitura.
+
+---
+
+#### Tarefa 12.4.7 — Tool `computer_use_get_window_state` (AX tree)
+
+**Objetivo:** Ler a árvore de acessibilidade de uma janela, retornando elementos clicáveis com índices estáveis.
+
+**Tool spec:**
+```json
+{
+  "name": "computer_use_get_window_state",
+  "description": "Lê a árvore de acessibilidade (UI Automation / AX API / AT-SPI) de uma janela. Retorna elementos interativos com [element_index N] para usar em click_element. REQUER modelo com visão.",
+  "parameters": {
+    "pid": { "type": "integer", "description": "PID do processo" },
+    "window_id": { "type": "integer", "description": "ID da janela (de list_windows)" }
+  }
+}
+```
+
+**Por que AX tree é melhor que coordenadas:**
+- Elementos têm nomes/roles estáveis ("Botão Salvar", "Campo de email")
+- Funciona mesmo se a janela estiver minimizada ou atrás de outra
+- Não depende de resolução/DPI/posição da janela
+- O modelo pode clicar por `element_index` em vez de coordenadas pixel
+
+**Implementação:**
+- **Windows:** `uiautomation` crate → walk tree, collect actionable elements
+- **macOS:** `accessibility-sys` → `AXUIElementCopyAttributeValue`
+- **Linux:** `atspi` → D-Bus AT-SPI2
+
+**Esta é a tarefa mais complexa.** Sugestão: implementar só Windows na Fase 2, deixar Mac/Linux para Fase 3.
+
+---
+
+#### Tarefa 12.4.8 — Tool `computer_use_browser_execute` (CDP)
+
+**Objetivo:** Interagir com páginas web em browsers Chromium/Edge via CDP, sem precisar de coordenadas de tela.
+
+**Tool spec:**
+```json
+{
+  "name": "computer_use_browser_execute",
+  "description": "Executa JavaScript, clica em elementos CSS, ou extrai texto de uma página web via CDP. Funciona com Chrome, Edge, Brave, e a própria WebView do Cerne. REQUER --remote-debugging-port no browser alvo.",
+  "parameters": {
+    "action": { "type": "string", "enum": ["execute_javascript", "click_element", "get_text", "query_dom"] },
+    "javascript": { "type": "string", "description": "JS a executar (para execute_javascript)" },
+    "css_selector": { "type": "string", "description": "Seletor CSS (para click_element / query_dom)" },
+    "port": { "type": "integer", "description": "Porta CDP (default 9222)" }
+  }
+}
+```
+
+**O que já existe:** `scripts/cdp.mjs` faz exatamente isso via Node.js. A tarefa é portar para Rust usando a crate `chromiumoxide` ou reimplementar o cliente CDP mínimo em Rust (o protocolo é JSON over WebSocket, ~200 linhas).
+
+**Vantagem sobre mouse/teclado de SO:**
+- Não precisa de screenshot para clicar (clica por seletor CSS)
+- Não depende de posição da janela na tela
+- Funciona com janelas minimizadas
+- Pode executar JS arbitrário (mais poderoso que click/type)
+
+**Limitação:** só funciona com browsers Chromium-based que tenham `--remote-debugging-port` ativado.
+
+---
+
+#### Tarefa 12.4.9 — Autorização de janelas + UI de permissão
+
+**Objetivo:** Sistema de permissão para controlar quais janelas o computer_use pode interagir.
+
+**Fluxo:**
+1. Primeira vez que o modelo tenta interagir com uma janela, o Cerne pausa e mostra um card: "O agente quer interagir com a janela 'Google Chrome - Gmail'. Permitir? [Só esta vez] [Sempre para este app] [Negar]"
+2. A decisão é salva por PID ou por nome do executável
+3. Em modo Manual, toda ação de computer_use pede aprovação (igual tool calls normais)
+4. Em modo Auto, janelas previamente autorizadas não pedem aprovação
+
+**Armazenamento:** `computer_use_permissions.json` no app_data_dir, com lista de executáveis autorizados.
+
+**Arquivos:**
+- `src-tauri/src/agent/computer.rs` — checagem de permissão antes de cada ação
+- `src/components/ComputerUsePermissionCard.vue` — card de permissão no chat
+- `src/stores/session.ts` — estado de permissão pendente
+
+---
+
+#### Tarefa 12.4.10 — Exibição de screenshots inline no chat
+
+**Objetivo:** Mostrar os screenshots capturados pelo computer_use diretamente no chat, para o usuário ver o que o modelo está "enxergando".
+
+**Implementação:**
+- O resultado da tool `computer_use_screenshot` inclui a imagem como data URL
+- O `MarkdownContent.vue` já renderiza imagens via `<img>` se o markdown tiver `![...](data:image/png;base64,...)`
+- Alternativamente, criar um componente `ScreenshotCard.vue` que mostra a imagem com borda e timestamp
+
+**Arquivos:**
+- `src/components/ScreenshotCard.vue` — NOVO (opcional, pode usar markdown image)
+- `src/components/ChatView.vue` — renderizar screenshots no timeline
+
+---
+
+### 12.5 — Ordem recomendada de implementação
+
+| Ordem | Tarefa | Dependência | Risco |
+|:-----:|--------|:-----------:|:-----:|
+| 1 | 12.4.1 — Verificação de visão | Nenhuma | Baixo |
+| 2 | 12.4.6 — list_windows | Nenhuma | Baixo |
+| 3 | 12.4.2 — screenshot | 12.4.1 | Baixo |
+| 4 | 12.4.10 — Screenshots no chat | 12.4.2 | Baixo |
+| 5 | 12.4.5 — press_key | 12.4.1 | Médio |
+| 6 | 12.4.4 — type_text | 12.4.1 | Médio |
+| 7 | 12.4.3 — click (com verificação) | 12.4.2 | **Alto** |
+| 8 | 12.4.9 — Autorização de janelas | 12.4.3 | Médio |
+| 9 | 12.4.8 — Browser CDP | Nenhuma | Baixo |
+| 10 | 12.4.7 — AX tree | 12.4.6 | **Alto** |
+
+### 12.6 — O que NÃO fazer
+
+- ❌ **NUNCA** implementar click sem screenshot prévio ou posterior
+- ❌ **NUNCA** habilitar computer_use para modelos sem visão
+- ❌ **NUNCA** clicar em coordenadas sem que o modelo tenha visto um screenshot recente da tela
+- ❌ **NUNCA** executar `Alt+F4`, `Ctrl+Shift+Esc`, ou combinações destrutivas sem whitelist explícita
+- ❌ **NUNCA** pular a verificação de janela autorizada
+- ❌ **NUNCA** armazenar screenshots em disco sem criptografia (podem conter dados sensíveis)
+- ❌ **NUNCA** permitir que o computer_use interaja com janelas de gerenciadores de senha, terminais com sudo, ou diálogos de pagamento sem confirmação extra
 
 ---
 
@@ -293,7 +637,7 @@ src/
 │   ├── MessageBubble.vue     # Bolha de mensagem (sem borda/label)
 │   ├── MarkdownContent.vue   # Render markdown (font-weights)
 │   ├── TaskStepGroup.vue     # Tool steps inline (expansível)
-│   ├── TodoCard.vue          # NOVO — card visual do todo_list
+│   ├── TodoCard.vue          # Card visual do todo_list
 │   ├── ComposerBar.vue       # Input bar
 │   └── ...
 src-tauri/src/
@@ -304,11 +648,14 @@ src-tauri/src/
 │   ├── subagent.rs           # task (sub-agente)
 │   ├── verifier.rs           # verify_completion
 │   ├── ast_tools.rs          # ast_grep + ast_edit
-│   └── background.rs         # Background jobs
+│   ├── background.rs         # Background jobs
+│   └── computer.rs           # NOVO — computer_use (Fase 1+)
 ├── providers/
 │   └── mod.rs                # SSE streaming (content + reasoning_content)
 ├── sandbox.rs                # Sandbox read/write/accept/reject
 ├── encoding.rs               # Detecção de encoding (UTF-8/16/1252)
 ├── models.rs                 # Tipos Rust (Session, ChatMessage, etc.)
 └── lib.rs                    # Tauri commands (accept_edit, reject_edit, etc.)
+scripts/
+└── cdp.mjs                   # Cliente CDP para automação browser (já funcional)
 ```
