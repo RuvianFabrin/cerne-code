@@ -539,8 +539,8 @@ async fn test_vision(
     )
     .map_err(|e| e.to_string())?;
 
-    // 1x1 pixel PNG vermelho em base64
-    let tiny_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAABJRU5ErkJggg==";
+    // 10x10 pixel PNG vermelho em base64 (imagem pequena mas válida)
+    let tiny_png = "iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAAFklEQVQYV2P8z8BQz0AEYBxVOHIxAgALXQMB/1bCiAAAAABJRU5ErkJggg==";
     let data_url = format!("data:image/png;base64,{tiny_png}");
 
     let client = reqwest::Client::new();
@@ -553,7 +553,7 @@ async fn test_vision(
         "messages": [{
             "role": "user",
             "content": [
-                {"type": "text", "text": "Reply with just: YES"},
+                {"type": "text", "text": "Reply YES"},
                 {"type": "image_url", "image_url": {"url": data_url}}
             ]
         }],
@@ -567,19 +567,38 @@ async fn test_vision(
 
     match req.send().await {
         Ok(resp) => {
-            if resp.status().is_success() {
+            let status = resp.status();
+            let body_text = resp.text().await.unwrap_or_default();
+            if status.is_success() {
+                let parsed: serde_json::Value = serde_json::from_str(&body_text).unwrap_or_default();
+                if parsed["choices"][0]["message"]["content"].as_str().is_some()
+                    || parsed["choices"][0]["message"]["reasoning_content"].as_str().is_some()
+                {
+                    return Ok(true);
+                }
+                if parsed["error"].is_object() || parsed["error"].is_string() {
+                    let err_msg = parsed["error"]["message"].as_str()
+                        .or_else(|| parsed["error"].as_str())
+                        .unwrap_or("");
+                    let lower = err_msg.to_lowercase();
+                    if lower.contains("image") || lower.contains("vision") || lower.contains("multimodal")
+                        || lower.contains("not support") || lower.contains("unsupported")
+                    {
+                        return Ok(false);
+                    }
+                }
                 Ok(true)
             } else {
-                let status = resp.status();
-                let body_text = resp.text().await.unwrap_or_default();
                 let lower = body_text.to_lowercase();
                 if lower.contains("image") || lower.contains("vision") || lower.contains("multimodal")
                     || lower.contains("not support") || lower.contains("unsupported")
-                    || status.as_u16() == 400
+                    || lower.contains("content_type") || lower.contains("invalid")
                 {
                     Ok(false)
+                } else if status.as_u16() == 400 || status.as_u16() == 422 {
+                    Ok(false)
                 } else {
-                    Err(format!("HTTP {status}: {body_text}"))
+                    Err(format!("HTTP {status}: {}", &body_text[..body_text.len().min(200)]))
                 }
             }
         }

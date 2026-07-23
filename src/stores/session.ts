@@ -85,13 +85,13 @@ export const useSessionStore = defineStore("session", {
         this.status = "running_tool";
         this.activeToolLabel = `${tool}(${args.slice(0, 60)})`;
         const userTurns = this.messages.filter((m) => m.role === "user").length;
-        this.tasks.push({
+        this.tasks = [...this.tasks, {
           id: `live-${Date.now()}`,
           label: `${tool}(${args.slice(0, 80)})`,
-          status: "running",
+          status: "running" as const,
           detail: null,
           turn: userTurns,
-        });
+        }];
       });
 
       await onPendingEdit((edit) => {
