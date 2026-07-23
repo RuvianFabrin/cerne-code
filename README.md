@@ -886,3 +886,71 @@ imagem num, "work in progress" no outro) que não aparecem só olhando a lista d
 
 Ver `C:\Users\ru\.claude\plans\drifting-conjuring-breeze.md` pro plano
 completo desta primeira entrega.
+
+---
+
+## Benchmark de modelos locais (2026-07-23)
+
+Teste de capacidade dos modelos locais para usar como agente no Cerne Code.
+Máquina: RTX 5060 Ti 16GB, 64GB RAM, Windows 11.
+
+### Metodologia
+
+6 tarefas que exigem uma tool call específica do Cerne Code:
+`list_dir`, `grep`, `read_file`, `edit_file`, `web_search`, `run_command`.
+Cada tarefa vale 10 pontos (tool correta + argumentos corretos) → máximo 60.
+Testado via API OpenAI-compatible com os tool specs reais do Cerne.
+
+### Ranking — TurboQuant (llama.cpp + MTP + turbo cache)
+
+| Pos | Modelo | Nota | Tempo/call | Obs |
+|:---:|--------|:----:|:----------:|-----|
+| 🥇 | gemma4-e4b-qat-mtp | **60/60** | 0.2s | Perfeito. Único que acertou grep. QAT + MTP |
+| 🥈 | ornith-9b | 52/60 | 1.1s | Especializado em tool-calling. Erra grep (usa run_command) |
+| 🥈 | ornith-35b | 52/60 | 1.2s | MoE. Erra grep (usa list_dir) |
+| 🥈 | qwen3.5-9b-mtp | 52/60 | 0.5s | MTP rápido. Erra grep (usa run_command) |
+| 5 | qwen3.6-27b | 44/60 | 1.5s | Erra grep + edit_file |
+
+### Ranking — Ollama
+
+| Pos | Modelo | Nota | Tempo/call | Obs |
+|:---:|--------|:----:|:----------:|-----|
+| 🥇 | gpt-oss:20b | **60/60** | 2.6s | Perfeito. Único no Ollama que acertou grep |
+| 🥈 | ornith:9b | 49/60 | 4.6s | Bom, mas erra grep |
+| 🥉 | devstral-small-2:24b | 49/60 | 5.1s | Erra grep (usa list_dir) |
+| 4 | ministral-3:8b | 48/60 | 2.1s | Mais rápido do Ollama. Erra grep |
+| 5 | gemma4:12b-it-qat | 41/60 | 7.8s | Fraco em tools (confunde edit_file com read_file) |
+| 6 | qwen3-coder:30b | 22/60 | 5.2s | ⚠️ Gera tool calls como texto XML — incompatível |
+
+### Detalhe por ferramenta
+
+| Ferramenta | gemma4-e4b (TQ) | gpt-oss (OL) | ornith-9b (TQ) | qwen3.5-mtp (TQ) | ministral (OL) |
+|------------|:---:|:---:|:---:|:---:|:---:|
+| list_dir | ✅ | ✅ | ✅ | ✅ | ✅ |
+| grep | ✅ | ✅ | ❌ | ❌ | ❌ |
+| read_file | ✅ | ✅ | ✅ | ✅ | ⚠️ |
+| edit_file | ✅ | ✅ | ✅ | ✅ | ✅ |
+| web_search | ✅ | ✅ | ✅ | ✅ | ✅ |
+| run_command | ✅ | ✅ | ✅ | ✅ | ✅ |
+
+`grep` foi a tool mais difícil — só gemma4-e4b (TurboQuant) e gpt-oss (Ollama) acertaram.
+
+### Recomendação pro Cerne Code
+
+| Uso | Modelo | Provider | Por quê |
+|-----|--------|----------|---------|
+| **Agente (melhor)** | gemma4-e4b-qat-mtp | TurboQuant | 60/60 + 0.2s/call + visão + MTP |
+| **Agente (alternativa)** | gpt-oss:20b | Ollama | 60/60, mas 13x mais lento |
+| **Agente rápido** | qwen3.5-9b-mtp | TurboQuant | 52/60 + 0.5s/call com MTP |
+| **Chat (sem tools)** | gemma4:12b-it-qat | Ollama | Bom raciocínio, fraco em tool use |
+| **Evitar como agente** | qwen3-coder:30b | Ollama | Tool calls em formato texto — incompatível |
+
+### Notas
+
+- **TurboQuant vs Ollama**: o mesmo ornith-9b fez 52/60 no TurboQuant vs 49/60 no Ollama
+  (Q8_0 + reasoning off + turbo cache ajudam). gemma4-e4b-qat-mtp (TurboQuant, 60/60) vs
+  gemma4:12b-it-qat (Ollama, 41/60) — QAT + MTP faz diferença enorme em tool use.
+- **qwen3-coder:30b** gera tool calls como texto XML no content em vez de usar o mecanismo
+  `tool_calls` da API — o agent loop do Cerne não reconhece e a ferramenta nunca executa.
+- Scripts de benchmark em `scripts/benchmark.mjs` (raciocínio/código) e
+  `scripts/benchmark_tools.mjs` (tool use). Resultados brutos em `scripts/benchmark_*_result.json`.

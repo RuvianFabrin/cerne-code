@@ -1,0 +1,223 @@
+{
+  "date": "2026-07-23T22:55:19.079Z",
+  "results": [
+    {
+      "model": "qwen3.5:9b",
+      "test": "raciocinio",
+      "elapsed": "17.5",
+      "content": "",
+      "tokens": 512,
+      "tps": "29.3",
+      "evalScore": 2,
+      "evalNote": "Incorreto"
+    },
+    {
+      "model": "qwen3.5:9b",
+      "test": "codigo",
+      "elapsed": "8.1",
+      "content": "",
+      "tokens": 512,
+      "tps": "63.2",
+      "evalScore": 0,
+      "evalNote": "vazio"
+    },
+    {
+      "model": "qwen3.5:4b",
+      "test": "raciocinio",
+      "elapsed": "10.5",
+      "content": "",
+      "tokens": 512,
+      "tps": "48.8",
+      "evalScore": 2,
+      "evalNote": "Incorreto"
+    },
+    {
+      "model": "qwen3.5:4b",
+      "test": "codigo",
+      "elapsed": "5.3",
+      "content": "",
+      "tokens": 512,
+      "tps": "96.6",
+      "evalScore": 0,
+      "evalNote": "vazio"
+    },
+    {
+      "model": "qwen3-coder:30b",
+      "test": "raciocinio",
+      "elapsed": "42.1",
+      "content": "**Pedro tem 4 maçãs.**  \nPedro tem a metade do total de João (3) e Maria (6) juntos, ou seja, (3 + 6) / 2 = 4.",
+      "tokens": 50,
+      "tps": "1.2",
+      "evalScore": 6,
+      "evalNote": "Parcial (arredondou)"
+    },
+    {
+      "model": "qwen3-coder:30b",
+      "test": "codigo",
+      "elapsed": "1.0",
+      "content": "```python\ndef inverte_palavras(s):\n    return ' '.join(palavra[::-1] for palavra in s.split())\n```",
+      "tokens": 29,
+      "tps": "29.0",
+      "evalScore": 10,
+      "evalNote": "função ok, usa split, inversão ok, usa join"
+    },
+    {
+      "model": "gemma4:12b-it-qat",
+      "test": "raciocinio",
+      "elapsed": "20.6",
+      "content": "4,5. Pedro tem a metade da soma das maçãs de João (3) e Maria (6), que totaliza 9.",
+      "tokens": 456,
+      "tps": "22.1",
+      "evalScore": 10,
+      "evalNote": "Correto (4.5)"
+    },
+    {
+      "model": "gemma4:12b-it-qat",
+      "test": "codigo",
+      "elapsed": "6.1",
+      "content": "```python\ndef inverte_palavras(texto):\n    return \" \".join(palavra[::-1] for palavra in texto.split())\n```",
+      "tokens": 272,
+      "tps": "44.6",
+      "evalScore": 10,
+      "evalNote": "função ok, usa split, inversão ok, usa join"
+    },
+    {
+      "model": "ministral-3:8b",
+      "test": "raciocinio",
+      "elapsed": "16.0",
+      "content": "Pedro tem **4** maçãs.\n\n*(João: 3; Maria: 2×3=6; Total João+Maria=9; Metade=4).*",
+      "tokens": 37,
+      "tps": "2.3",
+      "evalScore": 6,
+      "evalNote": "Parcial (arredondou)"
+    },
+    {
+      "model": "ministral-3:8b",
+      "test": "codigo",
+      "elapsed": "0.7",
+      "content": "```python\ndef inverte_palavras(texto):\n    return ' '.join([palavra[::-1] for palavra in texto.split()])\n```",
+      "tokens": 36,
+      "tps": "51.4",
+      "evalScore": 10,
+      "evalNote": "função ok, usa split, inversão ok, usa join"
+    },
+    {
+      "model": "devstral-small-2:24b",
+      "test": "raciocinio",
+      "elapsed": "28.9",
+      "content": "Pedro tem 5 maçãs.\nExplicação: (3 + 6)/2 = 4,5 (arredondado para 5).\n\n*(Notei que o resultado não é um inteiro, mas como a pergunta pede apenas o número, considero o valor exato ou arredondamento conforme necessário).*",
+      "tokens": 69,
+      "tps": "2.4",
+      "evalScore": 10,
+      "evalNote": "Correto (4.5)"
+    },
+    {
+      "model": "devstral-small-2:24b",
+      "test": "codigo",
+      "elapsed": "2.6",
+      "content": "```python\ndef inverte_palavras(s):\n    return ' '.join([palavra[::-1] for palavra in s.split()])\n```",
+      "tokens": 35,
+      "tps": "13.5",
+      "evalScore": 10,
+      "evalNote": "função ok, usa split, inversão ok, usa join"
+    },
+    {
+      "model": "gpt-oss:20b",
+      "test": "raciocinio",
+      "elapsed": "32.9",
+      "content": "4.5  \nPedro tem metade do total de João e Maria juntos (3 + 6 = 9), logo 9 ÷ 2 = 4.5 maçãs.",
+      "tokens": 199,
+      "tps": "6.0",
+      "evalScore": 10,
+      "evalNote": "Correto (4.5)"
+    },
+    {
+      "model": "gpt-oss:20b",
+      "test": "codigo",
+      "elapsed": "2.3",
+      "content": "```python\ndef inverte_palavras(texto):\n    return ' '.join(palavra[::-1] for palavra in texto.split())\n```",
+      "tokens": 172,
+      "tps": "74.8",
+      "evalScore": 10,
+      "evalNote": "função ok, usa split, inversão ok, usa join"
+    },
+    {
+      "model": "ornith:9b",
+      "test": "raciocinio",
+      "elapsed": "10.9",
+      "content": "**4,5** — João tem 3 maçãs, Maria tem 6 (o dobro), total entre eles é 9, e Pedro tem metade disso: 9 ÷ 2 = 4,5.",
+      "tokens": 172,
+      "tps": "15.8",
+      "evalScore": 10,
+      "evalNote": "Correto (4.5)"
+    },
+    {
+      "model": "ornith:9b",
+      "test": "codigo",
+      "elapsed": "4.4",
+      "content": "```python\ndef inverte_palavras(s: str) -> str:\n    return ' '.join(w[::-1] for w in s.split())\n```",
+      "tokens": 262,
+      "tps": "59.5",
+      "evalScore": 10,
+      "evalNote": "função ok, usa split, inversão ok, usa join"
+    }
+  ],
+  "ranking": [
+    {
+      "model": "ornith:9b",
+      "score": 20,
+      "maxScore": 20,
+      "avgTime": "7.7",
+      "avgTps": "37.6"
+    },
+    {
+      "model": "gemma4:12b-it-qat",
+      "score": 20,
+      "maxScore": 20,
+      "avgTime": "13.4",
+      "avgTps": "33.4"
+    },
+    {
+      "model": "devstral-small-2:24b",
+      "score": 20,
+      "maxScore": 20,
+      "avgTime": "15.8",
+      "avgTps": "8.0"
+    },
+    {
+      "model": "gpt-oss:20b",
+      "score": 20,
+      "maxScore": 20,
+      "avgTime": "17.6",
+      "avgTps": "40.4"
+    },
+    {
+      "model": "ministral-3:8b",
+      "score": 16,
+      "maxScore": 20,
+      "avgTime": "8.3",
+      "avgTps": "26.8"
+    },
+    {
+      "model": "qwen3-coder:30b",
+      "score": 16,
+      "maxScore": 20,
+      "avgTime": "21.6",
+      "avgTps": "15.1"
+    },
+    {
+      "model": "qwen3.5:4b",
+      "score": 2,
+      "maxScore": 20,
+      "avgTime": "7.9",
+      "avgTps": "72.7"
+    },
+    {
+      "model": "qwen3.5:9b",
+      "score": 2,
+      "maxScore": 20,
+      "avgTime": "12.8",
+      "avgTps": "46.3"
+    }
+  ]
+}

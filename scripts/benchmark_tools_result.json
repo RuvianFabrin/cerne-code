@@ -1,0 +1,451 @@
+{
+  "date": "2026-07-23T23:30:17.765Z",
+  "results": [
+    {
+      "model": "ornith:9b",
+      "test": "list_dir",
+      "elapsed": "11.4",
+      "toolCall": "list_dir",
+      "score": 10,
+      "note": "path ok: D:\\SCA_elton",
+      "args": {
+        "path": "D:\\SCA_elton"
+      }
+    },
+    {
+      "model": "ornith:9b",
+      "test": "grep",
+      "elapsed": "6.7",
+      "toolCall": "run_command",
+      "score": 2,
+      "note": "Tool errada: run_command (esperava grep)",
+      "args": {
+        "command": "dir \"D:\\SCA_elton\\*.pdf\" /s 2>nul || findstr /r \".pdf\" \"C:\\Windows\\System32\\cmd.exe\" >nul; dir \"D:\\SCA_elton\\*.pdf\" /s",
+        "timeout": 30
+      }
+    },
+    {
+      "model": "ornith:9b",
+      "test": "read_file",
+      "elapsed": "3.4",
+      "toolCall": "read_file",
+      "score": 7,
+      "note": "path ok, limit=100",
+      "args": {
+        "limit": 100,
+        "path": "D:\\SCA_elton\\Versão Final SCA 0707.pdf"
+      }
+    },
+    {
+      "model": "ornith:9b",
+      "test": "edit_file",
+      "elapsed": "2.9",
+      "toolCall": "edit_file",
+      "score": 10,
+      "note": "path ok, old ok, new ok",
+      "args": {
+        "path": "src/config.ts",
+        "old_string": "const PORT = 3000",
+        "new_string": "const PORT = 8080"
+      }
+    },
+    {
+      "model": "ornith:9b",
+      "test": "web_search",
+      "elapsed": "1.4",
+      "toolCall": "web_search",
+      "score": 10,
+      "note": "query ok: \"cotação do dólar real hoje 2025\"",
+      "args": {
+        "query": "cotação do dólar real hoje 2025"
+      }
+    },
+    {
+      "model": "ornith:9b",
+      "test": "run_command",
+      "elapsed": "1.6",
+      "toolCall": "run_command",
+      "score": 10,
+      "note": "comando ok: \"dir D:\\SCA_elton\"",
+      "args": {
+        "command": "dir D:\\SCA_elton"
+      }
+    },
+    {
+      "model": "gemma4:12b-it-qat",
+      "test": "list_dir",
+      "elapsed": "13.2",
+      "toolCall": "list_dir",
+      "score": 10,
+      "note": "path ok: D:\\SCA_elton",
+      "args": {
+        "path": "D:\\SCA_elton"
+      }
+    },
+    {
+      "model": "gemma4:12b-it-qat",
+      "test": "grep",
+      "elapsed": "12.4",
+      "toolCall": "list_dir",
+      "score": 2,
+      "note": "Tool errada: list_dir (esperava grep)",
+      "args": {
+        "path": "D:\\SCA_elton"
+      }
+    },
+    {
+      "model": "gemma4:12b-it-qat",
+      "test": "read_file",
+      "elapsed": "10.4",
+      "toolCall": "read_file",
+      "score": 7,
+      "note": "path ok, limit=100",
+      "args": {
+        "limit": 100,
+        "path": "D:\\SCA_elton\\Versão Final SCA 0707.pdf"
+      }
+    },
+    {
+      "model": "gemma4:12b-it-qat",
+      "test": "edit_file",
+      "elapsed": "2.3",
+      "toolCall": "read_file",
+      "score": 2,
+      "note": "Tool errada: read_file (esperava edit_file)",
+      "args": {
+        "path": "src/config.ts"
+      }
+    },
+    {
+      "model": "gemma4:12b-it-qat",
+      "test": "web_search",
+      "elapsed": "1.6",
+      "toolCall": "web_search",
+      "score": 10,
+      "note": "query ok: \"cotação dólar hoje\"",
+      "args": {
+        "query": "cotação dólar hoje"
+      }
+    },
+    {
+      "model": "gemma4:12b-it-qat",
+      "test": "run_command",
+      "elapsed": "7.0",
+      "toolCall": "run_command",
+      "score": 10,
+      "note": "comando ok: \"dir D:\\SCA_elton\"",
+      "args": {
+        "command": "dir D:\\SCA_elton"
+      }
+    },
+    {
+      "model": "qwen3-coder:30b",
+      "test": "list_dir",
+      "elapsed": "25.4",
+      "toolCall": null,
+      "score": 0,
+      "note": "Texto em vez de tool call: \"<function=list_dir>\n<parameter=path>\nD:\\SCA_elton\n</parameter>\n</function>\n</tool_call>\""
+    },
+    {
+      "model": "qwen3-coder:30b",
+      "test": "grep",
+      "elapsed": "1.3",
+      "toolCall": "grep",
+      "score": 10,
+      "note": "busca pdf, pasta certa",
+      "args": {
+        "pattern": "\\.pdf$",
+        "path": "D:\\SCA_elton",
+        "include": "*.pdf"
+      }
+    },
+    {
+      "model": "qwen3-coder:30b",
+      "test": "read_file",
+      "elapsed": "1.9",
+      "toolCall": null,
+      "score": 0,
+      "note": "Texto em vez de tool call: \"Não posso ler diretamente arquivos PDF ou qualquer outro formato além de texto plano. Preciso que vo\""
+    },
+    {
+      "model": "qwen3-coder:30b",
+      "test": "edit_file",
+      "elapsed": "0.9",
+      "toolCall": "read_file",
+      "score": 2,
+      "note": "Tool errada: read_file (esperava edit_file)",
+      "args": {
+        "path": "src/config.ts"
+      }
+    },
+    {
+      "model": "qwen3-coder:30b",
+      "test": "web_search",
+      "elapsed": "0.7",
+      "toolCall": null,
+      "score": 0,
+      "note": "Texto em vez de tool call: \"<function=web_search>\n<parameter=query>\ncotação do dólar hoje\n</parameter>\n</function>\n</tool_call>\""
+    },
+    {
+      "model": "qwen3-coder:30b",
+      "test": "run_command",
+      "elapsed": "0.8",
+      "toolCall": "run_command",
+      "score": 10,
+      "note": "comando ok: \"dir D:\\SCA_elton\"",
+      "args": {
+        "command": "dir D:\\SCA_elton"
+      }
+    },
+    {
+      "model": "ministral-3:8b",
+      "test": "list_dir",
+      "elapsed": "10.1",
+      "toolCall": "list_dir",
+      "score": 10,
+      "note": "path ok: D:\\SCA_elton",
+      "args": {
+        "path": "D:\\SCA_elton"
+      }
+    },
+    {
+      "model": "ministral-3:8b",
+      "test": "grep",
+      "elapsed": "0.5",
+      "toolCall": "list_dir",
+      "score": 2,
+      "note": "Tool errada: list_dir (esperava grep)",
+      "args": {
+        "path": "D:\\SCA_elton"
+      }
+    },
+    {
+      "model": "ministral-3:8b",
+      "test": "read_file",
+      "elapsed": "0.6",
+      "toolCall": "read_file",
+      "score": 6,
+      "note": "limit=100, offset=0",
+      "args": {
+        "path": "",
+        "offset": 0,
+        "limit": 100
+      }
+    },
+    {
+      "model": "ministral-3:8b",
+      "test": "edit_file",
+      "elapsed": "0.8",
+      "toolCall": "edit_file",
+      "score": 10,
+      "note": "path ok, old ok, new ok",
+      "args": {
+        "new_string": "const PORT = 8080",
+        "old_string": "const PORT = 3000",
+        "path": "src/config.ts"
+      }
+    },
+    {
+      "model": "ministral-3:8b",
+      "test": "web_search",
+      "elapsed": "0.4",
+      "toolCall": "web_search",
+      "score": 10,
+      "note": "query ok: \"cotação do dólar hoje\"",
+      "args": {
+        "query": "cotação do dólar hoje"
+      }
+    },
+    {
+      "model": "ministral-3:8b",
+      "test": "run_command",
+      "elapsed": "0.5",
+      "toolCall": "run_command",
+      "score": 10,
+      "note": "comando ok: \"dir D:\\SCA_elton\"",
+      "args": {
+        "command": "dir D:\\SCA_elton"
+      }
+    },
+    {
+      "model": "devstral-small-2:24b",
+      "test": "list_dir",
+      "elapsed": "20.6",
+      "toolCall": "list_dir",
+      "score": 10,
+      "note": "path ok: D:\\SCA_elton",
+      "args": {
+        "path": "D:\\SCA_elton"
+      }
+    },
+    {
+      "model": "devstral-small-2:24b",
+      "test": "grep",
+      "elapsed": "1.5",
+      "toolCall": "list_dir",
+      "score": 2,
+      "note": "Tool errada: list_dir (esperava grep)",
+      "args": {
+        "path": "D:\\SCA_elton"
+      }
+    },
+    {
+      "model": "devstral-small-2:24b",
+      "test": "read_file",
+      "elapsed": "2.7",
+      "toolCall": "read_file",
+      "score": 7,
+      "note": "path ok, limit=100",
+      "args": {
+        "path": "D:\\SCA_elton\\Versão Final SCA 0707.pdf",
+        "limit": 100
+      }
+    },
+    {
+      "model": "devstral-small-2:24b",
+      "test": "edit_file",
+      "elapsed": "3.0",
+      "toolCall": "edit_file",
+      "score": 10,
+      "note": "path ok, old ok, new ok",
+      "args": {
+        "path": "src/config.ts",
+        "old_string": "const PORT = 3000",
+        "new_string": "const PORT = 8080"
+      }
+    },
+    {
+      "model": "devstral-small-2:24b",
+      "test": "web_search",
+      "elapsed": "1.3",
+      "toolCall": "web_search",
+      "score": 10,
+      "note": "query ok: \"cotacao dolar hoje\"",
+      "args": {
+        "query": "cotacao dolar hoje"
+      }
+    },
+    {
+      "model": "devstral-small-2:24b",
+      "test": "run_command",
+      "elapsed": "1.6",
+      "toolCall": "run_command",
+      "score": 10,
+      "note": "comando ok: \"dir D:\\SCA_elton\"",
+      "args": {
+        "command": "dir D:\\SCA_elton"
+      }
+    },
+    {
+      "model": "gpt-oss:20b",
+      "test": "list_dir",
+      "elapsed": "17.6",
+      "toolCall": "list_dir",
+      "score": 10,
+      "note": "path ok: D:\\SCA_elton",
+      "args": {
+        "path": "D:\\SCA_elton"
+      }
+    },
+    {
+      "model": "gpt-oss:20b",
+      "test": "grep",
+      "elapsed": "1.6",
+      "toolCall": "grep",
+      "score": 10,
+      "note": "busca pdf, pasta certa",
+      "args": {
+        "include": "*.pdf",
+        "path": "D:\\\\SCA_elton",
+        "pattern": ""
+      }
+    },
+    {
+      "model": "gpt-oss:20b",
+      "test": "read_file",
+      "elapsed": "1.6",
+      "toolCall": "read_file",
+      "score": 10,
+      "note": "path ok, limit=100, offset=0",
+      "args": {
+        "limit": 100,
+        "offset": 0,
+        "path": "D:\\SCA_elton\\Versão Final SCA 0707.pdf"
+      }
+    },
+    {
+      "model": "gpt-oss:20b",
+      "test": "edit_file",
+      "elapsed": "1.4",
+      "toolCall": "edit_file",
+      "score": 10,
+      "note": "path ok, old ok, new ok",
+      "args": {
+        "path": "src/config.ts",
+        "old_string": "const PORT = 3000",
+        "new_string": "const PORT = 8080"
+      }
+    },
+    {
+      "model": "gpt-oss:20b",
+      "test": "web_search",
+      "elapsed": "0.9",
+      "toolCall": "web_search",
+      "score": 10,
+      "note": "query ok: \"cotação do dólar hoje\"",
+      "args": {
+        "query": "cotação do dólar hoje"
+      }
+    },
+    {
+      "model": "gpt-oss:20b",
+      "test": "run_command",
+      "elapsed": "1.2",
+      "toolCall": "run_command",
+      "score": 10,
+      "note": "comando ok: \"dir D:\\SCA_elton\"",
+      "args": {
+        "command": "dir D:\\SCA_elton",
+        "timeout": 120
+      }
+    }
+  ],
+  "ranking": [
+    {
+      "model": "gpt-oss:20b",
+      "score": 60,
+      "avgTime": "4.0",
+      "details": "list_dir:10 | grep:10 | read_file:10 | edit_file:10 | web_search:10 | run_command:10"
+    },
+    {
+      "model": "ornith:9b",
+      "score": 49,
+      "avgTime": "4.6",
+      "details": "list_dir:10 | grep:2 | read_file:7 | edit_file:10 | web_search:10 | run_command:10"
+    },
+    {
+      "model": "devstral-small-2:24b",
+      "score": 49,
+      "avgTime": "5.1",
+      "details": "list_dir:10 | grep:2 | read_file:7 | edit_file:10 | web_search:10 | run_command:10"
+    },
+    {
+      "model": "ministral-3:8b",
+      "score": 48,
+      "avgTime": "2.1",
+      "details": "list_dir:10 | grep:2 | read_file:6 | edit_file:10 | web_search:10 | run_command:10"
+    },
+    {
+      "model": "gemma4:12b-it-qat",
+      "score": 41,
+      "avgTime": "7.8",
+      "details": "list_dir:10 | grep:2 | read_file:7 | edit_file:2 | web_search:10 | run_command:10"
+    },
+    {
+      "model": "qwen3-coder:30b",
+      "score": 22,
+      "avgTime": "5.2",
+      "details": "list_dir:0 | grep:10 | read_file:0 | edit_file:2 | web_search:0 | run_command:10"
+    }
+  ]
+}
