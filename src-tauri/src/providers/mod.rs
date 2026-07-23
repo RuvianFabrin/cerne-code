@@ -15,6 +15,81 @@ pub struct StreamTokenEvent {
     pub delta: String,
 }
 
+/// Tabela hardcoded de context lengths conhecidos por modelo.
+/// A API da Qwen Cloud (e a maioria dos providers OpenAI-compatible)
+/// não retorna context_length no /v1/models, então usamos isso como fallback.
+const KNOWN_CONTEXT_LENGTHS: &[(&str, u32)] = &[
+    ("qwen3.8-max-preview", 1_000_000),
+    ("qwen3.7-max", 1_000_000),
+    ("qwen3.7-plus", 1_000_000),
+    ("qwen3.6-flash", 1_000_000),
+    ("qwen3-max", 262_144),
+    ("qwen3-plus", 131_072),
+    ("qwen3-flash", 131_072),
+    ("qwen3-235b-a22b", 131_072),
+    ("qwen3-30b-a3b", 131_072),
+    ("qwen3-32b", 131_072),
+    ("qwen3-14b", 131_072),
+    ("qwen3-8b", 131_072),
+    ("qwen3-4b", 131_072),
+    ("qwen3-1.7b", 32_768),
+    ("qwen3-0.6b", 32_768),
+    ("qwen-max", 32_768),
+    ("qwen-plus", 131_072),
+    ("qwen-turbo", 131_072),
+    ("qwen-long", 10_000_000),
+    ("qwen2.5-max", 32_768),
+    ("qwen2.5-plus", 131_072),
+    ("qwen2.5-72b-instruct", 131_072),
+    ("qwen2.5-32b-instruct", 131_072),
+    ("qwen2.5-14b-instruct", 131_072),
+    ("qwen2.5-7b-instruct", 131_072),
+    ("deepseek-v3", 65_536),
+    ("deepseek-r1", 65_536),
+    ("deepseek-v4-pro", 131_072),
+    ("deepseek-v4-flash", 131_072),
+];
+
+fn known_context_length(model_id: &str) -> Option<u32> {
+    let lower = model_id.to_lowercase();
+    KNOWN_CONTEXT_LENGTHS
+        .iter()
+        .find(|(id, _)| lower.contains(id))
+        .map(|(_, len)| *len)
+}
+
+fn context_cache_path(app_data_dir: &std::path::Path) -> std::path::PathBuf {
+    app_data_dir.join("model_context_cache.json")
+}
+
+pub fn load_context_cache(app_data_dir: &std::path::Path) -> std::collections::HashMap<String, u32> {
+    let path = context_cache_path(app_data_dir);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_context_length(app_data_dir: &std::path::Path, model_id: &str, context_length: u32) {
+    let mut cache = load_context_cache(app_data_dir);
+    cache.insert(model_id.to_string(), context_length);
+    if let Ok(json) = serde_json::to_string_pretty(&cache) {
+        let _ = std::fs::write(context_cache_path(app_data_dir), json);
+    }
+}
+
+pub fn resolve_context_length(app_data_dir: &std::path::Path, model_id: &str, provider_override: Option<u32>) -> u32 {
+    let cache = load_context_cache(app_data_dir);
+    if let Some(&len) = cache.get(model_id) {
+        return len;
+    }
+    if let Some(len) = known_context_length(model_id) {
+        save_context_length(app_data_dir, model_id, len);
+        return len;
+    }
+    provider_override.unwrap_or(crate::models::DEFAULT_CONTEXT_LENGTH)
+}
+
 /// Converts `ChatMessage`s to the wire format the OpenAI-compatible
 /// `/chat/completions` endpoint expects. Plain messages serialize exactly as
 /// before; messages carrying `images` get their `content` rewritten into the
@@ -185,7 +260,7 @@ pub async fn chat_stream(
     })
 }
 
-pub async fn list_models(cfg: &ProviderConfig, api_key: Option<String>) -> Result<Vec<ModelInfo>> {
+pub async fn list_models(cfg: &ProviderConfig, api_key: Option<String>, app_data_dir: &std::path::Path) -> Result<Vec<ModelInfo>> {
     let client = reqwest::Client::new();
 
     match cfg.kind {
@@ -229,10 +304,11 @@ pub async fn list_models(cfg: &ProviderConfig, api_key: Option<String>) -> Resul
                 .into_iter()
                 .filter_map(|m| {
                     let id = m["id"].as_str()?.to_string();
-                    let context_length = m["context_length"]
+                    let api_ctx = m["context_length"]
                         .as_u64()
                         .or_else(|| m["top_provider"]["context_length"].as_u64())
                         .map(|v| v as u32);
+                    let context_length = Some(resolve_context_length(app_data_dir, &id, api_ctx));
                     Some(ModelInfo {
                         label: id.clone(),
                         id,
@@ -253,13 +329,14 @@ pub async fn get_context_length(
     cfg: &ProviderConfig,
     api_key: Option<String>,
     model: &str,
+    app_data_dir: &std::path::Path,
 ) -> Option<u32> {
     let client = reqwest::Client::new();
 
     match cfg.kind {
         ProviderKind::Custom if cfg.context_length_override.is_some() => cfg.context_length_override,
         ProviderKind::Openrouter | ProviderKind::Custom => {
-            let models = list_models(cfg, api_key).await.ok()?;
+            let models = list_models(cfg, api_key, app_data_dir).await.ok()?;
             models.into_iter().find(|m| m.id == model)?.context_length
         }
         ProviderKind::Ollama => {
@@ -305,7 +382,7 @@ pub async fn get_context_length(
 /// the resolved preset in the fork's `models.ini` references an `mmproj` file,
 /// not on anything queryable over HTTP — see
 /// `llama_cpp::preset_supports_vision`, called directly by the caller instead.
-pub async fn supports_vision(cfg: &ProviderConfig, api_key: Option<String>, model: &str) -> bool {
+pub async fn supports_vision(cfg: &ProviderConfig, api_key: Option<String>, model: &str, _app_data_dir: &std::path::Path) -> bool {
     let client = reqwest::Client::new();
 
     match cfg.kind {

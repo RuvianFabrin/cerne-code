@@ -139,7 +139,7 @@ async fn list_provider_models(
         &state.app_data_dir,
         custom_provider_id.as_deref(),
     )?;
-    providers::list_models(&provider_cfg, api_key)
+    providers::list_models(&provider_cfg, api_key, &state.app_data_dir)
         .await
         .map_err(|e| e.to_string())
 }
@@ -174,7 +174,7 @@ async fn resolve_context_length(
         &state.app_data_dir,
         custom_provider_id.as_deref(),
     )?;
-    Ok(providers::get_context_length(&provider_cfg, api_key, &model).await)
+    Ok(providers::get_context_length(&provider_cfg, api_key, &model, &state.app_data_dir).await)
 }
 
 #[tauri::command]
@@ -216,6 +216,7 @@ fn list_custom_providers(
 /// de persistir qualquer coisa.
 #[tauri::command]
 async fn test_custom_provider(
+    state: State<'_, AppState>,
     base_url: String,
     api_key: Option<String>,
 ) -> Result<Vec<ModelInfo>, String> {
@@ -227,7 +228,7 @@ async fn test_custom_provider(
         supports_vision_override: false,
         context_length_override: None,
     };
-    providers::list_models(&cfg, api_key)
+    providers::list_models(&cfg, api_key, &state.app_data_dir)
         .await
         .map_err(|e| e.to_string())
 }
@@ -516,7 +517,7 @@ async fn check_vision_support(
         session.custom_provider_id.as_deref(),
     )
     .map_err(|e| e.to_string())?;
-    Ok(providers::supports_vision(&cfg, api_key, &session.model).await)
+    Ok(providers::supports_vision(&cfg, api_key, &session.model, &state.app_data_dir).await)
 }
 
 /// Lê um arquivo de imagem do disco e devolve como data URI base64, pronto

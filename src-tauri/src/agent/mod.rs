@@ -10,7 +10,6 @@ pub mod websearch;
 use crate::context;
 use crate::models::{
     ChatMessage, ExecutionMode, PendingEdit, ProviderConfig, ProviderKind, TaskItem,
-    DEFAULT_CONTEXT_LENGTH,
 };
 use crate::{providers, sandbox, sessions, skills, AppState};
 use anyhow::Result;
@@ -302,15 +301,19 @@ pub async fn run_turn(
     let mcp_servers = crate::mcp::load_servers(&app_data_dir).unwrap_or_default();
     tool_specs.extend(state.mcp_clients.tool_specs(&mcp_servers).await);
 
-    let has_vision = providers::supports_vision(&cfg, api_key.clone(), &session.model).await;
+    let has_vision = providers::supports_vision(&cfg, api_key.clone(), &session.model, &app_data_dir).await;
     if has_vision {
         tool_specs.extend(computer::tool_specs());
     }
 
-    let (context_length, is_estimated_length) = match session.context_length {
-        Some(len) => (len, false),
-        None => (DEFAULT_CONTEXT_LENGTH, true),
-    };
+    let provider_ctx_override = cfg.context_length_override;
+    let context_length = session.context_length.unwrap_or_else(|| {
+        providers::resolve_context_length(&app_data_dir, &session.model, provider_ctx_override)
+    });
+    let is_estimated_length = session.context_length.is_none();
+    if session.context_length.is_none() {
+        providers::save_context_length(&app_data_dir, &session.model, context_length);
+    }
 
     let mut tasks = sessions::load_tasks(&app_data_dir, &session_id)?;
     let mut recent_calls: Vec<(String, String)> = Vec::new();
