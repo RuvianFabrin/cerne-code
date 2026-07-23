@@ -184,6 +184,8 @@ export const api = {
     invoke<Session>("update_session_context_length", { id, contextLength }),
   extractAttachmentText: (path: string) => invoke<string>("extract_attachment_text", { path }),
   checkVisionSupport: (sessionId: string) => invoke<boolean>("check_vision_support", { sessionId }),
+  testVision: (kind: string, customProviderId: string | null, model: string) =>
+    invoke<boolean>("test_vision", { kind, customProviderId, model }),
   readImageAsDataUrl: (path: string) => invoke<string>("read_image_as_data_url", { path }),
   getSession: (id: string) => invoke<Session>("get_session", { id }),
   getSessionMessages: (id: string) => invoke<ChatMessage[]>("get_session_messages", { id }),

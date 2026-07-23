@@ -520,6 +520,73 @@ async fn check_vision_support(
     Ok(providers::supports_vision(&cfg, api_key, &session.model, &state.app_data_dir).await)
 }
 
+/// Envia uma imagem 1x1 pixel pro modelo e verifica se ele responde sem erro.
+/// Retorna Ok(true) se o modelo aceitou a imagem, Ok(false) se rejeitou,
+/// Err se houve erro de conexão/outro.
+#[tauri::command]
+async fn test_vision(
+    state: State<'_, AppState>,
+    kind: ProviderKind,
+    custom_provider_id: Option<String>,
+    model: String,
+) -> Result<bool, String> {
+    let cfg = state.config.lock().unwrap().clone();
+    let (provider_cfg, api_key) = build_provider_config(
+        kind,
+        &cfg,
+        &state.app_data_dir,
+        custom_provider_id.as_deref(),
+    )
+    .map_err(|e| e.to_string())?;
+
+    // 1x1 pixel PNG vermelho em base64
+    let tiny_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQABNjN9GQAAAABJRU5ErkJggg==";
+    let data_url = format!("data:image/png;base64,{tiny_png}");
+
+    let client = reqwest::Client::new();
+    let url = format!(
+        "{}/chat/completions",
+        provider_cfg.base_url.trim_end_matches('/')
+    );
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Reply with just: YES"},
+                {"type": "image_url", "image_url": {"url": data_url}}
+            ]
+        }],
+        "max_tokens": 5
+    });
+
+    let mut req = client.post(&url).json(&body);
+    if let Some(key) = api_key {
+        req = req.bearer_auth(key);
+    }
+
+    match req.send().await {
+        Ok(resp) => {
+            if resp.status().is_success() {
+                Ok(true)
+            } else {
+                let status = resp.status();
+                let body_text = resp.text().await.unwrap_or_default();
+                let lower = body_text.to_lowercase();
+                if lower.contains("image") || lower.contains("vision") || lower.contains("multimodal")
+                    || lower.contains("not support") || lower.contains("unsupported")
+                    || status.as_u16() == 400
+                {
+                    Ok(false)
+                } else {
+                    Err(format!("HTTP {status}: {body_text}"))
+                }
+            }
+        }
+        Err(e) => Err(format!("erro de conexao: {e}")),
+    }
+}
+
 /// Lê um arquivo de imagem do disco e devolve como data URI base64, pronto
 /// pra entrar no array `images` da mensagem — roda em `spawn_blocking` pelo
 /// mesmo motivo do `extract_attachment_text` (I/O + encode síncronos).
@@ -974,6 +1041,7 @@ pub fn run() {
             update_session_read_paths,
             extract_attachment_text,
             check_vision_support,
+            test_vision,
             read_image_as_data_url,
             get_session,
             get_session_messages,

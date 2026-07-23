@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from "vue";
 import Select from "primevue/select";
 import { PROVIDER_LABELS, useProviderStore } from "../stores/provider";
+import { api } from "../api";
 import type { ProviderKind } from "../api";
 
 // Purely prop-driven — the caller decides what "the current selection"
@@ -84,6 +85,28 @@ watch(
 );
 
 onMounted(() => refresh(props.provider, props.fork, props.customProviderId));
+
+const visionStatus = ref<"idle" | "checking" | "yes" | "no" | "error">("idle");
+const visionError = ref("");
+
+async function checkVision() {
+  if (!props.model) return;
+  visionStatus.value = "checking";
+  visionError.value = "";
+  try {
+    const result = await api.testVision(
+      props.provider,
+      props.provider === "custom" ? props.customProviderId : null,
+      props.model,
+    );
+    visionStatus.value = result ? "yes" : "no";
+  } catch (e) {
+    visionStatus.value = "error";
+    visionError.value = String(e);
+  }
+}
+
+watch(() => props.model, () => { visionStatus.value = "idle"; });
 </script>
 
 <template>
@@ -136,6 +159,20 @@ onMounted(() => refresh(props.provider, props.fork, props.customProviderId));
       size="small"
       filter
     />
+    <button
+      v-if="model && provider !== 'llama_cpp'"
+      class="vision-btn"
+      :class="visionStatus"
+      :disabled="visionStatus === 'checking'"
+      v-tooltip.top="visionStatus === 'yes' ? 'Modelo suporta imagens' : visionStatus === 'no' ? 'Modelo NÃO suporta imagens' : visionStatus === 'error' ? visionError : 'Testar se o modelo suporta imagens'"
+      @click="checkVision"
+    >
+      <span class="msi spin" v-if="visionStatus === 'checking'">progress_activity</span>
+      <span v-else-if="visionStatus === 'yes'">👁️</span>
+      <span v-else-if="visionStatus === 'no'">🚫</span>
+      <span v-else-if="visionStatus === 'error'">⚠️</span>
+      <span v-else class="msi">visibility</span>
+    </button>
     <button v-if="collapsible && model" class="collapse-btn" v-tooltip.top="'Recolher'" @click="expanded = false">
       <span class="msi">expand_less</span>
     </button>
@@ -239,6 +276,48 @@ onMounted(() => refresh(props.provider, props.fork, props.customProviderId));
 }
 
 .collapse-btn .msi {
+  font-size: 16px;
+}
+
+.vision-btn {
+  border: var(--cerne-border);
+  background: #ffffff;
+  border-radius: 8px;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #71717a;
+  flex-shrink: 0;
+  font-size: 14px;
+  transition: all 0.15s ease;
+}
+
+.vision-btn:hover {
+  background: #f4f4f5;
+}
+
+.vision-btn.yes {
+  background: #ecfdf3;
+  border-color: #86efac;
+  color: #15803d;
+}
+
+.vision-btn.no {
+  background: #fef2f2;
+  border-color: #fca5a5;
+  color: #b91c1c;
+}
+
+.vision-btn.error {
+  background: #fffbeb;
+  border-color: #fcd34d;
+  color: #b45309;
+}
+
+.vision-btn .msi {
   font-size: 16px;
 }
 </style>
