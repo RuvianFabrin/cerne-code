@@ -73,6 +73,8 @@ export const useSessionStore = defineStore("session", {
         if (sessionId !== this.currentId) return;
         if (status === "thinking" || status === "starting_server") {
           this.status = status;
+          const lastRunning = [...this.tasks].reverse().find((t: TaskItem) => t.status === "running");
+          if (lastRunning) lastRunning.status = "done";
         } else {
           this.status = "idle";
         }
@@ -82,6 +84,14 @@ export const useSessionStore = defineStore("session", {
         if (sessionId !== this.currentId) return;
         this.status = "running_tool";
         this.activeToolLabel = `${tool}(${args.slice(0, 60)})`;
+        const userTurns = this.messages.filter((m) => m.role === "user").length;
+        this.tasks.push({
+          id: `live-${Date.now()}`,
+          label: `${tool}(${args.slice(0, 80)})`,
+          status: "running",
+          detail: null,
+          turn: userTurns,
+        });
       });
 
       await onPendingEdit((edit) => {
