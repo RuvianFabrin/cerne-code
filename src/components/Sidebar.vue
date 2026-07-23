@@ -77,7 +77,11 @@ async function remove(id: string) {
           :class="{ active: s.id === sessionStore.currentId && props.view === 'chat' }"
           @click="editingId !== s.id && select(s.id)"
         >
-          <span class="msi">chat_bubble</span>
+          <span
+            class="msi session-icon"
+            :class="{ 'code-icon': s.project_root }"
+            v-tooltip.right="s.project_root ? `Código — ${s.project_root}` : 'Chat'"
+          >{{ s.project_root ? "terminal" : "chat_bubble" }}</span>
           <input
             v-if="editingId === s.id"
             ref="renameInputRef"
@@ -258,6 +262,10 @@ async function remove(id: string) {
   font-size: 16px;
   color: #a1a1aa;
   flex-shrink: 0;
+}
+
+.session-icon.code-icon {
+  color: var(--cerne-accent, #6366f1);
 }
 
 .session-rename-input {

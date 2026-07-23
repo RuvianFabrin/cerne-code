@@ -1,5 +1,6 @@
 # Bug: Mensagem grudada após parar execução
 
+> **Status:** ✅ Concluído (2026-07-23)
 > **Prioridade:** Alta (bug)
 > **Tipo:** Bug
 > **Arquivos prováveis:** `src/stores/session.ts`, `src/components/ChatView.vue`, `src-tauri/src/agent/mod.rs`

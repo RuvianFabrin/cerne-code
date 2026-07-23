@@ -12,7 +12,8 @@ mod sessions;
 mod skills;
 
 use models::{
-    AppConfig, ChatMessage, ExecutionMode, ModelInfo, PendingEdit, ProviderKind, Session, TaskItem,
+    AppConfig, ChatMessage, ExecutionMode, ModelInfo, PendingEdit, ProviderKind, ReasoningEffort,
+    Session, TaskItem,
 };
 use providers::llama_cpp::LlamaForkConfig;
 use skills::SkillMeta;
@@ -665,6 +666,9 @@ fn get_session_context_usage(
         &messages,
         context_length,
         is_estimated,
+        session.total_prompt_tokens,
+        session.total_completion_tokens,
+        session.total_requests,
     ))
 }
 
@@ -744,6 +748,11 @@ async fn send_message(
 /// `agent:error` com uma mensagem clara pra UI voltar pro estado idle, já que
 /// o próprio `run_turn` não roda mais nada depois do abort (nenhum código
 /// dele executa pra emitir seu próprio evento).
+///
+/// Se a última mensagem salva for do usuário (o assistente não chegou a
+/// salvar nada antes do abort), insere uma mensagem placeholder pra manter a
+/// alternância user/assistant — sem isso, a próxima mensagem do usuário
+/// aparece "grudada" na anterior (bug #03).
 #[tauri::command]
 fn cancel_turn(
     app: tauri::AppHandle,
@@ -754,6 +763,26 @@ fn cancel_turn(
     match handle {
         Some(handle) => {
             handle.abort();
+
+            // Garante alternância user/assistant no chat_log: se o turno foi
+            // cortado antes do assistente salvar qualquer coisa, a última
+            // mensagem ainda é do usuário — insere um placeholder.
+            if let Ok(mut messages) = sessions::load_messages(&state.app_data_dir, &session_id) {
+                let last_is_user = messages.last().map(|m| m.role == "user").unwrap_or(false);
+                if last_is_user {
+                    messages.push(ChatMessage {
+                        role: "assistant".to_string(),
+                        content: "[Execução cancelada pelo usuário]".to_string(),
+                        tool_calls: None,
+                        tool_call_id: None,
+                        name: None,
+                        images: Vec::new(),
+                        display_content: None,
+                    });
+                    let _ = sessions::save_messages(&state.app_data_dir, &session_id, &messages);
+                }
+            }
+
             let _ = tauri::Emitter::emit(
                 &app,
                 "agent:error",
@@ -871,6 +900,16 @@ fn update_session_context_length(
     context_length: Option<u32>,
 ) -> Result<Session, String> {
     sessions::update_context_length(&state.app_data_dir, &id, context_length)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_session_reasoning_effort(
+    state: State<AppState>,
+    id: String,
+    effort: Option<ReasoningEffort>,
+) -> Result<Session, String> {
+    sessions::update_reasoning_effort(&state.app_data_dir, &id, effort)
         .map_err(|e| e.to_string())
 }
 
@@ -1057,6 +1096,7 @@ pub fn run() {
             update_session_title,
             update_session_execution_mode,
             update_session_context_length,
+            update_session_reasoning_effort,
             update_session_read_paths,
             extract_attachment_text,
             check_vision_support,

@@ -1,5 +1,6 @@
 # Criação de documentos formatados (Excel, Word, PowerPoint)
 
+> **Status:** ⚠️ Parcial (Fase 1 — create_excel implementado)
 > **Prioridade:** Média (feature complexa, dividir em fases)
 > **Tipo:** Feature
 > **Arquivos prováveis:** `src-tauri/src/agent/tools.rs`, `src-tauri/src/docgen.rs` (NOVO), `Cargo.toml`

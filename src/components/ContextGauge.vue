@@ -111,12 +111,24 @@ function cancel() {
       </button>
     </div>
     <p v-if="error" class="context-edit-error">{{ error }}</p>
+    <span
+      v-if="!editing && usage.total_requests > 0"
+      class="usage-badges"
+      v-tooltip.top="`Tokens nesta sessão — Entrada: ${usage.total_prompt_tokens.toLocaleString('pt-BR')} | Saída: ${usage.total_completion_tokens.toLocaleString('pt-BR')} | Requisições: ${usage.total_requests}`"
+    >
+      ↓{{ formatTokens(usage.total_prompt_tokens) }}
+      ↑{{ formatTokens(usage.total_completion_tokens) }}
+      🔄{{ usage.total_requests }}
+    </span>
   </div>
 </template>
 
 <style scoped>
 .context-gauge-wrap {
   position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .context-gauge {
@@ -227,5 +239,14 @@ function cancel() {
   padding: 2px 6px;
   border-radius: 6px;
   border: 1px solid #fecaca;
+}
+
+.usage-badges {
+  font-size: 10px;
+  font-weight: 600;
+  color: #71717a;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
 }
 </style>

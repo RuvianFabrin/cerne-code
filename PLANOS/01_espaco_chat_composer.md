@@ -1,5 +1,6 @@
 # Ajuste: Espaço entre chat e composer
 
+> **Status:** ✅ Concluído
 > **Prioridade:** Alta (UX)
 > **Tipo:** Bug visual / CSS
 > **Arquivos prováveis:** `src/components/ChatView.vue`

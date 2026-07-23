@@ -1,4 +1,4 @@
-use crate::models::{ChatMessage, ExecutionMode, ProviderKind, Session, TaskItem};
+use crate::models::{ChatMessage, ExecutionMode, ProviderKind, ReasoningEffort, Session, TaskItem};
 use anyhow::Result;
 use std::path::PathBuf;
 
@@ -54,6 +54,10 @@ pub fn create_session(
         custom_provider_id,
         extra_read_paths: Vec::new(),
         execution_mode: ExecutionMode::default(),
+        reasoning_effort: None,
+        total_prompt_tokens: 0,
+        total_completion_tokens: 0,
+        total_requests: 0,
     };
     let dir = session_dir(app_data_dir, &id);
     std::fs::create_dir_all(&dir)?;
@@ -155,6 +159,39 @@ pub fn update_extra_read_paths(
 ) -> Result<Session> {
     let mut session = get_session(app_data_dir, id)?;
     session.extra_read_paths = extra_read_paths;
+    let dir = session_dir(app_data_dir, id);
+    std::fs::write(
+        dir.join("session.json"),
+        serde_json::to_string_pretty(&session)?,
+    )?;
+    Ok(session)
+}
+
+pub fn update_reasoning_effort(
+    app_data_dir: &PathBuf,
+    id: &str,
+    effort: Option<ReasoningEffort>,
+) -> Result<Session> {
+    let mut session = get_session(app_data_dir, id)?;
+    session.reasoning_effort = effort;
+    let dir = session_dir(app_data_dir, id);
+    std::fs::write(
+        dir.join("session.json"),
+        serde_json::to_string_pretty(&session)?,
+    )?;
+    Ok(session)
+}
+
+pub fn accumulate_usage(
+    app_data_dir: &PathBuf,
+    id: &str,
+    prompt_tokens: u32,
+    completion_tokens: u32,
+) -> Result<Session> {
+    let mut session = get_session(app_data_dir, id)?;
+    session.total_prompt_tokens += prompt_tokens;
+    session.total_completion_tokens += completion_tokens;
+    session.total_requests += 1;
     let dir = session_dir(app_data_dir, id);
     std::fs::write(
         dir.join("session.json"),

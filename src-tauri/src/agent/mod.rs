@@ -9,7 +9,7 @@ pub mod websearch;
 
 use crate::context;
 use crate::models::{
-    ChatMessage, ExecutionMode, PendingEdit, ProviderConfig, ProviderKind, TaskItem,
+    ChatMessage, ExecutionMode, PendingEdit, ProviderConfig, ProviderKind, Session, TaskItem,
 };
 use crate::{providers, sandbox, sessions, skills, AppState};
 use anyhow::Result;
@@ -228,7 +228,7 @@ pub async fn run_turn(
     display_text: Option<String>,
 ) -> Result<()> {
     let app_data_dir = state.app_data_dir.clone();
-    let session = sessions::get_session(&app_data_dir, &session_id)?;
+    let mut session = sessions::get_session(&app_data_dir, &session_id)?;
     let mut messages = sessions::load_messages(&app_data_dir, &session_id)?;
 
     if messages.is_empty() {
@@ -338,6 +338,7 @@ pub async fn run_turn(
             &messages,
             context_length,
             is_estimated_length,
+            &session,
         );
 
         let _ = app.emit(
@@ -348,7 +349,7 @@ pub async fn run_turn(
             },
         );
 
-        let assistant = providers::chat_stream(
+        let stream_result = providers::chat_stream(
             &app,
             &session_id,
             &cfg,
@@ -356,9 +357,22 @@ pub async fn run_turn(
             &session.model,
             &messages,
             &tool_specs,
+            session.reasoning_effort,
         )
         .await?;
 
+        if stream_result.usage.prompt_tokens > 0 || stream_result.usage.completion_tokens > 0 {
+            if let Ok(updated) = sessions::accumulate_usage(
+                &app_data_dir,
+                &session_id,
+                stream_result.usage.prompt_tokens,
+                stream_result.usage.completion_tokens,
+            ) {
+                session = updated;
+            }
+        }
+
+        let assistant = stream_result.message;
         let has_tool_calls = assistant
             .tool_calls
             .as_ref()
@@ -650,6 +664,7 @@ pub async fn run_turn(
         &messages,
         context_length,
         is_estimated_length,
+        &session,
     );
 
     let _ = app.emit(
@@ -667,8 +682,17 @@ fn emit_context_usage(
     messages: &[ChatMessage],
     context_length: u32,
     is_estimated_length: bool,
+    session: &Session,
 ) {
-    let usage = context::usage_for(session_id, messages, context_length, is_estimated_length);
+    let usage = context::usage_for(
+        session_id,
+        messages,
+        context_length,
+        is_estimated_length,
+        session.total_prompt_tokens,
+        session.total_completion_tokens,
+        session.total_requests,
+    );
     let _ = app.emit("agent:context", usage);
 }
 
@@ -750,8 +774,10 @@ async fn maybe_compact(
         model,
         &summary_messages,
         &[],
+        None,
     )
-    .await?;
+    .await?
+    .message;
 
     let mut new_messages: Vec<ChatMessage> = messages[..start_idx].to_vec();
     new_messages.push(ChatMessage {

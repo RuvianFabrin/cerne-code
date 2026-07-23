@@ -180,6 +180,18 @@ pub struct Session {
     /// qualquer momento pelo seletor ao lado do "+" no composer.
     #[serde(default)]
     pub execution_mode: ExecutionMode,
+    /// Esforço de raciocínio enviado ao modelo (modelos que não suportam
+    /// ignoram silenciosamente). None = não enviar o campo (default do modelo).
+    #[serde(default)]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    /// Tokens reais acumulados na sessão (entrada + saída + requisições).
+    /// Atualizados após cada chamada ao modelo, persistidos no session.json.
+    #[serde(default)]
+    pub total_prompt_tokens: u32,
+    #[serde(default)]
+    pub total_completion_tokens: u32,
+    #[serde(default)]
+    pub total_requests: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -188,6 +200,14 @@ pub enum ExecutionMode {
     Manual,
     #[default]
     Auto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningEffort {
+    Low,
+    Medium,
+    High,
 }
 
 /// Used when a provider doesn't report the model's context window and we
@@ -202,6 +222,12 @@ pub struct ContextUsage {
     pub context_length: u32,
     pub is_estimated_length: bool,
     pub percent: f32,
+    #[serde(default)]
+    pub total_prompt_tokens: u32,
+    #[serde(default)]
+    pub total_completion_tokens: u32,
+    #[serde(default)]
+    pub total_requests: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

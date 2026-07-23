@@ -1,5 +1,6 @@
 # Detecção automática de visão do modelo
 
+> **Status:** ✅ Concluído
 > **Prioridade:** Alta (pré-requisito para computer_use)
 > **Tipo:** Feature
 > **Arquivos prováveis:** `src-tauri/src/providers/mod.rs`, `src-tauri/src/lib.rs`, `src/components/NewSessionDialog.vue`, `src/components/ProviderPicker.vue`, `src/stores/provider.ts`

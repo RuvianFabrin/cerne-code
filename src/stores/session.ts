@@ -46,6 +46,10 @@ export const useSessionStore = defineStore("session", {
     error: "",
     contextUsage: null as ContextUsage | null,
     lastCompactionNote: "",
+    draftText: "",
+    computerUseWarned: false,
+    showComputerUseWarning: false,
+    screenshotCount: 0,
   }),
   actions: {
     async initListeners() {
@@ -92,6 +96,15 @@ export const useSessionStore = defineStore("session", {
           detail: null,
           turn: userTurns,
         }];
+        if (tool.startsWith("computer_use_")) {
+          if (["computer_use_screenshot", "computer_use_click", "computer_use_type_text", "computer_use_press_key", "computer_use_scroll", "computer_use_drag", "computer_use_right_click", "computer_use_double_click"].includes(tool)) {
+            this.screenshotCount++;
+          }
+          if (!this.computerUseWarned) {
+            this.computerUseWarned = true;
+            this.showComputerUseWarning = true;
+          }
+        }
       });
 
       await onPendingEdit((edit) => {
@@ -180,6 +193,9 @@ export const useSessionStore = defineStore("session", {
       this.status = "idle";
       this.lastCompactionNote = "";
       this.pendingQuestion = null;
+      this.computerUseWarned = false;
+      this.showComputerUseWarning = false;
+      this.screenshotCount = 0;
       await this.reloadCurrent();
     },
 
@@ -298,6 +314,14 @@ export const useSessionStore = defineStore("session", {
       this.contextUsage = await api.getSessionContextUsage(updated.id);
     },
 
+    async updateReasoningEffort(effort: "low" | "medium" | "high" | null) {
+      if (!this.currentId) return;
+      const updated = await api.updateSessionReasoningEffort(this.currentId, effort);
+      this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === updated.id);
+      if (idx !== -1) this.sessions[idx] = updated;
+    },
+
     async deleteSession(id: string) {
       await api.deleteSession(id);
       this.sessions = this.sessions.filter((s) => s.id !== id);
@@ -307,6 +331,10 @@ export const useSessionStore = defineStore("session", {
         this.messages = [];
         this.tasks = [];
       }
+    },
+
+    setDraft(text: string) {
+      this.draftText = text;
     },
   },
 });

@@ -1,0 +1,120 @@
+export interface ReadyPrompt {
+  id: string;
+  title: string;
+  tools: string[];
+  toolsLabel: string;
+  preview: string;
+  full: string;
+  scope: "chat" | "code" | "both";
+}
+
+export const READY_PROMPTS: ReadyPrompt[] = [
+  {
+    id: "search-summarize",
+    title: "Pesquisar e resumir um assunto",
+    tools: ["web_search", "web_fetch"],
+    toolsLabel: "🔍 Pesquisa web · 🌐 Lê página",
+    preview: "Pesquisa um tema na web e resume os principais pontos encontrados.",
+    full: "Pesquise na web sobre [ASSUNTO] e faça um resumo com os principais pontos encontrados. Cite as fontes.",
+    scope: "both",
+  },
+  {
+    id: "read-large-file",
+    title: "Ler arquivo grande por partes",
+    tools: ["read_file"],
+    toolsLabel: "📁 Lê arquivo",
+    preview: "Lê um arquivo grande em pedaços usando offset/limit, sem estourar o contexto.",
+    full: 'Leia o arquivo [CAMINHO] por partes: comece com read_file(path="[CAMINHO]", offset=0, limit=200) e vá avançando de 200 em 200 linhas. Resuma o conteúdo de cada seção.',
+    scope: "code",
+  },
+  {
+    id: "create-file",
+    title: "Criar um arquivo novo",
+    tools: ["write_file"],
+    toolsLabel: "✏️ Escreve arquivo",
+    preview: "Cria um arquivo novo com o conteúdo especificado no projeto.",
+    full: "Crie um arquivo em [CAMINHO] com o seguinte conteúdo:\n\n[DESCREVA O CONTEÚDO]",
+    scope: "code",
+  },
+  {
+    id: "edit-file",
+    title: "Editar trecho de um arquivo",
+    tools: ["edit_file"],
+    toolsLabel: "✏️ Edita arquivo",
+    preview: "Modifica um trecho específico de um arquivo existente.",
+    full: "No arquivo [CAMINHO], localize o trecho [TRECHO ANTIGO] e substitua por [TRECHO NOVO].",
+    scope: "code",
+  },
+  {
+    id: "run-command",
+    title: "Rodar um comando no terminal",
+    tools: ["run_command"],
+    toolsLabel: "⚡ Roda comando",
+    preview: "Executa um comando shell e mostra o resultado.",
+    full: "Rode o comando: [COMANDO]\n\nExplique o resultado.",
+    scope: "code",
+  },
+  {
+    id: "computer-use",
+    title: "Automatizar tarefa na tela",
+    tools: ["computer_use_screenshot", "computer_use_click", "computer_use_type_text"],
+    toolsLabel: "🖥️ Usa computador",
+    preview: "Automatiza cliques e digitação na tela para realizar uma tarefa repetitiva.",
+    full: "Use o computer_use para: [DESCREVA A TAREFA DE TELA].\n\nTire um screenshot primeiro para ver o estado atual, depois execute os passos necessários.",
+    scope: "both",
+  },
+  {
+    id: "create-excel",
+    title: "Gerar uma planilha Excel",
+    tools: ["create_excel"],
+    toolsLabel: "📊 Cria Excel",
+    preview: "Cria um arquivo .xlsx com abas, headers formatados e dados.",
+    full: 'Crie uma planilha Excel em [CAMINHO.xlsx] com as seguintes colunas: [COLUNAS].\nInclua os dados: [DADOS].\nFormate os headers em negrito e ative o filtro automático.',
+    scope: "both",
+  },
+  {
+    id: "refactor-code",
+    title: "Refatorar código com AST",
+    tools: ["ast_grep", "ast_edit"],
+    toolsLabel: "🔧 Busca AST · ✏️ Edita AST",
+    preview: "Encontra e substitui padrões de código usando análise sintática (AST).",
+    full: "Use ast_grep para encontrar todas as ocorrências de [PADRÃO] no projeto.\nDepois use ast_edit para substituir por [NOVO PADRÃO].",
+    scope: "code",
+  },
+  {
+    id: "subagent-task",
+    title: "Delegar tarefa paralela",
+    tools: ["task"],
+    toolsLabel: "🤖 Sub-agente",
+    preview: "Cria um sub-agente para resolver uma tarefa independente em paralelo.",
+    full: "Use a tool task para criar um sub-agente que: [DESCREVA A TAREFA].\nO sub-agente deve trabalhar de forma independente e reportar o resultado.",
+    scope: "code",
+  },
+  {
+    id: "plan-todo",
+    title: "Planejar tarefa complexa",
+    tools: ["todo_list"],
+    toolsLabel: "📋 Lista de tarefas",
+    preview: "Cria um plano visual com etapas para uma tarefa complexa.",
+    full: "Planeje a seguinte tarefa usando todo_list: [DESCREVA A TAREFA COMPLEXA].\nDivida em etapas claras e execute cada uma.",
+    scope: "both",
+  },
+  {
+    id: "grep-search",
+    title: "Buscar termo no projeto",
+    tools: ["grep"],
+    toolsLabel: "🔎 Busca texto",
+    preview: "Busca um termo ou regex em todos os arquivos do projeto.",
+    full: 'Busque por "[TERMO]" em todos os arquivos do projeto usando grep.\nListe os arquivos e linhas onde aparece.',
+    scope: "code",
+  },
+  {
+    id: "fetch-page",
+    title: "Extrair conteúdo de uma URL",
+    tools: ["web_fetch"],
+    toolsLabel: "🌐 Lê página",
+    preview: "Busca o conteúdo de uma página web e extrai as informações relevantes.",
+    full: "Acesse [URL] e extraia as informações principais da página. Resuma o conteúdo.",
+    scope: "both",
+  },
+];

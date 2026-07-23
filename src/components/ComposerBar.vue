@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
 import Select from "primevue/select";
 import { api } from "../api";
@@ -16,8 +16,21 @@ const EXECUTION_MODE_OPTIONS: { value: ExecutionMode; label: string }[] = [
   { value: "manual", label: "Manual" },
 ];
 
+const REASONING_EFFORT_OPTIONS: { value: "auto" | "low" | "medium" | "high"; label: string }[] = [
+  { value: "auto", label: "🧠 Auto" },
+  { value: "low", label: "🧠 Baixo" },
+  { value: "medium", label: "🧠 Médio" },
+  { value: "high", label: "🧠 Alto" },
+];
+
 function onExecutionModeChange(mode: ExecutionMode) {
   sessionStore.updateExecutionMode(mode);
+}
+
+const reasoningEffort = computed(() => sessionStore.currentSession?.reasoning_effort ?? "auto");
+
+function onReasoningEffortChange(value: "auto" | "low" | "medium" | "high") {
+  sessionStore.updateReasoningEffort(value === "auto" ? null : value);
 }
 
 interface Attachment {
@@ -321,6 +334,19 @@ function onKeydown(e: KeyboardEvent) {
     submit();
   }
 }
+
+watch(
+  () => sessionStore.draftText,
+  (draft) => {
+    if (!draft) return;
+    text.value = draft;
+    sessionStore.draftText = "";
+    nextTick(() => {
+      grow();
+      textareaRef.value?.focus();
+    });
+  },
+);
 </script>
 
 <template>
@@ -388,6 +414,17 @@ function onKeydown(e: KeyboardEvent) {
           class="execution-mode-select"
           size="small"
           v-tooltip.top="'Manual: cada ação pede aprovação. Automático: roda livre, cancelável a qualquer momento.'"
+        />
+        <Select
+          v-if="sessionStore.currentSession"
+          :modelValue="reasoningEffort"
+          @update:modelValue="(v) => onReasoningEffortChange(v as 'auto' | 'low' | 'medium' | 'high')"
+          :options="REASONING_EFFORT_OPTIONS"
+          optionLabel="label"
+          optionValue="value"
+          class="execution-mode-select"
+          size="small"
+          v-tooltip.top="'Esforço de raciocínio do modelo (modelos que não suportam ignoram)'"
         />
       </div>
       <div class="footer-right">

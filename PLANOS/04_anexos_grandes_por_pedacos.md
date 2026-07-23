@@ -1,5 +1,6 @@
 # Anexos grandes: salvar como .md e ler por pedaços
 
+> **Status:** ✅ Concluído (Fase 1)
 > **Prioridade:** Alta (economia de tokens + suporte a arquivos grandes)
 > **Tipo:** Otimização / Feature
 > **Arquivos prováveis:** `src-tauri/src/attachments.rs`, `src-tauri/src/agent/tools.rs`, `src-tauri/src/agent/mod.rs`, `src/stores/session.ts`

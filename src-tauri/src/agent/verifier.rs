@@ -114,8 +114,10 @@ pub async fn run(
             model,
             &messages,
             &tool_specs,
+            None,
         )
-        .await?;
+        .await?
+        .message;
         let has_tool_calls = assistant
             .tool_calls
             .as_ref()

@@ -41,6 +41,9 @@ pub fn usage_for(
     messages: &[ChatMessage],
     context_length: u32,
     is_estimated_length: bool,
+    total_prompt_tokens: u32,
+    total_completion_tokens: u32,
+    total_requests: u32,
 ) -> ContextUsage {
     let used_tokens = estimate_messages_tokens(messages);
     ContextUsage {
@@ -49,5 +52,8 @@ pub fn usage_for(
         context_length,
         is_estimated_length,
         percent: (used_tokens as f32 / context_length as f32) * 100.0,
+        total_prompt_tokens,
+        total_completion_tokens,
+        total_requests,
     }
 }

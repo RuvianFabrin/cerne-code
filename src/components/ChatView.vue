@@ -57,6 +57,13 @@ const timeline = computed<TimelineItem[]>(() => {
       }
     }
   });
+  // Tasks "live": empurrados pelo onToolCall mas ainda sem mensagem de
+  // assistente correspondente em sessionStore.messages. Sem isso os steps
+  // só aparecem depois que o turno termina e o reloadCurrent recarrega.
+  const liveTasks = allTasks.slice(taskOffset);
+  if (liveTasks.length > 0) {
+    items.push({ kind: "steps", key: "live-steps", tasks: liveTasks });
+  }
   return items;
 });
 
@@ -75,7 +82,7 @@ const thinkingTail = computed(() => {
 });
 
 watch(
-  () => [sessionStore.messages.length, sessionStore.streamingText, sessionStore.thinkingText],
+  () => [sessionStore.messages.length, sessionStore.streamingText, sessionStore.thinkingText, sessionStore.tasks.length],
   async () => {
     await nextTick();
     scrollRef.value?.scrollTo({ top: scrollRef.value.scrollHeight });
@@ -101,6 +108,14 @@ watch(
             </template>
             <AskCard />
             <PermissionCard />
+            <div v-if="sessionStore.showComputerUseWarning" class="computer-use-warning">
+              <span class="msi">warning</span>
+              <div class="warning-text">
+                <strong>Automação de tela ativa</strong>
+                <p>Cada screenshot consome ~1.500 tokens de visão. Uma sessão com 20 ações pode usar ~30K tokens extras.</p>
+              </div>
+              <button class="warning-dismiss" @click="sessionStore.showComputerUseWarning = false">Entendi</button>
+            </div>
             <div v-if="sessionStore.streamingText" class="row">
               <div class="bubble streaming">
                 <MarkdownContent :content="sessionStore.streamingText" />
@@ -245,6 +260,61 @@ watch(
 
 .compaction-note .msi {
   font-size: 14px;
+}
+
+.computer-use-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin: 6px 0;
+  font-size: 12px;
+  color: #92400e;
+}
+
+.computer-use-warning .msi {
+  font-size: 18px;
+  color: #d97706;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.warning-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.warning-text strong {
+  font-weight: 600;
+  display: block;
+  margin-bottom: 2px;
+}
+
+.warning-text p {
+  margin: 0;
+  line-height: 1.5;
+  color: #a16207;
+}
+
+.warning-dismiss {
+  border: 1px solid #fde68a;
+  background: #ffffff;
+  color: #92400e;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: inherit;
+  flex-shrink: 0;
+}
+
+.warning-dismiss:hover {
+  background: #fef3c7;
 }
 
 @keyframes spin {

@@ -2,7 +2,8 @@ pub mod custom;
 pub mod llama_cpp;
 
 use crate::models::{
-    ChatMessage, ModelInfo, ProviderConfig, ProviderKind, ToolCall, ToolCallFunction, ToolSpec,
+    ChatMessage, ModelInfo, ProviderConfig, ProviderKind, ReasoningEffort, ToolCall,
+    ToolCallFunction, ToolSpec,
 };
 use anyhow::{anyhow, Result};
 use futures_util::StreamExt;
@@ -13,6 +14,17 @@ use tauri::{AppHandle, Emitter};
 pub struct StreamTokenEvent {
     pub session_id: String,
     pub delta: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, serde::Serialize)]
+pub struct StreamUsage {
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+}
+
+pub struct StreamResult {
+    pub message: ChatMessage,
+    pub usage: StreamUsage,
 }
 
 /// Tabela hardcoded de context lengths conhecidos por modelo.
@@ -132,7 +144,8 @@ pub async fn chat_stream(
     model: &str,
     messages: &[ChatMessage],
     tools: &[ToolSpec],
-) -> Result<ChatMessage> {
+    reasoning_effort: Option<ReasoningEffort>,
+) -> Result<StreamResult> {
     let client = reqwest::Client::new();
     let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
 
@@ -143,6 +156,13 @@ pub async fn chat_stream(
     });
     if !tools.is_empty() {
         body["tools"] = serde_json::to_value(tools)?;
+    }
+    if let Some(effort) = reasoning_effort {
+        body["reasoning_effort"] = json!(match effort {
+            ReasoningEffort::Low => "low",
+            ReasoningEffort::Medium => "medium",
+            ReasoningEffort::High => "high",
+        });
     }
 
     let mut req = client.post(&url).json(&body);
@@ -162,6 +182,7 @@ pub async fn chat_stream(
     let mut content = String::new();
     // index -> (id, name, arguments) accumulator for streamed tool calls
     let mut tool_calls: Vec<(String, String, String)> = Vec::new();
+    let mut usage = StreamUsage::default();
 
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
@@ -226,6 +247,18 @@ pub async fn chat_stream(
                     }
                 }
             }
+
+            // Usage vem num chunk separado (choices vazio ou ausente) ou no
+            // último chunk antes de [DONE] — providers OpenAI-compatible
+            // variam onde colocam, então checamos em todo chunk.
+            if let Some(u) = parsed["usage"].as_object() {
+                if let Some(pt) = u["prompt_tokens"].as_u64() {
+                    usage.prompt_tokens = pt as u32;
+                }
+                if let Some(ct) = u["completion_tokens"].as_u64() {
+                    usage.completion_tokens = ct as u32;
+                }
+            }
         }
     }
 
@@ -249,14 +282,17 @@ pub async fn chat_stream(
         )
     };
 
-    Ok(ChatMessage {
-        role: "assistant".to_string(),
-        content,
-        tool_calls: final_tool_calls,
-        tool_call_id: None,
-        name: None,
-        images: Vec::new(),
-        display_content: None,
+    Ok(StreamResult {
+        message: ChatMessage {
+            role: "assistant".to_string(),
+            content,
+            tool_calls: final_tool_calls,
+            tool_call_id: None,
+            name: None,
+            images: Vec::new(),
+            display_content: None,
+        },
+        usage,
     })
 }
 

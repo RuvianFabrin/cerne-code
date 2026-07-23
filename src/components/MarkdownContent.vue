@@ -1,27 +1,65 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { renderMarkdown } from "../markdown";
 import { api } from "../api";
 
 const props = defineProps<{ content: string; dark?: boolean }>();
 
 const html = computed(() => renderMarkdown(props.content));
+const bodyRef = ref<HTMLElement | null>(null);
 
 // Links de resposta em markdown vao pro navegador padrao do SO em vez de
 // navegar a janela do proprio app pra fora - sem isso, clicar num link some
 // com a UI inteira do Cerne Code (o WebView navega o app inteiro).
 function onClick(e: MouseEvent) {
-  const link = (e.target as HTMLElement).closest("a");
+  const target = e.target as HTMLElement;
+
+  const copyBtn = target.closest(".code-copy-btn");
+  if (copyBtn) {
+    const pre = copyBtn.closest("pre");
+    const code = pre?.querySelector("code")?.textContent ?? pre?.textContent ?? "";
+    navigator.clipboard.writeText(code).then(() => {
+      const icon = copyBtn.querySelector(".msi");
+      if (icon) icon.textContent = "check";
+      copyBtn.classList.add("copied");
+      setTimeout(() => {
+        copyBtn.classList.remove("copied");
+        if (icon) icon.textContent = "content_copy";
+      }, 1500);
+    });
+    return;
+  }
+
+  const link = target.closest("a");
   if (!link) return;
   const href = link.getAttribute("href");
   if (!href) return;
   e.preventDefault();
   api.openExternalUrl(href);
 }
+
+function injectCopyButtons() {
+  const el = bodyRef.value;
+  if (!el) return;
+  el.querySelectorAll("pre").forEach((pre) => {
+    if (pre.querySelector(".code-copy-btn")) return;
+    const btn = document.createElement("button");
+    btn.className = "code-copy-btn";
+    btn.title = "Copiar";
+    btn.innerHTML = '<span class="msi">content_copy</span>';
+    pre.style.position = "relative";
+    pre.appendChild(btn);
+  });
+}
+
+watch(html, async () => {
+  await nextTick();
+  injectCopyButtons();
+});
 </script>
 
 <template>
-  <div class="markdown-body" :class="{ dark: props.dark }" v-html="html" @click="onClick" />
+  <div ref="bodyRef" class="markdown-body" :class="{ dark: props.dark }" v-html="html" @click="onClick" />
 </template>
 
 <style scoped>
@@ -109,6 +147,40 @@ function onClick(e: MouseEvent) {
   border: 1px solid #e4e4e7;
   border-radius: 8px;
   overflow-x: auto;
+  position: relative;
+}
+
+.markdown-body :deep(.code-copy-btn) {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  border: none;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 6px;
+  padding: 4px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #52525b;
+}
+
+.markdown-body :deep(pre:hover .code-copy-btn) {
+  opacity: 1;
+}
+
+.markdown-body :deep(.code-copy-btn:hover) {
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.markdown-body :deep(.code-copy-btn .msi) {
+  font-size: 14px;
+}
+
+.markdown-body :deep(.code-copy-btn.copied) {
+  color: #16a34a;
 }
 
 .markdown-body :deep(pre code) {
@@ -183,6 +255,13 @@ function onClick(e: MouseEvent) {
 .markdown-body.dark :deep(pre) {
   background: #27272a;
   border-color: #3f3f46;
+}
+.markdown-body.dark :deep(.code-copy-btn) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #a1a1aa;
+}
+.markdown-body.dark :deep(.code-copy-btn:hover) {
+  background: rgba(255, 255, 255, 0.2);
 }
 .markdown-body.dark :deep(pre code) {
   color: #e4e4e7;

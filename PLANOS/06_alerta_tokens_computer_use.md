@@ -1,5 +1,6 @@
 # Alerta de consumo de tokens no computer_use
 
+> **Status:** ✅ Concluído (2026-07-23)
 > **Prioridade:** Média (UX / transparência)
 > **Tipo:** Feature UX
 > **Arquivos prováveis:** `src/components/ChatView.vue`, `src/stores/session.ts`, `src-tauri/src/agent/mod.rs`
