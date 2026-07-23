@@ -56,6 +56,7 @@ xcap = "0.9"
 image = "0.25"
 tokio-tungstenite = { version = "0.24", features = ["connect"] }
 rust_xlsxwriter = "0.84"
+printpdf = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

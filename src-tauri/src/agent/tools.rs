@@ -261,6 +261,58 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
                 "required": ["path", "sheets"]
             }),
         ),
+        spec(
+            "create_word",
+            "Cria um documento Word (.docx) com titulos, paragrafos, tabelas e listas formatadas. Escreve direto no disco (nao usa sandbox). Use quando o usuario pedir para criar documentos Word.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Caminho relativo do arquivo .docx a criar" },
+                    "elements": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": { "type": "string", "enum": ["heading", "paragraph", "table", "list"], "description": "Tipo do elemento" },
+                                "level": { "type": "integer", "description": "Nivel do titulo (1-3, so pra heading)" },
+                                "text": { "type": "string", "description": "Texto do paragrafo ou titulo" },
+                                "bold": { "type": "boolean", "description": "Texto em negrito (so pra paragraph)" },
+                                "headers": { "type": "array", "items": { "type": "string" }, "description": "Headers da tabela (so pra table)" },
+                                "rows": { "type": "array", "items": { "type": "array", "items": { "type": "string" } }, "description": "Linhas da tabela (so pra table)" },
+                                "items": { "type": "array", "items": { "type": "string" }, "description": "Itens da lista (so pra list)" }
+                            },
+                            "required": ["type"]
+                        }
+                    }
+                },
+                "required": ["path", "elements"]
+            }),
+        ),
+        spec(
+            "create_pdf",
+            "Cria um documento PDF com titulos, paragrafos e tabelas. Escreve direto no disco (nao usa sandbox). Use quando o usuario pedir para criar relatorios ou documentos PDF.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Caminho relativo do arquivo .pdf a criar" },
+                    "title": { "type": "string", "description": "Titulo do documento (opcional)" },
+                    "elements": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "type": { "type": "string", "enum": ["heading", "paragraph", "table"], "description": "Tipo do elemento" },
+                                "text": { "type": "string", "description": "Texto do paragrafo ou titulo" },
+                                "headers": { "type": "array", "items": { "type": "string" }, "description": "Headers da tabela (so pra table)" },
+                                "rows": { "type": "array", "items": { "type": "array", "items": { "type": "string" } }, "description": "Linhas da tabela (so pra table)" }
+                            },
+                            "required": ["type"]
+                        }
+                    }
+                },
+                "required": ["path", "elements"]
+            }),
+        ),
     ]
 }
 
@@ -885,6 +937,166 @@ async fn execute_project_tool(
             }
             workbook.save(&target)?;
             Ok(ok(format!("Arquivo Excel criado: {}", target.display())))
+        }
+        "create_word" => {
+            use docx_rust::document::{Paragraph, Table, TableCell, TableRow};
+            use docx_rust::Docx;
+
+            let rel = args["path"]
+                .as_str()
+                .ok_or_else(|| anyhow!("path obrigatorio"))?;
+            let target = resolve_path(project_root, rel)?;
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let elements = args["elements"]
+                .as_array()
+                .ok_or_else(|| anyhow!("elements obrigatorio (array)"))?;
+
+            let mut docx = Docx::default();
+            for el in elements {
+                match el["type"].as_str().unwrap_or("") {
+                    "heading" => {
+                        let text = el["text"].as_str().unwrap_or("");
+                        docx.document.push(Paragraph::default().push_text(text));
+                    }
+                    "paragraph" => {
+                        let text = el["text"].as_str().unwrap_or("");
+                        docx.document.push(Paragraph::default().push_text(text));
+                    }
+                    "table" => {
+                        let mut table = Table::default();
+                        if let Some(headers) = el["headers"].as_array() {
+                            let mut row = TableRow::default();
+                            for h in headers {
+                                row = row.push_cell(TableCell::paragraph(
+                                    Paragraph::default().push_text(h.as_str().unwrap_or("")),
+                                ));
+                            }
+                            table = table.push_row(row);
+                        }
+                        if let Some(rows) = el["rows"].as_array() {
+                            for r in rows {
+                                let mut row = TableRow::default();
+                                if let Some(cells) = r.as_array() {
+                                    for c in cells {
+                                        row = row.push_cell(TableCell::paragraph(
+                                            Paragraph::default().push_text(c.as_str().unwrap_or("")),
+                                        ));
+                                    }
+                                }
+                                table = table.push_row(row);
+                            }
+                        }
+                        docx.document.push(table);
+                    }
+                    "list" => {
+                        if let Some(items) = el["items"].as_array() {
+                            for item in items {
+                                let text = item.as_str().unwrap_or("");
+                                docx.document.push(Paragraph::default().push_text(format!("• {text}")));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            docx.write_file(&target)
+                .map_err(|e| anyhow!("falha ao salvar docx: {e}"))?;
+            Ok(ok(format!("Documento Word criado: {}", target.display())))
+        }
+        "create_pdf" => {
+            use printpdf::*;
+            use std::io::BufWriter;
+
+            let rel = args["path"]
+                .as_str()
+                .ok_or_else(|| anyhow!("path obrigatorio"))?;
+            let target = resolve_path(project_root, rel)?;
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let elements = args["elements"]
+                .as_array()
+                .ok_or_else(|| anyhow!("elements obrigatorio (array)"))?;
+
+            let (doc, page1, layer1) = PdfDocument::new(
+                args["title"].as_str().unwrap_or("Documento"),
+                Mm(210.0),
+                Mm(297.0),
+                "Page 1",
+            );
+            let layer = doc.get_page(page1).get_layer(layer1);
+            let font = doc.add_builtin_font(BuiltinFont::Helvetica)?;
+            let font_bold = doc.add_builtin_font(BuiltinFont::HelveticaBold)?;
+
+            let mut y: f64 = 277.0;
+            let left_margin = 20.0;
+            let line_height = 6.0;
+
+            for el in elements {
+                if y < 20.0 {
+                    break;
+                }
+                match el["type"].as_str().unwrap_or("") {
+                    "heading" => {
+                        let text = el["text"].as_str().unwrap_or("");
+                        layer.use_text(text, 16.0, Mm(left_margin), Mm(y), &font_bold);
+                        y -= line_height * 1.8;
+                    }
+                    "paragraph" => {
+                        let text = el["text"].as_str().unwrap_or("");
+                        for line in text.lines() {
+                            if y < 20.0 { break; }
+                            layer.use_text(line, 11.0, Mm(left_margin), Mm(y), &font);
+                            y -= line_height;
+                        }
+                        y -= line_height * 0.5;
+                    }
+                    "table" => {
+                        let headers: Vec<&str> = el["headers"]
+                            .as_array()
+                            .map(|hs| hs.iter().map(|h| h.as_str().unwrap_or("")).collect())
+                            .unwrap_or_default();
+                        let rows: Vec<Vec<&str>> = el["rows"]
+                            .as_array()
+                            .map(|rs| {
+                                rs.iter()
+                                    .map(|r| {
+                                        r.as_array()
+                                            .map(|cs| cs.iter().map(|c| c.as_str().unwrap_or("")).collect())
+                                            .unwrap_or_default()
+                                    })
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                        let col_count = headers.len().max(rows.first().map(|r| r.len()).unwrap_or(0));
+                        if col_count > 0 {
+                            let col_width = 170.0 / col_count as f64;
+                            if !headers.is_empty() {
+                                for (ci, h) in headers.iter().enumerate() {
+                                    layer.use_text(*h, 10.0, Mm(left_margin + ci as f64 * col_width), Mm(y), &font_bold);
+                                }
+                                y -= line_height * 1.5;
+                            }
+                            for row in &rows {
+                                if y < 20.0 { break; }
+                                for (ci, cell) in row.iter().enumerate() {
+                                    layer.use_text(*cell, 10.0, Mm(left_margin + ci as f64 * col_width), Mm(y), &font);
+                                }
+                                y -= line_height;
+                            }
+                            y -= line_height * 0.5;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            let file = std::fs::File::create(&target)?;
+            doc.save(&mut BufWriter::new(file))
+                .map_err(|e| anyhow!("falha ao salvar pdf: {e}"))?;
+            Ok(ok(format!("Documento PDF criado: {}", target.display())))
         }
         "write_file" => {
             let rel = args["path"]
