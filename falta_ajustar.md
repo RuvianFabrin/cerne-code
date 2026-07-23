@@ -6,3 +6,5 @@ Hoje ao incluir arquivos, ele manda o arquivo todo para o LLM, naõ precisa, bas
 Seria legal o usuario pedir algo tipo, crie um excel, crie um word, crie um powerpoint, e meu aplicativo ter a capacidade de criar com formatações, sei que é complexo, mas se for dividindo pra conquistar dá pra fazer.
 Você pode criar nessa pasta um .md para cada funcionalidade, e dentro fases, e em cada fase as tarefas que devem ser feitas.
 No "computer_use", quando o llm decidir usar, mostra um alerta para o usuario que isso pode consumir tokens além do normal (para o usuario não ter suspresas). Mas antes de implementar, você acha que essas chamadas consome muito token ou não?
+Ver se tem uma forma de trocar o reasoning do modelo escolhido (low, midle, high).
+Uma vez que eu coloco os tokens de um modelo no chat, ele salva essa informamação, e traz automaticamente para os próximos chat com esse nome de modelo.

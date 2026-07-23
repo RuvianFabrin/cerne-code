@@ -37,6 +37,7 @@ const text = ref("");
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const attachments = ref<Attachment[]>([]);
 const visionSupported = ref(false);
+const savingAttachments = ref(false);
 
 function fileName(path: string) {
   return path.split(/[/\\]/).filter(Boolean).pop() ?? path;
@@ -199,8 +200,20 @@ function buildMessageWithAttachments(userText: string): string {
   if (ready.length === 0) return userText;
   const blocks = ready.map((a) => {
     const charCount = a.text!.length;
+    const lineCount = a.text!.split("\n").length;
     if (a.savedMdPath) {
-      return `### Anexo: ${a.name} (${charCount} caracteres)\nArquivo extraído salvo em: ${a.savedMdPath}\nUse read_file(path="${a.savedMdPath}", offset=0, limit=200) para ler por partes. Use offset+limit para navegar pelo conteúdo.`;
+      return [
+        `### Anexo: ${a.name}`,
+        `O arquivo do usuario foi convertido para .md e salvo em: ${a.savedMdPath}`,
+        `Tamanho: ${charCount.toLocaleString("pt-BR")} caracteres, ${lineCount.toLocaleString("pt-BR")} linhas.`,
+        ``,
+        `INSTRUCOES DE LEITURA (obrigatorio seguir):`,
+        `- NAO tente ler o arquivo inteiro de uma vez — ele e grande e vai desperdicar tokens.`,
+        `- Use read_file(path="${a.savedMdPath}", offset=0, limit=200) para ler as primeiras 200 linhas.`,
+        `- Use offset+limit para navegar pelo conteudo aos poucos (ex: offset=200, limit=200 para as proximas 200 linhas).`,
+        `- Use grep(pattern="...", path="${a.savedMdPath}") para buscar termos especificos sem ler tudo.`,
+        `- Combine grep + read_file com offset/limit para encontrar e ler so as partes relevantes.`,
+      ].join("\n");
     }
     return `### Anexo: ${a.name}\n\n${a.text}`;
   });
@@ -278,16 +291,17 @@ async function submit() {
   if (!value.trim() || sessionStore.status !== "idle") return;
   if (attachments.value.some((a) => a.status === "loading")) return;
   const sessionId = sessionStore.currentId;
-  if (sessionId) {
-    for (const a of attachments.value) {
-      if (a.kind === "document" && a.status === "ready" && a.text && !a.savedMdPath) {
-        try {
-          a.savedMdPath = await api.saveAttachmentMd(sessionId, a.name, a.text);
-        } catch {
-          // fallback: embed full text if save fails
-        }
+  const docsToSave = attachments.value.filter((a) => a.kind === "document" && a.status === "ready" && a.text && !a.savedMdPath);
+  if (sessionId && docsToSave.length > 0) {
+    savingAttachments.value = true;
+    for (const a of docsToSave) {
+      try {
+        a.savedMdPath = await api.saveAttachmentMd(sessionId, a.name, a.text!);
+      } catch {
+        // fallback: embed full text if save fails
       }
     }
+    savingAttachments.value = false;
   }
   const message = buildMessageWithAttachments(value);
   const displayText = buildDisplayText(value);
@@ -328,18 +342,22 @@ function onKeydown(e: KeyboardEvent) {
         v-for="a in attachments"
         :key="a.id"
         class="attachment-chip"
-        :class="{ error: a.status === 'error' }"
+        :class="{ error: a.status === 'error', saving: savingAttachments && a.kind === 'document' && a.status === 'ready' && !a.savedMdPath }"
         v-tooltip.top="a.status === 'error' ? `${a.path}\n${a.error}` : a.path"
       >
-        <span class="msi spin" v-if="a.status === 'loading'">progress_activity</span>
+        <span class="msi spin" v-if="a.status === 'loading' || (savingAttachments && a.kind === 'document' && !a.savedMdPath)">progress_activity</span>
         <span class="msi" v-else-if="a.status === 'error'">error</span>
         <img v-else-if="a.kind === 'image' && a.dataUrl" :src="a.dataUrl" class="attachment-thumb" alt="" />
         <span class="msi" v-else>description</span>
-        <span class="attachment-name">{{ a.name }}</span>
-        <button class="attachment-remove" v-tooltip.top="'Remover'" @click="removeAttachment(a.id)">
+        <span class="attachment-name">{{ savingAttachments && a.kind === 'document' && !a.savedMdPath ? 'Otimizando...' : a.name }}</span>
+        <button class="attachment-remove" v-tooltip.top="'Remover'" @click="removeAttachment(a.id)" :disabled="savingAttachments">
           <span class="msi">close</span>
         </button>
       </div>
+    </div>
+    <div v-if="savingAttachments" class="saving-hint">
+      <span class="msi spin">progress_activity</span>
+      Aguarde, otimizando arquivo para economizar tokens...
     </div>
     <textarea
       ref="textareaRef"
@@ -373,7 +391,7 @@ function onKeydown(e: KeyboardEvent) {
         <button
           v-if="sessionStore.status === 'idle'"
           class="send-btn"
-          :disabled="!text.trim()"
+          :disabled="!text.trim() || savingAttachments"
           @click="submit"
         >
           <span class="msi">arrow_upward</span>
@@ -445,6 +463,25 @@ function onKeydown(e: KeyboardEvent) {
 .attachment-chip.error {
   background: #fee2e2;
   color: #b91c1c;
+}
+
+.attachment-chip.saving {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.saving-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 400;
+  color: #3b82f6;
+  padding: 4px 0 8px;
+}
+
+.saving-hint .msi {
+  font-size: 14px;
 }
 
 .attachment-chip .msi {
