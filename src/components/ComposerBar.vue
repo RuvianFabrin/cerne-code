@@ -30,6 +30,7 @@ interface Attachment {
   dataUrl?: string;
   error?: string;
   savedMdPath?: string;
+  saved?: boolean;
 }
 
 const sessionStore = useSessionStore();
@@ -297,11 +298,13 @@ async function submit() {
     for (const a of docsToSave) {
       try {
         a.savedMdPath = await api.saveAttachmentMd(sessionId, a.name, a.text!);
+        a.saved = true;
       } catch {
         // fallback: embed full text if save fails
       }
     }
     savingAttachments.value = false;
+    await new Promise((r) => setTimeout(r, 1200));
   }
   const message = buildMessageWithAttachments(value);
   const displayText = buildDisplayText(value);
@@ -342,14 +345,15 @@ function onKeydown(e: KeyboardEvent) {
         v-for="a in attachments"
         :key="a.id"
         class="attachment-chip"
-        :class="{ error: a.status === 'error', saving: savingAttachments && a.kind === 'document' && a.status === 'ready' && !a.savedMdPath }"
+        :class="{ error: a.status === 'error', saving: savingAttachments && a.kind === 'document' && a.status === 'ready' && !a.savedMdPath, saved: a.saved }"
         v-tooltip.top="a.status === 'error' ? `${a.path}\n${a.error}` : a.path"
       >
         <span class="msi spin" v-if="a.status === 'loading' || (savingAttachments && a.kind === 'document' && !a.savedMdPath)">progress_activity</span>
+        <span class="msi" v-else-if="a.saved">check_circle</span>
         <span class="msi" v-else-if="a.status === 'error'">error</span>
         <img v-else-if="a.kind === 'image' && a.dataUrl" :src="a.dataUrl" class="attachment-thumb" alt="" />
         <span class="msi" v-else>description</span>
-        <span class="attachment-name">{{ savingAttachments && a.kind === 'document' && !a.savedMdPath ? 'Otimizando...' : a.name }}</span>
+        <span class="attachment-name">{{ savingAttachments && a.kind === 'document' && !a.savedMdPath ? 'Otimizando...' : a.saved ? 'Pronto!' : a.name }}</span>
         <button class="attachment-remove" v-tooltip.top="'Remover'" @click="removeAttachment(a.id)" :disabled="savingAttachments">
           <span class="msi">close</span>
         </button>
@@ -468,6 +472,15 @@ function onKeydown(e: KeyboardEvent) {
 .attachment-chip.saving {
   background: #eff6ff;
   color: #1d4ed8;
+}
+
+.attachment-chip.saved {
+  background: #ecfdf3;
+  color: #15803d;
+}
+
+.attachment-chip.saved .msi {
+  color: #22c55e;
 }
 
 .saving-hint {
