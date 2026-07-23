@@ -29,6 +29,7 @@ interface Attachment {
   text?: string;
   dataUrl?: string;
   error?: string;
+  savedMdPath?: string;
 }
 
 const sessionStore = useSessionStore();
@@ -196,7 +197,13 @@ function removeAttachment(id: string) {
 function buildMessageWithAttachments(userText: string): string {
   const ready = attachments.value.filter((a) => a.kind === "document" && a.status === "ready" && a.text);
   if (ready.length === 0) return userText;
-  const blocks = ready.map((a) => `### Anexo: ${a.name}\n\n${a.text}`);
+  const blocks = ready.map((a) => {
+    const charCount = a.text!.length;
+    if (a.savedMdPath) {
+      return `### Anexo: ${a.name} (${charCount} caracteres)\nArquivo extraído salvo em: ${a.savedMdPath}\nUse read_file(path="${a.savedMdPath}", offset=0, limit=200) para ler por partes. Use offset+limit para navegar pelo conteúdo.`;
+    }
+    return `### Anexo: ${a.name}\n\n${a.text}`;
+  });
   return `${blocks.join("\n\n")}\n\n${userText}`;
 }
 
@@ -270,6 +277,18 @@ async function submit() {
   const value = text.value;
   if (!value.trim() || sessionStore.status !== "idle") return;
   if (attachments.value.some((a) => a.status === "loading")) return;
+  const sessionId = sessionStore.currentId;
+  if (sessionId) {
+    for (const a of attachments.value) {
+      if (a.kind === "document" && a.status === "ready" && a.text && !a.savedMdPath) {
+        try {
+          a.savedMdPath = await api.saveAttachmentMd(sessionId, a.name, a.text);
+        } catch {
+          // fallback: embed full text if save fails
+        }
+      }
+    }
+  }
   const message = buildMessageWithAttachments(value);
   const displayText = buildDisplayText(value);
   const images = collectImages();

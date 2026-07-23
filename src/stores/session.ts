@@ -113,7 +113,20 @@ export const useSessionStore = defineStore("session", {
 
       await onAgentError((sessionId, message) => {
         if (sessionId !== this.currentId) return;
+        if (this.streamingText.trim()) {
+          this.messages.push({
+            role: "assistant",
+            content: this.streamingText,
+            tool_calls: undefined,
+            tool_call_id: undefined,
+            name: undefined,
+            images: [],
+            display_content: undefined,
+          });
+        }
         this.status = "idle";
+        this.streamingText = "";
+        this.thinkingText = "";
         this.error = message;
         this.pendingPermission = null;
       });

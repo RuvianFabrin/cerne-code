@@ -235,6 +235,32 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
                 "required": ["task_summary", "how_to_verify"]
             }),
         ),
+        spec(
+            "create_excel",
+            "Cria um arquivo Excel (.xlsx) com uma ou mais abas, headers formatados, dados, largura de colunas e auto-filtro. Escreve direto no disco (nao usa sandbox). Use quando o usuario pedir para criar planilhas.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Caminho relativo do arquivo .xlsx a criar" },
+                    "sheets": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string", "description": "Nome da aba" },
+                                "headers": { "type": "array", "items": { "type": "string" }, "description": "Nomes das colunas (linha de header com negrito)" },
+                                "rows": { "type": "array", "items": { "type": "array", "items": { "type": "string" } }, "description": "Linhas de dados" },
+                                "column_widths": { "type": "array", "items": { "type": "number" }, "description": "Largura de cada coluna (opcional)" },
+                                "freeze_header": { "type": "boolean", "description": "Congelar linha de header (default: true)" },
+                                "auto_filter": { "type": "boolean", "description": "Adicionar auto-filtro nos headers (default: true)" }
+                            },
+                            "required": ["name", "headers", "rows"]
+                        }
+                    }
+                },
+                "required": ["path", "sheets"]
+            }),
+        ),
     ]
 }
 
@@ -680,7 +706,9 @@ pub async fn execute_tool(
             let project_root = project_root.ok_or_else(|| {
                 anyhow!("esta ferramenta precisa de uma pasta de projeto associada a sessao")
             })?;
-            execute_project_tool(name, args, project_root, extra_read_paths, background_jobs).await
+            let mut extended_paths = extra_read_paths.to_vec();
+            extended_paths.push(app_data_dir.to_string_lossy().to_string());
+            execute_project_tool(name, args, project_root, &extended_paths, background_jobs).await
         }
     }
 }
@@ -801,6 +829,63 @@ async fn execute_project_tool(
             Ok(ok(result))
         }
         "list_background" => Ok(ok(background_jobs.list())),
+        "create_excel" => {
+            let rel = args["path"]
+                .as_str()
+                .ok_or_else(|| anyhow!("path obrigatorio"))?;
+            let target = resolve_path(project_root, rel)?;
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut workbook = rust_xlsxwriter::Workbook::new();
+            let sheets = args["sheets"]
+                .as_array()
+                .ok_or_else(|| anyhow!("sheets obrigatorio (array)"))?;
+            for (si, sheet_def) in sheets.iter().enumerate() {
+                let sheet_name = sheet_def["name"].as_str().unwrap_or("Sheet1");
+                let worksheet = if si == 0 {
+                    workbook.worksheet_from_index(0)?
+                } else {
+                    workbook.add_worksheet()
+                };
+                worksheet.set_name(sheet_name)?;
+                let headers = sheet_def["headers"]
+                    .as_array()
+                    .ok_or_else(|| anyhow!("sheet '{sheet_name}': headers obrigatorio"))?;
+                let bold = rust_xlsxwriter::Format::new().set_bold();
+                for (ci, h) in headers.iter().enumerate() {
+                    worksheet.write_with_format(0, ci as u16, h.as_str().unwrap_or(""), &bold)?;
+                }
+                let freeze = sheet_def["freeze_header"].as_bool().unwrap_or(true);
+                if freeze {
+                    worksheet.set_freeze_panes(1, 0)?;
+                }
+                let auto_filter = sheet_def["auto_filter"].as_bool().unwrap_or(true);
+                if let Some(rows) = sheet_def["rows"].as_array() {
+                    for (ri, row) in rows.iter().enumerate() {
+                        if let Some(cells) = row.as_array() {
+                            for (ci, cell) in cells.iter().enumerate() {
+                                worksheet.write(ri as u32 + 1, ci as u16, cell.as_str().unwrap_or(""))?;
+                            }
+                        }
+                    }
+                    if auto_filter && !headers.is_empty() && !rows.is_empty() {
+                        let last_col = (headers.len() - 1) as u16;
+                        let last_row = rows.len() as u32;
+                        worksheet.autofilter(0, 0, last_row, last_col)?;
+                    }
+                }
+                if let Some(widths) = sheet_def["column_widths"].as_array() {
+                    for (ci, w) in widths.iter().enumerate() {
+                        if let Some(width) = w.as_f64() {
+                            worksheet.set_column_width(ci as u16, width)?;
+                        }
+                    }
+                }
+            }
+            workbook.save(&target)?;
+            Ok(ok(format!("Arquivo Excel criado: {}", target.display())))
+        }
         "write_file" => {
             let rel = args["path"]
                 .as_str()

@@ -198,6 +198,8 @@ export const api = {
   listPendingEdits: (sessionId: string) => invoke<PendingEdit[]>("list_pending_edits", { sessionId }),
   acceptEdit: (editId: string) => invoke<void>("accept_edit", { editId }),
   rejectEdit: (editId: string) => invoke<void>("reject_edit", { editId }),
+  saveAttachmentMd: (sessionId: string, filename: string, text: string) =>
+    invoke<string>("save_attachment_md", { sessionId, filename, text }),
   answerAsk: (id: string, answer: string) => invoke<void>("answer_ask", { id, answer }),
   answerPermission: (id: string, approved: boolean) => invoke<void>("answer_permission", { id, approved }),
 

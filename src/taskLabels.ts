@@ -31,6 +31,7 @@ const TOOL_VERBS: Record<string, string> = {
   computer_use_browser_execute: "Executou no browser (CDP)",
   computer_use_get_window_state: "Leu árvore de acessibilidade",
   computer_use_click_element: "Clicou em elemento (AX)",
+  create_excel: "Criou planilha Excel",
 };
 
 export function toolNameFromLabel(rawLabel: string): string {

@@ -285,11 +285,18 @@ pub async fn execute(name: &str, args: &Value, app_data_dir: &Path) -> Result<Co
 
 fn rgba_to_base64(img: image::RgbaImage) -> Result<String> {
     use base64::Engine;
-    let dyn_img = image::DynamicImage::ImageRgba8(img);
+    let mut dyn_img = image::DynamicImage::ImageRgba8(img);
+    if dyn_img.width() > 1280 {
+        let ratio = 1280.0 / dyn_img.width() as f32;
+        let new_h = (dyn_img.height() as f32 * ratio) as u32;
+        dyn_img = dyn_img.resize(1280, new_h, image::imageops::FilterType::Triangle);
+    }
+    let rgb = dyn_img.to_rgb8();
     let mut buf = std::io::Cursor::new(Vec::new());
-    dyn_img
-        .write_to(&mut buf, image::ImageFormat::Png)
-        .map_err(|e| anyhow!("falha ao codificar PNG: {e}"))?;
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 80);
+    encoder
+        .encode(&rgb, rgb.width(), rgb.height(), image::ColorType::Rgb8.into())
+        .map_err(|e| anyhow!("falha ao codificar JPEG: {e}"))?;
     Ok(base64::engine::general_purpose::STANDARD.encode(buf.into_inner()))
 }
 

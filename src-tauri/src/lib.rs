@@ -715,6 +715,30 @@ fn reject_edit(state: State<AppState>, edit_id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn save_attachment_md(
+    state: State<AppState>,
+    session_id: String,
+    filename: String,
+    text: String,
+) -> Result<String, String> {
+    let session_dir = state.app_data_dir.join("sessions").join(&session_id);
+    let attach_dir = session_dir.join("attachments");
+    std::fs::create_dir_all(&attach_dir).map_err(|e| format!("falha ao criar pasta de anexos: {e}"))?;
+    let safe_name = filename
+        .replace(['/', '\\', ':', '*', '?', '"', '<', '>', '|'], "_")
+        .trim_end_matches('.')
+        .to_string();
+    let md_name = format!("{safe_name}.md");
+    let md_path = attach_dir.join(&md_name);
+    let char_count = text.chars().count();
+    let header = format!(
+        "---\nsource: \"{filename}\"\nextracted_chars: {char_count}\n---\n\n# Conteúdo extraído de {filename}\n\n"
+    );
+    std::fs::write(&md_path, format!("{header}{text}")).map_err(|e| format!("falha ao salvar anexo: {e}"))?;
+    Ok(md_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
 fn answer_ask(state: State<AppState>, id: String, answer: String) -> Result<(), String> {
     let sender = state
         .pending_questions
@@ -960,6 +984,7 @@ pub fn run() {
             list_pending_edits,
             accept_edit,
             reject_edit,
+            save_attachment_md,
             answer_ask,
             answer_permission,
             list_skills,

@@ -160,12 +160,13 @@ watch(
 .chat-scroll {
   flex: 1;
   overflow-y: auto;
+  scroll-padding-bottom: 24px;
 }
 
 .chat-inner {
   max-width: 820px;
   margin: 0 auto;
-  padding: 24px 24px 80px;
+  padding: 24px 24px 24px;
 }
 
 .composer-wrap {
