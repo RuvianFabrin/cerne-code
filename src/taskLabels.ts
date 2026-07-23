@@ -27,6 +27,10 @@ const TOOL_VERBS: Record<string, string> = {
   computer_use_press_key: "Pressionou tecla",
   computer_use_list_windows: "Listou janelas abertas",
   computer_use_scroll: "Rolou a tela",
+  computer_use_authorize: "Autorizou aplicação",
+  computer_use_browser_execute: "Executou no browser (CDP)",
+  computer_use_get_window_state: "Leu árvore de acessibilidade",
+  computer_use_click_element: "Clicou em elemento (AX)",
 };
 
 export function toolNameFromLabel(rawLabel: string): string {

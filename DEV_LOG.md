@@ -490,7 +490,7 @@ Cada tarefa abaixo pode ser feita em um chat separado. Leia a tarefa inteira ant
 
 ---
 
-#### Tarefa 12.4.7 — Tool `computer_use_get_window_state` (AX tree)
+#### Tarefa 12.4.7 — Tool `computer_use_get_window_state` (AX tree) ✅ IMPLEMENTADO
 
 **Objetivo:** Ler a árvore de acessibilidade de uma janela, retornando elementos clicáveis com índices estáveis.
 
@@ -521,7 +521,7 @@ Cada tarefa abaixo pode ser feita em um chat separado. Leia a tarefa inteira ant
 
 ---
 
-#### Tarefa 12.4.8 — Tool `computer_use_browser_execute` (CDP)
+#### Tarefa 12.4.8 — Tool `computer_use_browser_execute` (CDP) ✅ IMPLEMENTADO
 
 **Objetivo:** Interagir com páginas web em browsers Chromium/Edge via CDP, sem precisar de coordenadas de tela.
 
@@ -551,7 +551,7 @@ Cada tarefa abaixo pode ser feita em um chat separado. Leia a tarefa inteira ant
 
 ---
 
-#### Tarefa 12.4.9 — Autorização de janelas + UI de permissão
+#### Tarefa 12.4.9 — Autorização de janelas + UI de permissão ✅ IMPLEMENTADO
 
 **Objetivo:** Sistema de permissão para controlar quais janelas o computer_use pode interagir.
 
@@ -596,9 +596,9 @@ Cada tarefa abaixo pode ser feita em um chat separado. Leia a tarefa inteira ant
 | 5 | 12.4.5 — press_key | 12.4.1 | Médio | ✅ |
 | 6 | 12.4.4 — type_text | 12.4.1 | Médio | ✅ |
 | 7 | 12.4.3 — click (com verificação) | 12.4.2 | **Alto** | ✅ |
-| 8 | 12.4.9 — Autorização de janelas | 12.4.3 | Médio | ⬜ |
-| 9 | 12.4.8 — Browser CDP | Nenhuma | Baixo | ⬜ |
-| 10 | 12.4.7 — AX tree | 12.4.6 | **Alto** | ⬜ |
+| 8 | 12.4.9 — Autorização de janelas | 12.4.3 | Médio | ✅ |
+| 9 | 12.4.8 — Browser CDP | Nenhuma | Baixo | ✅ |
+| 10 | 12.4.7 — AX tree | 12.4.6 | **Alto** | ✅ |
 
 ### 12.6 — O que NÃO fazer
 

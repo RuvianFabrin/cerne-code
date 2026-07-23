@@ -2,9 +2,12 @@ use crate::models::{ToolFunctionSpec, ToolSpec};
 use anyhow::{anyhow, Result};
 use enigo::{Enigo, Key, Keyboard, Mouse, Settings};
 use serde_json::{json, Value};
+use std::path::Path;
+use std::sync::Mutex;
 use std::time::Instant;
 
-static LAST_ACTION: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+static LAST_ACTION: Mutex<Option<Instant>> = Mutex::new(None);
+static AUTHORIZED_APPS: Mutex<Option<Vec<String>>> = Mutex::new(None);
 const MIN_ACTION_INTERVAL_MS: u128 = 800;
 
 fn rate_limit() -> Result<()> {
@@ -18,6 +21,101 @@ fn rate_limit() -> Result<()> {
     }
     *last = Some(Instant::now());
     Ok(())
+}
+
+fn auth_file_path(app_data_dir: &Path) -> std::path::PathBuf {
+    app_data_dir.join("computer_permissions.json")
+}
+
+fn load_authorized(app_data_dir: &Path) -> Vec<String> {
+    let mut cache = AUTHORIZED_APPS.lock().unwrap();
+    if let Some(ref list) = *cache {
+        return list.clone();
+    }
+    let path = auth_file_path(app_data_dir);
+    let list: Vec<String> = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    *cache = Some(list.clone());
+    list
+}
+
+fn save_authorized(app_data_dir: &Path, list: &[String]) -> Result<()> {
+    let path = auth_file_path(app_data_dir);
+    std::fs::write(&path, serde_json::to_string_pretty(list)?)?;
+    let mut cache = AUTHORIZED_APPS.lock().unwrap();
+    *cache = Some(list.to_vec());
+    Ok(())
+}
+
+pub fn authorize_app(app_data_dir: &Path, exe_name: &str) -> Result<()> {
+    let mut list = load_authorized(app_data_dir);
+    let lower = exe_name.to_lowercase();
+    if !list.iter().any(|a| a.to_lowercase() == lower) {
+        list.push(lower);
+        save_authorized(app_data_dir, &list)?;
+    }
+    Ok(())
+}
+
+pub fn is_authorized(app_data_dir: &Path, exe_name: &str) -> bool {
+    let list = load_authorized(app_data_dir);
+    let lower = exe_name.to_lowercase();
+    list.iter().any(|a| a.to_lowercase() == lower)
+}
+
+#[cfg(windows)]
+fn get_foreground_exe_name() -> Result<String> {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+    use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_NAME_WIN32};
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd == HWND::default() {
+            return Err(anyhow!("nao foi possivel obter janela em primeiro plano"));
+        }
+        let mut pid: u32 = 0;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return Err(anyhow!("nao foi possivel obter PID da janela em primeiro plano"));
+        }
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+            .map_err(|e| anyhow!("falha ao abrir processo {pid}: {e}"))?;
+        let mut buf = [0u16; 260];
+        let mut size = buf.len() as u32;
+        let pwstr = windows::core::PWSTR(buf.as_mut_ptr());
+        let ok = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, pwstr, &mut size);
+        let _ = windows::Win32::Foundation::CloseHandle(handle);
+        if ok.is_err() {
+            return Err(anyhow!("falha ao obter caminho do executavel"));
+        }
+        let full_path = String::from_utf16_lossy(&buf[..size as usize]);
+        let exe_name = full_path
+            .split(['\\', '/'])
+            .last()
+            .unwrap_or(&full_path)
+            .to_string();
+        Ok(exe_name)
+    }
+}
+
+#[cfg(not(windows))]
+fn get_foreground_exe_name() -> Result<String> {
+    Err(anyhow!("get_foreground_exe_name nao implementado nesta plataforma"))
+}
+
+fn check_authorization(app_data_dir: &Path) -> Result<()> {
+    let exe = get_foreground_exe_name()?;
+    if is_authorized(app_data_dir, &exe) {
+        return Ok(());
+    }
+    Err(anyhow!(
+        "APLICACAO NAO AUTORIZADA: o processo em primeiro plano e '{exe}'. \
+         Use computer_use_authorize para autorizar esta aplicacao antes de interagir com ela. \
+         Antes de autorizar, use ask para confirmar com o usuario: 'Posso interagir com {exe}?'"
+    ))
 }
 
 pub fn tool_specs() -> Vec<ToolSpec> {
@@ -90,6 +188,54 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                 "required": ["direction"]
             }),
         ),
+        spec(
+            "computer_use_authorize",
+            "Autoriza o computer_use a interagir com uma aplicacao (pelo nome do executavel, ex: chrome.exe). Use ANTES de click/type/key/scroll. Sempre confirme com o usuario via ask antes de autorizar.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "exe_name": { "type": "string", "description": "Nome do executavel (ex: chrome.exe, code.exe, notepad.exe)" }
+                },
+                "required": ["exe_name"]
+            }),
+        ),
+        spec(
+            "computer_use_browser_execute",
+            "Interage com paginas web via CDP (Chrome DevTools Protocol). Funciona com Chrome/Edge/Brave que tenham --remote-debugging-port ativado. Acoes: execute_javascript, click_element (CSS), get_text, query_dom. Nao requer visao nem autorizacao de janela.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "action": { "type": "string", "enum": ["execute_javascript", "click_element", "get_text", "query_dom"] },
+                    "javascript": { "type": "string", "description": "JS a executar (para execute_javascript)" },
+                    "css_selector": { "type": "string", "description": "Seletor CSS (para click_element / query_dom)" },
+                    "port": { "type": "integer", "description": "Porta CDP (default: 9222)" }
+                },
+                "required": ["action"]
+            }),
+        ),
+        spec(
+            "computer_use_get_window_state",
+            "Le a arvore de acessibilidade (UI Automation) de uma janela. Retorna elementos interativos com [element_index N] para usar em computer_use_click_element. Mais confiavel que coordenadas pixel. So Windows.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "pid": { "type": "integer", "description": "PID do processo" }
+                },
+                "required": ["pid"]
+            }),
+        ),
+        spec(
+            "computer_use_click_element",
+            "Clica em um elemento da arvore de acessibilidade pelo element_index (obtido via computer_use_get_window_state). Mais confiavel que coordenadas pixel. So Windows.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "pid": { "type": "integer", "description": "PID do processo" },
+                    "element_index": { "type": "integer", "description": "Indice do elemento (de get_window_state)" }
+                },
+                "required": ["pid", "element_index"]
+            }),
+        ),
     ]
 }
 
@@ -109,14 +255,30 @@ pub struct ComputerOutcome {
     pub screenshot_base64: Option<String>,
 }
 
-pub fn execute(name: &str, args: &Value) -> Result<ComputerOutcome> {
+pub async fn execute(name: &str, args: &Value, app_data_dir: &Path) -> Result<ComputerOutcome> {
     match name {
         "computer_use_screenshot" => exec_screenshot(args),
-        "computer_use_click" => exec_click(args),
-        "computer_use_type_text" => exec_type_text(args),
-        "computer_use_press_key" => exec_press_key(args),
         "computer_use_list_windows" => exec_list_windows(),
-        "computer_use_scroll" => exec_scroll(args),
+        "computer_use_authorize" => exec_authorize(args, app_data_dir),
+        "computer_use_click" => {
+            check_authorization(app_data_dir)?;
+            exec_click(args)
+        }
+        "computer_use_type_text" => {
+            check_authorization(app_data_dir)?;
+            exec_type_text(args)
+        }
+        "computer_use_press_key" => {
+            check_authorization(app_data_dir)?;
+            exec_press_key(args)
+        }
+        "computer_use_scroll" => {
+            check_authorization(app_data_dir)?;
+            exec_scroll(args)
+        }
+        "computer_use_browser_execute" => exec_browser(args).await,
+        "computer_use_get_window_state" => exec_ax_tree(args),
+        "computer_use_click_element" => exec_click_element(args),
         _ => Err(anyhow!("computer_use tool desconhecida: {name}")),
     }
 }
@@ -168,6 +330,17 @@ fn capture_screen_base64(window_title: Option<&str>) -> Result<(String, u32, u32
         "monitor_primario=\"{mon_name}\" res={mon_w}x{mon_h} offset_virtual=({mon_x},{mon_y}) total_monitores={total} screenshot={w}x{h}px"
     );
     Ok((b64, w, h, meta))
+}
+
+fn exec_authorize(args: &Value, app_data_dir: &Path) -> Result<ComputerOutcome> {
+    let exe_name = args["exe_name"]
+        .as_str()
+        .ok_or_else(|| anyhow!("exe_name obrigatorio"))?;
+    authorize_app(app_data_dir, exe_name)?;
+    Ok(ComputerOutcome {
+        text: format!("Aplicacao '{exe_name}' autorizada para computer_use. Voce agora pode usar click, type, key e scroll quando esta aplicacao estiver em primeiro plano."),
+        screenshot_base64: None,
+    })
 }
 
 fn exec_screenshot(args: &Value) -> Result<ComputerOutcome> {
@@ -496,5 +669,316 @@ fn exec_scroll(args: &Value) -> Result<ComputerOutcome> {
     Ok(ComputerOutcome {
         text: format!("Scroll {direction} ({amount}) executado. Screenshot pos-scroll ({w}x{h}px) anexado."),
         screenshot_base64: Some(b64),
+    })
+}
+
+// ── CDP Browser ──────────────────────────────────────────────────────
+
+async fn cdp_rpc(ws_url: &str, method: &str, params: Value) -> Result<Value> {
+    use futures_util::{SinkExt, StreamExt};
+    use tokio_tungstenite::connect_async;
+
+    let (ws_stream, _) = connect_async(ws_url)
+        .await
+        .map_err(|e| anyhow!("falha ao conectar CDP WebSocket: {e}"))?;
+    let (mut write, mut read) = ws_stream.split();
+
+    let id = rand_id();
+    let msg = json!({ "id": id, "method": method, "params": params });
+    write
+        .send(tokio_tungstenite::tungstenite::Message::Text(
+            msg.to_string().into(),
+        ))
+        .await
+        .map_err(|e| anyhow!("falha ao enviar CDP: {e}"))?;
+
+    while let Some(Ok(frame)) = read.next().await {
+        if let tokio_tungstenite::tungstenite::Message::Text(text) = frame {
+            let resp: Value = serde_json::from_str(&text).unwrap_or_default();
+            if resp["id"].as_u64() == Some(id) {
+                if let Some(err) = resp.get("error") {
+                    return Err(anyhow!("CDP error: {err}"));
+                }
+                return Ok(resp["result"].clone());
+            }
+        }
+    }
+    Err(anyhow!("CDP WebSocket fechado sem resposta"))
+}
+
+fn rand_id() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos() as u64
+}
+
+async fn exec_browser(args: &Value) -> Result<ComputerOutcome> {
+    let action = args["action"]
+        .as_str()
+        .ok_or_else(|| anyhow!("action obrigatorio"))?;
+    let port = args["port"].as_u64().unwrap_or(9222);
+
+    let targets_url = format!("http://127.0.0.1:{port}/json");
+    let resp = reqwest::get(&targets_url)
+        .await
+        .map_err(|e| anyhow!("falha ao conectar CDP em porta {port}: {e}. O browser esta rodando com --remote-debugging-port={port}?"))?;
+    let targets: Value = resp
+        .json()
+        .await
+        .map_err(|e| anyhow!("resposta CDP invalida: {e}"))?;
+    let ws_url = targets
+        .as_array()
+        .and_then(|arr| arr.iter().find(|t| t["type"] == "page"))
+        .and_then(|t| t["webSocketDebuggerUrl"].as_str())
+        .ok_or_else(|| anyhow!("nenhum alvo CDP (page) encontrado"))?
+        .to_string();
+
+    let result = match action {
+        "execute_javascript" => {
+            let js = args["javascript"]
+                .as_str()
+                .ok_or_else(|| anyhow!("javascript obrigatorio para execute_javascript"))?;
+            let r = cdp_rpc(
+                &ws_url,
+                "Runtime.evaluate",
+                json!({ "expression": js, "returnByValue": true, "awaitPromise": true }),
+            )
+            .await?;
+            if let Some(exc) = r.get("exceptionDetails") {
+                format!("EXCEPTION: {exc}")
+            } else {
+                serde_json::to_string_pretty(&r["result"]["value"]).unwrap_or_default()
+            }
+        }
+        "get_text" => {
+            let r = cdp_rpc(
+                &ws_url,
+                "Runtime.evaluate",
+                json!({ "expression": "document.body.innerText", "returnByValue": true }),
+            )
+            .await?;
+            r["result"]["value"]
+                .as_str()
+                .unwrap_or("")
+                .chars()
+                .take(8000)
+                .collect()
+        }
+        "query_dom" => {
+            let sel = args["css_selector"]
+                .as_str()
+                .ok_or_else(|| anyhow!("css_selector obrigatorio para query_dom"))?;
+            let js = format!(
+                "JSON.stringify(Array.from(document.querySelectorAll('{sel}')).slice(0,50).map(e => ({{tag: e.tagName, id: e.id, class: e.className, text: (e.textContent||'').slice(0,100)}})))"
+            );
+            let r = cdp_rpc(
+                &ws_url,
+                "Runtime.evaluate",
+                json!({ "expression": js, "returnByValue": true }),
+            )
+            .await?;
+            r["result"]["value"]
+                .as_str()
+                .unwrap_or("[]")
+                .to_string()
+        }
+        "click_element" => {
+            let sel = args["css_selector"]
+                .as_str()
+                .ok_or_else(|| anyhow!("css_selector obrigatorio para click_element"))?;
+            let js = format!("document.querySelector('{sel}')?.click(); 'clicked'");
+            let r = cdp_rpc(
+                &ws_url,
+                "Runtime.evaluate",
+                json!({ "expression": js, "returnByValue": true }),
+            )
+            .await?;
+            format!(
+                "click em '{sel}': {}",
+                r["result"]["value"].as_str().unwrap_or("erro")
+            )
+        }
+        _ => return Err(anyhow!("action desconhecida: {action}")),
+    };
+
+    Ok(ComputerOutcome {
+        text: format!("CDP {action} (porta {port}): {result}"),
+        screenshot_base64: None,
+    })
+}
+
+// ── AX Tree (UI Automation) ─────────────────────────────────────────
+
+#[cfg(windows)]
+fn exec_ax_tree(args: &Value) -> Result<ComputerOutcome> {
+    use uiautomation::UIAutomation;
+
+    let pid = args["pid"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("pid obrigatorio"))? as u32;
+
+    let automation =
+        UIAutomation::new().map_err(|e| anyhow!("falha ao inicializar UI Automation: {e}"))?;
+    let root = automation
+        .get_root_element()
+        .map_err(|e| anyhow!("falha ao obter root element: {e}"))?;
+
+    let condition = automation
+        .create_property_condition(
+            uiautomation::types::UIProperty::ProcessId,
+            uiautomation::variants::Variant::from(pid as i32),
+            None,
+        )
+        .map_err(|e| anyhow!("falha ao criar condicao: {e}"))?;
+
+    let elements = root
+        .find_all(uiautomation::types::TreeScope::Descendants, &condition)
+        .unwrap_or_default();
+
+    let mut lines: Vec<String> = Vec::new();
+    let mut idx = 0;
+    for el in elements.iter().take(200) {
+        let name = el.get_name().unwrap_or_default();
+        let ctrl = el
+            .get_control_type()
+            .map(|c| format!("{:?}", c))
+            .unwrap_or_default();
+        let is_actionable = matches!(
+            el.get_control_type(),
+            Ok(uiautomation::types::ControlType::Button)
+                | Ok(uiautomation::types::ControlType::Edit)
+                | Ok(uiautomation::types::ControlType::CheckBox)
+                | Ok(uiautomation::types::ControlType::ComboBox)
+                | Ok(uiautomation::types::ControlType::Hyperlink)
+                | Ok(uiautomation::types::ControlType::ListItem)
+                | Ok(uiautomation::types::ControlType::MenuItem)
+                | Ok(uiautomation::types::ControlType::TabItem)
+                | Ok(uiautomation::types::ControlType::TreeItem)
+        );
+        if is_actionable || !name.is_empty() {
+            let label = if name.is_empty() {
+                ctrl.clone()
+            } else {
+                format!("{ctrl} \"{name}\"")
+            };
+            if is_actionable {
+                lines.push(format!("[{idx}] {label}"));
+            } else {
+                lines.push(format!("    {label}"));
+            }
+            idx += 1;
+        }
+    }
+
+    if lines.is_empty() {
+        return Ok(ComputerOutcome {
+            text: format!("Nenhum elemento encontrado para PID {pid}."),
+            screenshot_base64: None,
+        });
+    }
+
+    Ok(ComputerOutcome {
+        text: format!(
+            "AX tree para PID {pid} ({} elementos):\n{}",
+            lines.len(),
+            lines.join("\n")
+        ),
+        screenshot_base64: None,
+    })
+}
+
+#[cfg(not(windows))]
+fn exec_ax_tree(_args: &Value) -> Result<ComputerOutcome> {
+    Ok(ComputerOutcome {
+        text: "AX tree so disponivel no Windows.".to_string(),
+        screenshot_base64: None,
+    })
+}
+
+#[cfg(windows)]
+fn exec_click_element(args: &Value) -> Result<ComputerOutcome> {
+    use uiautomation::UIAutomation;
+
+    let pid = args["pid"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("pid obrigatorio"))? as u32;
+    let element_index = args["element_index"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("element_index obrigatorio"))? as usize;
+
+    let automation =
+        UIAutomation::new().map_err(|e| anyhow!("falha ao inicializar UI Automation: {e}"))?;
+    let root = automation
+        .get_root_element()
+        .map_err(|e| anyhow!("falha ao obter root element: {e}"))?;
+
+    let condition = automation
+        .create_property_condition(
+            uiautomation::types::UIProperty::ProcessId,
+            uiautomation::variants::Variant::from(pid as i32),
+            None,
+        )
+        .map_err(|e| anyhow!("falha ao criar condicao: {e}"))?;
+
+    let elements = root
+        .find_all(uiautomation::types::TreeScope::Descendants, &condition)
+        .unwrap_or_default();
+
+    let mut actionable_idx = 0;
+    for el in elements.iter() {
+        let name = el.get_name().unwrap_or_default();
+        let is_actionable = matches!(
+            el.get_control_type(),
+            Ok(uiautomation::types::ControlType::Button)
+                | Ok(uiautomation::types::ControlType::Edit)
+                | Ok(uiautomation::types::ControlType::CheckBox)
+                | Ok(uiautomation::types::ControlType::ComboBox)
+                | Ok(uiautomation::types::ControlType::Hyperlink)
+                | Ok(uiautomation::types::ControlType::ListItem)
+                | Ok(uiautomation::types::ControlType::MenuItem)
+                | Ok(uiautomation::types::ControlType::TabItem)
+                | Ok(uiautomation::types::ControlType::TreeItem)
+        );
+        if is_actionable || !name.is_empty() {
+            if is_actionable && actionable_idx == element_index {
+                if let Ok(Some(point)) = el.get_clickable_point() {
+                    let cx = point.get_x();
+                    let cy = point.get_y();
+                    let mut enigo = Enigo::new(&Settings::default())
+                        .map_err(|e| anyhow!("falha ao inicializar enigo: {e}"))?;
+                    enigo
+                        .move_mouse(cx, cy, enigo::Coordinate::Abs)
+                        .map_err(|e| anyhow!("falha ao mover mouse: {e}"))?;
+                    enigo
+                        .button(enigo::Button::Left, enigo::Direction::Click)
+                        .map_err(|e| anyhow!("falha ao clicar: {e}"))?;
+                    return Ok(ComputerOutcome {
+                        text: format!("Elemento [{element_index}] clicado em ({cx},{cy}) via AX clickable point."),
+                        screenshot_base64: None,
+                    });
+                }
+                return Err(anyhow!(
+                    "elemento [{element_index}] nao tem clickable point"
+                ));
+            }
+            if is_actionable {
+                actionable_idx += 1;
+            }
+            actionable_idx += if !is_actionable { 0 } else { 0 };
+        }
+    }
+
+    Err(anyhow!(
+        "element_index {element_index} nao encontrado (total de elementos actionaveis: {actionable_idx})"
+    ))
+}
+
+#[cfg(not(windows))]
+fn exec_click_element(_args: &Value) -> Result<ComputerOutcome> {
+    Ok(ComputerOutcome {
+        text: "click_element so disponivel no Windows.".to_string(),
+        screenshot_base64: None,
     })
 }

@@ -534,7 +534,7 @@ pub async fn run_turn(
                         "computer_use requer um modelo com suporte a visao. O modelo atual nao suporta imagens."
                     ))
                 } else {
-                    computer::execute(&call.function.name, &args).map(|outcome| {
+                    computer::execute(&call.function.name, &args, &app_data_dir).await.map(|outcome| {
                         tool_images = outcome
                             .screenshot_base64
                             .map(|b64| vec![format!("data:image/png;base64,{b64}")])
