@@ -914,6 +914,15 @@ fn update_session_reasoning_effort(
 }
 
 #[tauri::command]
+fn update_session_fable_method(
+    state: State<AppState>,
+    id: String,
+    enabled: bool,
+) -> Result<Session, String> {
+    sessions::update_fable_method(&state.app_data_dir, &id, enabled).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_skills(
     state: State<AppState>,
     project_root: Option<String>,
@@ -1097,6 +1106,7 @@ pub fn run() {
             update_session_execution_mode,
             update_session_context_length,
             update_session_reasoning_effort,
+            update_session_fable_method,
             update_session_read_paths,
             extract_attachment_text,
             check_vision_support,

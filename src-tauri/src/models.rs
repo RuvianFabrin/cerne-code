@@ -88,6 +88,25 @@ pub enum ProviderKind {
     Custom,
 }
 
+impl ProviderKind {
+    /// Esforço de raciocínio default pra uma sessão/chamada utilitária deste
+    /// provider. Locais (llama.cpp/ollama/lmstudio) nascem DESLIGADOS porque
+    /// "Auto" deixaria o modelo usar o default dele — e Qwen3/GLM pensam por
+    /// default, ficando lentos à toa (vale pra sessão e pras chamadas
+    /// utilitárias: verificador, sub-agente, compactação). OpenRouter e Custom
+    /// ficam em `None` (Auto): em Custom não existe "off" universal e um
+    /// backend OpenAI estrito rejeitaria o payload de desligar com 400 — então
+    /// não forçamos nada e deixamos o default do modelo (sem regressão).
+    pub fn default_reasoning_effort(self) -> Option<ReasoningEffort> {
+        match self {
+            ProviderKind::LlamaCpp | ProviderKind::Ollama | ProviderKind::LmStudio => {
+                Some(ReasoningEffort::Off)
+            }
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderConfig {
     pub kind: ProviderKind,
@@ -184,6 +203,13 @@ pub struct Session {
     /// ignoram silenciosamente). None = não enviar o campo (default do modelo).
     #[serde(default)]
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Método Fable (github.com/Sahir619/fable-method) injetado no system
+    /// prompt quando ligado. É um loop de trabalho (classificar → agir →
+    /// verificar) que ajuda modelos pequenos/médios a não abandonar tarefas;
+    /// por isso fica DESLIGADO por padrão e só entra quando o usuário liga no
+    /// ícone do composer — em modelos grandes só infla o prompt à toa.
+    #[serde(default)]
+    pub fable_method: bool,
     /// Tokens reais acumulados na sessão (entrada + saída + requisições).
     /// Atualizados após cada chamada ao modelo, persistidos no session.json.
     #[serde(default)]
@@ -205,6 +231,11 @@ pub enum ExecutionMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
+    /// Desliga o raciocínio de forma explícita (o oposto de `None`/Auto, que
+    /// deixa o modelo usar o default dele — e Qwen3/GLM pensam por default,
+    /// daí a lentidão). O campo enviado no wire depende do provider, porque
+    /// cada um desliga de um jeito (ver `providers::chat_stream`).
+    Off,
     Low,
     Medium,
     High,

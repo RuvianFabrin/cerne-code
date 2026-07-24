@@ -134,6 +134,54 @@ fn to_wire_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// Escreve no `body` do `/chat/completions` o controle de raciocínio pedido,
+/// traduzindo o esforço genérico pro campo que cada provider entende.
+///
+/// - `None` ("Auto"): não escreve nada — o modelo usa o default dele.
+/// - `Some(Off)`: desliga o reasoning de forma explícita. Cada provider
+///   desliga de um jeito (pesquisa de APIs verificada, ver testes abaixo):
+///   Ollama /v1 mapeia `reasoning_effort:"none"` → `Think=false`; llama.cpp e
+///   LM Studio aceitam `reasoning_effort:"none"` e ainda honram
+///   `chat_template_kwargs.enable_thinking=false` no template do Qwen3;
+///   OpenRouter usa `reasoning.effort:"none"`; em Custom não existe "off"
+///   universal, então mandamos `enable_thinking:false` + `chat_template_kwargs`
+///   (cobre vLLM/sglang/Qwen/DeepSeek/GLM self-hosted — backends OpenAI
+///   estritos não têm como desligar, só baixar a força).
+/// - `Some(Low/Medium/High)`: `reasoning_effort` (padrão OpenAI-compat).
+fn apply_reasoning(
+    body: &mut serde_json::Value,
+    kind: ProviderKind,
+    effort: Option<ReasoningEffort>,
+) {
+    match effort {
+        None => {}
+        Some(ReasoningEffort::Off) => match kind {
+            ProviderKind::Ollama => {
+                body["reasoning_effort"] = json!("none");
+            }
+            ProviderKind::LlamaCpp | ProviderKind::LmStudio => {
+                body["reasoning_effort"] = json!("none");
+                body["chat_template_kwargs"] = json!({ "enable_thinking": false });
+            }
+            ProviderKind::Openrouter => {
+                body["reasoning"] = json!({ "effort": "none" });
+            }
+            ProviderKind::Custom => {
+                body["enable_thinking"] = json!(false);
+                body["chat_template_kwargs"] = json!({ "enable_thinking": false });
+            }
+        },
+        Some(effort) => {
+            body["reasoning_effort"] = json!(match effort {
+                ReasoningEffort::Low => "low",
+                ReasoningEffort::Medium => "medium",
+                ReasoningEffort::High => "high",
+                ReasoningEffort::Off => unreachable!(),
+            });
+        }
+    }
+}
+
 /// Result of a full (non-streaming-to-caller) assistant turn: the final
 /// assembled message (content + any tool_calls the model requested).
 pub async fn chat_stream(
@@ -145,6 +193,7 @@ pub async fn chat_stream(
     messages: &[ChatMessage],
     tools: &[ToolSpec],
     reasoning_effort: Option<ReasoningEffort>,
+    tool_choice: Option<&str>,
 ) -> Result<StreamResult> {
     let client = reqwest::Client::new();
     let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
@@ -156,14 +205,13 @@ pub async fn chat_stream(
     });
     if !tools.is_empty() {
         body["tools"] = serde_json::to_value(tools)?;
+        if let Some(tc) = tool_choice {
+            body["tool_choice"] = json!(tc);
+        }
     }
-    if let Some(effort) = reasoning_effort {
-        body["reasoning_effort"] = json!(match effort {
-            ReasoningEffort::Low => "low",
-            ReasoningEffort::Medium => "medium",
-            ReasoningEffort::High => "high",
-        });
-    }
+    // Controle de raciocínio — ver `apply_reasoning` pra o que cada provider
+    // recebe no wire (e por quê).
+    apply_reasoning(&mut body, cfg.kind, reasoning_effort);
 
     let mut req = client.post(&url).json(&body);
     if let Some(key) = api_key {
@@ -582,5 +630,68 @@ mod tests {
         with_image.display_content = Some("descreva essa imagem\n\n🖼️ foto.png".to_string());
         let wire = to_wire_messages(&[with_image]);
         assert!(wire[0].get("display_content").is_none());
+    }
+
+    fn empty_body() -> serde_json::Value {
+        json!({ "model": "m", "messages": [], "stream": true })
+    }
+
+    #[test]
+    fn apply_reasoning_auto_sends_nothing() {
+        // Auto = não envia campo nenhum (modelo usa o default dele).
+        let mut body = empty_body();
+        apply_reasoning(&mut body, ProviderKind::LlamaCpp, None);
+        assert!(body.get("reasoning_effort").is_none());
+        assert!(body.get("chat_template_kwargs").is_none());
+        assert!(body.get("enable_thinking").is_none());
+        assert!(body.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn apply_reasoning_strength_uses_reasoning_effort() {
+        let mut body = empty_body();
+        apply_reasoning(&mut body, ProviderKind::Custom, Some(ReasoningEffort::Medium));
+        assert_eq!(body["reasoning_effort"], json!("medium"));
+    }
+
+    #[test]
+    fn apply_reasoning_off_ollama_sends_reasoning_effort_none() {
+        // Ollama /v1 mapeia reasoning_effort:"none" -> Think=false.
+        let mut body = empty_body();
+        apply_reasoning(&mut body, ProviderKind::Ollama, Some(ReasoningEffort::Off));
+        assert_eq!(body["reasoning_effort"], json!("none"));
+        assert!(body.get("chat_template_kwargs").is_none());
+    }
+
+    #[test]
+    fn apply_reasoning_off_llamacpp_and_lmstudio_add_template_kwarg() {
+        for kind in [ProviderKind::LlamaCpp, ProviderKind::LmStudio] {
+            let mut body = empty_body();
+            apply_reasoning(&mut body, kind, Some(ReasoningEffort::Off));
+            assert_eq!(body["reasoning_effort"], json!("none"));
+            assert_eq!(
+                body["chat_template_kwargs"]["enable_thinking"],
+                json!(false)
+            );
+        }
+    }
+
+    #[test]
+    fn apply_reasoning_off_openrouter_uses_reasoning_object() {
+        let mut body = empty_body();
+        apply_reasoning(&mut body, ProviderKind::Openrouter, Some(ReasoningEffort::Off));
+        assert_eq!(body["reasoning"]["effort"], json!("none"));
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn apply_reasoning_off_custom_uses_enable_thinking() {
+        // Custom não tem "off" universal; mandamos os campos que os servidores
+        // OpenAI-compat de modelos thinking (vLLM/sglang/Qwen/DeepSeek) honram.
+        let mut body = empty_body();
+        apply_reasoning(&mut body, ProviderKind::Custom, Some(ReasoningEffort::Off));
+        assert_eq!(body["enable_thinking"], json!(false));
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], json!(false));
+        assert!(body.get("reasoning_effort").is_none());
     }
 }

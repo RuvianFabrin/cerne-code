@@ -314,9 +314,17 @@ export const useSessionStore = defineStore("session", {
       this.contextUsage = await api.getSessionContextUsage(updated.id);
     },
 
-    async updateReasoningEffort(effort: "low" | "medium" | "high" | null) {
+    async updateReasoningEffort(effort: "off" | "low" | "medium" | "high" | null) {
       if (!this.currentId) return;
       const updated = await api.updateSessionReasoningEffort(this.currentId, effort);
+      this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === updated.id);
+      if (idx !== -1) this.sessions[idx] = updated;
+    },
+
+    async updateFableMethod(enabled: boolean) {
+      if (!this.currentId) return;
+      const updated = await api.updateSessionFableMethod(this.currentId, enabled);
       this.currentSession = updated;
       const idx = this.sessions.findIndex((s) => s.id === updated.id);
       if (idx !== -1) this.sessions[idx] = updated;

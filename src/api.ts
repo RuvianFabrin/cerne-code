@@ -54,7 +54,8 @@ export interface Session {
   custom_provider_id: string | null;
   extra_read_paths: string[];
   execution_mode: ExecutionMode;
-  reasoning_effort: "low" | "medium" | "high" | null;
+  reasoning_effort: "off" | "low" | "medium" | "high" | null;
+  fable_method: boolean;
 }
 
 export interface TaskItem {
@@ -186,8 +187,10 @@ export const api = {
     invoke<Session>("update_session_read_paths", { id, extraReadPaths }),
   updateSessionContextLength: (id: string, contextLength: number | null) =>
     invoke<Session>("update_session_context_length", { id, contextLength }),
-  updateSessionReasoningEffort: (id: string, effort: "low" | "medium" | "high" | null) =>
+  updateSessionReasoningEffort: (id: string, effort: "off" | "low" | "medium" | "high" | null) =>
     invoke<Session>("update_session_reasoning_effort", { id, effort }),
+  updateSessionFableMethod: (id: string, enabled: boolean) =>
+    invoke<Session>("update_session_fable_method", { id, enabled }),
   extractAttachmentText: (path: string) => invoke<string>("extract_attachment_text", { path }),
   checkVisionSupport: (sessionId: string) => invoke<boolean>("check_vision_support", { sessionId }),
   testVision: (kind: string, customProviderId: string | null, model: string) =>

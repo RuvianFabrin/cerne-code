@@ -114,6 +114,10 @@ pub async fn run(
             model,
             &messages,
             &tool_specs,
+            // Verificador é chamada utilitária: em locais força Off (senão
+            // pensa à toa); em cloud deixa Auto pra não mandar campos que um
+            // backend OpenAI estrito rejeitaria.
+            cfg.kind.default_reasoning_effort(),
             None,
         )
         .await?

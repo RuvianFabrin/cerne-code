@@ -54,7 +54,12 @@ pub fn create_session(
         custom_provider_id,
         extra_read_paths: Vec::new(),
         execution_mode: ExecutionMode::default(),
-        reasoning_effort: None,
+        // Locais já nascem com o reasoning desligado (senão Qwen3/GLM pensam
+        // por default e ficam lentos); OpenRouter/Custom ficam em Auto. Ver
+        // `ProviderKind::default_reasoning_effort` (mesma regra das chamadas
+        // utilitárias).
+        reasoning_effort: provider.default_reasoning_effort(),
+        fable_method: false,
         total_prompt_tokens: 0,
         total_completion_tokens: 0,
         total_requests: 0,
@@ -174,6 +179,17 @@ pub fn update_reasoning_effort(
 ) -> Result<Session> {
     let mut session = get_session(app_data_dir, id)?;
     session.reasoning_effort = effort;
+    let dir = session_dir(app_data_dir, id);
+    std::fs::write(
+        dir.join("session.json"),
+        serde_json::to_string_pretty(&session)?,
+    )?;
+    Ok(session)
+}
+
+pub fn update_fable_method(app_data_dir: &PathBuf, id: &str, enabled: bool) -> Result<Session> {
+    let mut session = get_session(app_data_dir, id)?;
+    session.fable_method = enabled;
     let dir = session_dir(app_data_dir, id);
     std::fs::write(
         dir.join("session.json"),
@@ -342,6 +358,53 @@ mod tests {
         let reset = update_context_length(&dir, &session.id, None).unwrap();
         assert_eq!(reset.context_length, None);
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn new_local_sessions_default_to_reasoning_off_but_cloud_stays_auto() {
+        // Locais nascem com reasoning desligado (senão Qwen3/GLM pensam por
+        // default e ficam lentos); OpenRouter/Custom ficam em Auto (None).
+        let dir = scratch_dir();
+        for kind in [
+            ProviderKind::LlamaCpp,
+            ProviderKind::Ollama,
+            ProviderKind::LmStudio,
+        ] {
+            let s = create_session(
+                &dir,
+                "s".to_string(),
+                kind,
+                "m".to_string(),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                s.reasoning_effort,
+                Some(ReasoningEffort::Off),
+                "provider local {kind:?} deveria default Off"
+            );
+        }
+        for kind in [ProviderKind::Openrouter, ProviderKind::Custom] {
+            let s = create_session(
+                &dir,
+                "s".to_string(),
+                kind,
+                "m".to_string(),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(
+                s.reasoning_effort, None,
+                "provider {kind:?} deveria default Auto (None)"
+            );
+        }
         std::fs::remove_dir_all(&dir).ok();
     }
 }

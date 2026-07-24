@@ -17,7 +17,7 @@ use serde::Serialize;
 use std::path::Path;
 use tauri::{AppHandle, Emitter};
 
-const MAX_AGENTIC_STEPS: usize = 12;
+const MAX_AGENTIC_STEPS: usize = 50;
 
 /// Quantas chamadas seguidas da MESMA ferramenta com os MESMOS argumentos
 /// contam como "o modelo travou num loop" — mesma ideia e valor do
@@ -28,6 +28,62 @@ const MAX_AGENTIC_STEPS: usize = 12;
 /// continuar como o opencode faz — ainda nao ha infraestrutura de permissao
 /// mid-turn, e "parar e avisar" e mais seguro como default.
 const DOOM_LOOP_THRESHOLD: usize = 3;
+
+/// Máximo de nudges (auto-continue) por turno. Valor alto porque o verdadeiro
+/// freio é o doom loop detection + o botão stop do usuário. Este limite só
+/// existe como safety net contra um modelo que nunca chama ferramentas E
+/// nunca diz TAREFA_CONCLUIDA E nunca produz texto "final" (sem indicadores
+/// de continuação) — cenário extremamente improvável.
+const MAX_NUDGES: usize = 50;
+
+/// Frases que sinalizam que o modelo realmente terminou a tarefa. Se o texto
+/// final contiver alguma delas, o loop encerra sem nudge.
+const LOOP_BREAKERS: &[&str] = &[
+    "TAREFA_CONCLUIDA",
+    "Tarefa concluída",
+    "tarefa concluida",
+    "The task is done",
+];
+
+/// Prompt curto injetado como mensagem "user" quando o modelo para sem tool
+/// call mas a tarefa parece incompleta. Curto pra economizar tokens.
+const NUDGE_PROMPT: &str = "Continue. Use as ferramentas para completar a tarefa. \
+Se já terminou tudo, responda apenas: TAREFA_CONCLUIDA.";
+
+/// Heurística: detecta se o texto do modelo indica que ele ia continuar mas
+/// parou prematuramente (narrou o próximo passo em vez de executar).
+fn looks_incomplete(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    const INDICATORS: &[&str] = &[
+        "agora vou",
+        "agora preciso",
+        "próximo passo",
+        "proximo passo",
+        "em seguida",
+        "vou chamar",
+        "vou executar",
+        "vou ler",
+        "vou editar",
+        "vou criar",
+        "vamos",
+        "preciso chamar",
+        "preciso executar",
+        "preciso ler",
+        "next step",
+        "now i will",
+        "now i need",
+        "let me",
+        "i need to",
+        "i'll now",
+        "i will now",
+    ];
+    INDICATORS.iter().any(|i| lower.contains(i))
+}
+
+/// Confere se o texto contém um sinal explícito de conclusão.
+fn is_task_complete(text: &str) -> bool {
+    LOOP_BREAKERS.iter().any(|b| text.contains(*b))
+}
 
 /// Confere se as ultimas `DOOM_LOOP_THRESHOLD` chamadas de ferramenta
 /// executadas (nome + argumentos brutos, na ordem que rodaram) sao todas
@@ -46,6 +102,13 @@ const COMPACT_TRIGGER_RATIO: f32 = 0.5;
 // Most recent messages that are always kept verbatim, never folded into
 // the summary (so the model doesn't lose the immediate thread).
 const KEEP_LAST_MESSAGES: usize = 6;
+
+/// Método Fable (github.com/Sahir619/fable-method), embutido no binário e
+/// injetado no system prompt só quando o usuário liga o ícone no composer
+/// (`Session.fable_method`). Fica fora do catálogo de skills de propósito: em
+/// modelos grandes só inflaria o prompt, e a ideia é ser um opt-in pra modelos
+/// pequenos/médios que tendem a abandonar tarefas.
+const FABLE_METHOD_PROMPT: &str = include_str!("fable_method.md");
 
 const SYSTEM_PROMPT: &str = "Voce e Cerne, um agente de codigo local. Use as ferramentas \
 disponiveis para ler, buscar e editar arquivos reais do projeto do usuario e rodar comandos. \
@@ -104,7 +167,12 @@ screenshot primeiro e descreva o que ve. Se a aplicacao que voce precisa control
 visivel no monitor primario, use ask para pedir ao usuario: 'Nao vejo a aplicacao [X] no monitor \
 primario. Pode move-la para a tela principal?' Nao prossiga sem confirmacao. As coordenadas de \
 click sao relativas ao canto superior esquerdo do monitor primario (0,0). Nao tente interagir com \
-janelas que estao em outro monitor - peça ao usuario para move-las.";
+janelas que estao em outro monitor - peça ao usuario para move-las. \
+\n\n## Regra de Loop\n\
+- Continue chamando ferramentas ate a tarefa estar 100% completa.\n\
+- NUNCA pare no meio para narrar o que falta. Execute.\n\
+- Quando REALMENTE terminar tudo, inclua \"TAREFA_CONCLUIDA\" na sua ultima mensagem.\n\
+- Se precisar de informacao do usuario, use a ferramenta ask.";
 
 const COMPACTION_SYSTEM_PROMPT: &str = "Voce resume trechos antigos de uma conversa entre um \
 usuario e um agente de codigo, para liberar espaco de contexto. Escreva um resumo denso e factual \
@@ -244,6 +312,10 @@ pub async fn run_turn(
                 ));
             }
         }
+        if session.fable_method {
+            prompt.push_str("\n\n");
+            prompt.push_str(FABLE_METHOD_PROMPT);
+        }
         messages.push(ChatMessage {
             role: "system".to_string(),
             content: prompt,
@@ -304,6 +376,12 @@ pub async fn run_turn(
     let has_vision = providers::supports_vision(&cfg, api_key.clone(), &session.model, &app_data_dir).await;
     if has_vision {
         tool_specs.extend(computer::tool_specs());
+    } else {
+        // Modelo sem visão: remove imagens do histórico pra não enviar
+        // multimodal data que o provider rejeitaria (400 Bad Request).
+        for msg in &mut messages {
+            msg.images.clear();
+        }
     }
 
     let provider_ctx_override = cfg.context_length_override;
@@ -317,8 +395,14 @@ pub async fn run_turn(
 
     let mut tasks = sessions::load_tasks(&app_data_dir, &session_id)?;
     let mut recent_calls: Vec<(String, String)> = Vec::new();
+    let mut nudge_count: usize = 0;
+    let mut force_tool_choice: bool = false;
+    let mut tool_steps: usize = 0;
 
-    'steps: for _ in 0..MAX_AGENTIC_STEPS {
+    'steps: loop {
+        if tool_steps >= MAX_AGENTIC_STEPS {
+            break;
+        }
         if maybe_compact(
             &app,
             &session_id,
@@ -358,6 +442,7 @@ pub async fn run_turn(
             &messages,
             &tool_specs,
             session.reasoning_effort,
+            if force_tool_choice { Some("required") } else { None },
         )
         .await?;
 
@@ -382,8 +467,30 @@ pub async fn run_turn(
         sessions::save_messages(&app_data_dir, &session_id, &messages)?;
 
         if !has_tool_calls {
-            break;
+            // Auto-continue (nudge): se o modelo parou sem tool call mas a
+            // tarefa parece incompleta, injeta um "continue" e volta pro loop.
+            let text = &assistant.content;
+            if is_task_complete(text) || !looks_incomplete(text) || nudge_count >= MAX_NUDGES {
+                break;
+            }
+            nudge_count += 1;
+            force_tool_choice = true;
+            messages.push(ChatMessage {
+                role: "user".to_string(),
+                content: NUDGE_PROMPT.to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+                images: Vec::new(),
+                display_content: Some("⏳ Continuando automaticamente...".to_string()),
+            });
+            sessions::save_messages(&app_data_dir, &session_id, &messages)?;
+            continue;
         }
+
+        // Modelo chamou ferramentas — reseta o flag de nudge e conta o step.
+        force_tool_choice = false;
+        tool_steps += 1;
 
         let project_path: Option<&Path> = session.project_root.as_deref().map(Path::new);
 
@@ -774,6 +881,10 @@ async fn maybe_compact(
         model,
         &summary_messages,
         &[],
+        // Compactação é chamada utilitária: em locais força Off (senão pensa
+        // à toa); em cloud deixa Auto pra não mandar campos que um backend
+        // OpenAI estrito rejeitaria.
+        cfg.kind.default_reasoning_effort(),
         None,
     )
     .await?

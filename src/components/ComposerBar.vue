@@ -16,7 +16,13 @@ const EXECUTION_MODE_OPTIONS: { value: ExecutionMode; label: string }[] = [
   { value: "manual", label: "Manual" },
 ];
 
-const REASONING_EFFORT_OPTIONS: { value: "auto" | "low" | "medium" | "high"; label: string }[] = [
+const REASONING_EFFORT_OPTIONS: {
+  value: "off" | "auto" | "low" | "medium" | "high";
+  label: string;
+}[] = [
+  // Desligado é o default pra modelos locais: "Auto" deixaria o Qwen3/GLM
+  // pensar por conta própria e ficar lento à toa.
+  { value: "off", label: "💤 Desligado" },
   { value: "auto", label: "🧠 Auto" },
   { value: "low", label: "🧠 Baixo" },
   { value: "medium", label: "🧠 Médio" },
@@ -27,9 +33,11 @@ function onExecutionModeChange(mode: ExecutionMode) {
   sessionStore.updateExecutionMode(mode);
 }
 
-const reasoningEffort = computed(() => sessionStore.currentSession?.reasoning_effort ?? "auto");
+const reasoningEffort = computed(
+  () => sessionStore.currentSession?.reasoning_effort ?? "auto",
+);
 
-function onReasoningEffortChange(value: "auto" | "low" | "medium" | "high") {
+function onReasoningEffortChange(value: "off" | "auto" | "low" | "medium" | "high") {
   sessionStore.updateReasoningEffort(value === "auto" ? null : value);
 }
 
@@ -418,14 +426,25 @@ watch(
         <Select
           v-if="sessionStore.currentSession"
           :modelValue="reasoningEffort"
-          @update:modelValue="(v) => onReasoningEffortChange(v as 'auto' | 'low' | 'medium' | 'high')"
+          @update:modelValue="(v) => onReasoningEffortChange(v as 'off' | 'auto' | 'low' | 'medium' | 'high')"
           :options="REASONING_EFFORT_OPTIONS"
           optionLabel="label"
           optionValue="value"
           class="execution-mode-select"
           size="small"
-          v-tooltip.top="'Esforço de raciocínio do modelo (modelos que não suportam ignoram)'"
+          v-tooltip.top="'Raciocínio do modelo. 💤 Desligado = sem thinking (mais rápido, default nos locais). Auto = o modelo decide.'"
         />
+        <button
+          v-if="sessionStore.currentSession"
+          class="fable-btn"
+          :class="{ 'fable-on': sessionStore.currentSession.fable_method }"
+          v-tooltip.top="'Método Fable (p/ modelos pequenos/médios): liga um loop classificar → agir → verificar pra o modelo não abandonar tarefas. Desligado por padrão; em modelos grandes só infla o prompt.'"
+          @click="
+            sessionStore.updateFableMethod(!sessionStore.currentSession.fable_method)
+          "
+        >
+          <span class="msi">route</span>
+        </button>
       </div>
       <div class="footer-right">
         <ContextGauge />
@@ -646,6 +665,31 @@ watch(
   cursor: default;
 }
 
+.fable-btn {
+  border: var(--cerne-border);
+  background: #ffffff;
+  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #52525b;
+}
+
+.fable-btn:hover {
+  border-color: #d4d4d8;
+}
+
+/* Ligado = chip rosa, pra deixar óbvio que o método Fable está ativo
+   (é opt-in, só faz sentido em modelos pequenos/médios). */
+.fable-btn.fable-on {
+  background: #db2777;
+  border-color: #db2777;
+  color: #ffffff;
+}
+
 .send-btn {
   border: none;
   background: #18181b;
@@ -674,7 +718,8 @@ watch(
 }
 
 .send-btn .msi,
-.attach-btn .msi {
+.attach-btn .msi,
+.fable-btn .msi {
   font-size: 18px;
 }
 </style>
