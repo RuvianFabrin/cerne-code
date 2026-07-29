@@ -69,6 +69,7 @@ export interface TaskItem {
   deletions?: number;
   started_at_ms?: number;
   duration_ms?: number | null;
+  command?: string | null;
 }
 
 export interface TurnStats {

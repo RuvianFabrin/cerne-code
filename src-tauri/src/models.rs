@@ -292,6 +292,11 @@ pub struct TaskItem {
     /// Duracao em ms da execucao da tarefa (None enquanto running).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// Texto bruto do comando (so populado pra run_command/ferramentas tipo
+    /// shell) — a UI usa isso pra mostrar um bloco "IN" separado do "OUT"
+    /// (que fica em `detail`), como um terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

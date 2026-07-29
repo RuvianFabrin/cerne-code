@@ -108,6 +108,15 @@ fn extract_file_path(tool_name: &str, args: &serde_json::Value) -> Option<String
     }
 }
 
+/// Extrai o texto do comando de tool calls tipo shell, pra UI mostrar um
+/// bloco "IN" (terminal) separado do "OUT" (`TaskItem::detail`).
+fn extract_command_text(tool_name: &str, args: &serde_json::Value) -> Option<String> {
+    match tool_name {
+        "run_command" => args["command"].as_str().map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
 /// Conta linhas adicionadas (+) e removidas (-) num unified diff, ignorando
 /// os headers (+++/---) e linhas de contexto.
 fn count_diff_stats(diff: &str) -> (u32, u32) {
@@ -557,6 +566,7 @@ pub async fn run_turn(
             let task_id = call.id.clone();
             let task_idx = tasks.len();
             let file_path = extract_file_path(&call.function.name, &args);
+            let command = extract_command_text(&call.function.name, &args);
             let task_started = std::time::Instant::now();
             tasks.push(TaskItem {
                 id: task_id.clone(),
@@ -573,6 +583,7 @@ pub async fn run_turn(
                 deletions: 0,
                 started_at_ms: chrono::Utc::now().timestamp_millis() as u64,
                 duration_ms: None,
+                command,
             });
             sessions::save_tasks(&app_data_dir, &session_id, &tasks)?;
 
@@ -783,7 +794,10 @@ pub async fn run_turn(
                 } else {
                     "failed".to_string()
                 };
-                task.detail = Some(truncate(&observation, 200));
+                // Cap generoso (nao os ~200 chars antigos) pra UI poder
+                // mostrar as ultimas linhas completas e permitir expandir
+                // o bloco "OUT" (ver TaskStepGroup.vue).
+                task.detail = Some(truncate(&observation, 6000));
                 task.duration_ms = Some(task_started.elapsed().as_millis() as u64);
             }
             sessions::save_tasks(&app_data_dir, &session_id, &tasks)?;

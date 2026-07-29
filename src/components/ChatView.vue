@@ -84,7 +84,13 @@ const timeline = computed<TimelineItem[]>(() => {
 const statusLabel = computed(() => {
   if (sessionStore.status === "starting_server") return "Iniciando servidor local...";
   if (sessionStore.status === "thinking") {
-    const base = "Pensando...";
+    // Nem todo provider/modelo transmite tokens de raciocínio visíveis
+    // (thinkingText) — sem isso, "Pensando..." parado por minutos parece
+    // travado mesmo não estando. Enquanto não chegou nenhum token de
+    // raciocínio nem de resposta, deixa claro que é o modelo processando
+    // (TTFT), não uma sessão de "pensamento" visível.
+    const hasVisibleReasoning = !!sessionStore.thinkingText;
+    const base = hasVisibleReasoning ? "Pensando..." : "Aguardando resposta do modelo...";
     if (sessionStore.thinkingStartedAt) {
       return `${base} ${formatElapsed(now.value - sessionStore.thinkingStartedAt)}`;
     }

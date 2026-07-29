@@ -20,11 +20,45 @@ function taskElapsed(t: TaskItem): string {
 }
 
 const expanded = ref<Set<string>>(new Set());
+const expandedIn = ref<Set<string>>(new Set());
+const expandedOut = ref<Set<string>>(new Set());
+
+function toggleSet(set: typeof expanded, id: string) {
+  if (set.value.has(id)) set.value.delete(id);
+  else set.value.add(id);
+  set.value = new Set(set.value);
+}
 
 function toggle(id: string) {
-  if (expanded.value.has(id)) expanded.value.delete(id);
-  else expanded.value.add(id);
-  expanded.value = new Set(expanded.value);
+  toggleSet(expanded, id);
+}
+
+function toggleIn(id: string) {
+  toggleSet(expandedIn, id);
+}
+
+function toggleOut(id: string) {
+  toggleSet(expandedOut, id);
+}
+
+// Quantas linhas mostrar antes de precisar expandir — como um preview de
+// terminal (bloco "IN"/"OUT"), o resto fica escondido atrás de um botão.
+const PREVIEW_LINES = 4;
+
+function linesInfo(text: string | null | undefined) {
+  const full = text ?? "";
+  const lines = full.split("\n");
+  return { full, lines, hasMore: lines.length > PREVIEW_LINES };
+}
+
+function previewText(text: string | null | undefined, isExpanded: boolean): string {
+  const { full, lines, hasMore } = linesInfo(text);
+  if (!hasMore || isExpanded) return full;
+  return lines.slice(0, PREVIEW_LINES).join("\n");
+}
+
+function isCommandTool(t: TaskItem): boolean {
+  return toolNameFromLabel(t.label) === "run_command" && !!t.command;
 }
 
 const statusIcon: Record<string, string> = {
@@ -78,22 +112,51 @@ function isWriteTool(task: TaskItem): boolean {
 
 <template>
   <div class="step-group">
-    <div v-for="t in tasks" :key="t.id" class="step-row" @click="toggle(t.id)">
-      <span class="msi status" :class="t.status">{{ statusIcon[t.status] ?? "schedule" }}</span>
-      <span class="step-label">{{ friendlyStepLabel(t.label) }}</span>
-      <span v-if="t.file_path && isFileTool(t)" class="file-chip" :title="t.file_path">
-        <span class="msi file-icon">{{ fileIcon(t.file_path) }}</span>
-        <span class="file-name">{{ fileName(t.file_path) }}</span>
-      </span>
-      <span v-if="isWriteTool(t) && (t.additions || t.deletions)" class="diff-stats">
-        <span v-if="t.additions" class="stat-add">+{{ t.additions }}</span>
-        <span v-if="t.deletions" class="stat-del">-{{ t.deletions }}</span>
-      </span>
-      <span v-if="taskElapsed(t)" class="step-elapsed">{{ taskElapsed(t) }}</span>
-      <span class="msi chevron" :class="{ open: expanded.has(t.id) }">chevron_right</span>
-    </div>
-    <template v-for="t in tasks" :key="`detail-${t.id}`">
-      <div v-if="expanded.has(t.id)" class="step-detail">
+    <template v-for="t in tasks" :key="t.id">
+      <div
+        class="step-row"
+        :class="{ clickable: !isCommandTool(t) }"
+        @click="!isCommandTool(t) && toggle(t.id)"
+      >
+        <span class="msi status" :class="t.status">{{ statusIcon[t.status] ?? "schedule" }}</span>
+        <span v-if="taskElapsed(t)" class="step-elapsed">({{ taskElapsed(t) }})</span>
+        <span class="step-label">{{ friendlyStepLabel(t.label) }}</span>
+        <span v-if="t.file_path && isFileTool(t)" class="file-chip" :title="t.file_path">
+          <span class="msi file-icon">{{ fileIcon(t.file_path) }}</span>
+          <span class="file-name">{{ fileName(t.file_path) }}</span>
+        </span>
+        <span v-if="isWriteTool(t) && (t.additions || t.deletions)" class="diff-stats">
+          <span v-if="t.additions" class="stat-add">+{{ t.additions }}</span>
+          <span v-if="t.deletions" class="stat-del">-{{ t.deletions }}</span>
+        </span>
+        <span v-if="!isCommandTool(t)" class="msi chevron" :class="{ open: expanded.has(t.id) }">chevron_right</span>
+      </div>
+      <!-- Comandos mostram o preview IN/OUT direto, sem precisar clicar -->
+      <div v-if="isCommandTool(t)" class="cmd-inline">
+        <div class="cmd-block">
+          <div class="cmd-block-label">IN</div>
+          <pre class="cmd-box">{{ previewText(t.command, expandedIn.has(t.id)) }}</pre>
+          <button v-if="linesInfo(t.command).hasMore" class="cmd-more" @click.stop="toggleIn(t.id)">
+            {{
+              expandedIn.has(t.id)
+                ? "mostrar menos"
+                : `mostrar mais ${linesInfo(t.command).lines.length - PREVIEW_LINES} linhas`
+            }}
+          </button>
+        </div>
+        <div class="cmd-block">
+          <div class="cmd-block-label">OUT</div>
+          <pre class="cmd-box">{{ previewText(t.detail, expandedOut.has(t.id)) }}</pre>
+          <button v-if="linesInfo(t.detail).hasMore" class="cmd-more" @click.stop="toggleOut(t.id)">
+            {{
+              expandedOut.has(t.id)
+                ? "mostrar menos"
+                : `mostrar mais ${linesInfo(t.detail).lines.length - PREVIEW_LINES} linhas`
+            }}
+          </button>
+        </div>
+      </div>
+      <div v-else-if="expanded.has(t.id)" class="step-detail">
         <div class="step-detail-label">{{ t.label }}</div>
         <div v-if="t.detail" class="step-detail-body">{{ t.detail }}</div>
       </div>
@@ -116,13 +179,16 @@ function isWriteTool(task: TaskItem): boolean {
   gap: 6px;
   padding: 3px 4px;
   border-radius: 6px;
-  cursor: pointer;
   font-size: 12.5px;
   font-weight: 400;
   color: #71717a;
 }
 
-.step-row:hover {
+.step-row.clickable {
+  cursor: pointer;
+}
+
+.step-row.clickable:hover {
   background: #f4f4f5;
   color: #3f3f46;
 }
@@ -207,7 +273,14 @@ function isWriteTool(task: TaskItem): boolean {
   color: #a1a1aa;
   font-family: ui-monospace, monospace;
   flex-shrink: 0;
-  margin-left: auto;
+}
+
+.cmd-inline {
+  margin: 0 0 4px 23px;
+  padding: 6px 10px;
+  background: #fafafa;
+  border: var(--cerne-border);
+  border-radius: 8px;
 }
 
 .chevron {
@@ -247,6 +320,51 @@ function isWriteTool(task: TaskItem): boolean {
   overflow-wrap: break-word;
   max-height: 240px;
   overflow-y: auto;
+}
+
+.cmd-block {
+  margin-bottom: 6px;
+}
+
+.cmd-block:last-child {
+  margin-bottom: 0;
+}
+
+.cmd-block-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #a1a1aa;
+  margin-bottom: 2px;
+}
+
+.cmd-box {
+  margin: 0;
+  padding: 6px 8px;
+  background: #f4f4f5;
+  border: 1px solid #e4e4e7;
+  color: #3f3f46;
+  border-radius: 6px;
+  font-size: 11px;
+  font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.cmd-more {
+  margin-top: 3px;
+  padding: 0;
+  background: none;
+  border: none;
+  font-size: 10.5px;
+  color: #6366f1;
+  cursor: pointer;
+}
+
+.cmd-more:hover {
+  text-decoration: underline;
 }
 
 @keyframes spin {
