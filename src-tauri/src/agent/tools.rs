@@ -847,22 +847,35 @@ async fn execute_project_tool(
                      stop_background({{\"id\": \"{id}\"}}) quando nao precisar mais dele."
                 )));
             }
-            let output = Command::new("cmd")
+            const RUN_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+            let child = Command::new("cmd")
                 .arg("/C")
                 .arg(command)
                 .current_dir(project_root)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
-                .output()
-                .await?;
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let result = format!(
-                "exit_code: {}\nstdout:\n{}\nstderr:\n{}",
-                output.status.code().unwrap_or(-1),
-                truncate(&stdout, 8000),
-                truncate(&stderr, 4000)
-            );
+                .kill_on_drop(true)
+                .spawn()?;
+            let result = match tokio::time::timeout(RUN_COMMAND_TIMEOUT, child.wait_with_output()).await
+            {
+                Ok(output) => {
+                    let output = output?;
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    format!(
+                        "exit_code: {}\nstdout:\n{}\nstderr:\n{}",
+                        output.status.code().unwrap_or(-1),
+                        truncate(&stdout, 8000),
+                        truncate(&stderr, 4000)
+                    )
+                }
+                Err(_) => format!(
+                    "comando expirou apos {}s e foi encerrado (nao terminou sozinho). Se for um \
+                     servidor ou processo de longa duracao que deveria continuar rodando, use \
+                     {{\"background\": true}} em vez de esperar ele terminar.",
+                    RUN_COMMAND_TIMEOUT.as_secs()
+                ),
+            };
             // Comando arbitrario pode ter criado/apagado arquivos reais;
             // descarta o cache de travessia pra proxima busca ver o estado atual.
             super::walk_cache::invalidate(project_root);
