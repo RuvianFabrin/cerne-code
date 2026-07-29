@@ -202,6 +202,10 @@ pub async fn chat_stream(
         "model": model,
         "messages": to_wire_messages(messages),
         "stream": true,
+        // Sem isso, servidores compativeis com OpenAI (incl. llama.cpp) nao
+        // mandam o chunk final de "usage" no modo streaming - por isso os
+        // stats de turno (agent:turn_stats) ficavam sempre em 0 tokens.
+        "stream_options": {"include_usage": true},
     });
     if !tools.is_empty() {
         body["tools"] = serde_json::to_value(tools)?;
