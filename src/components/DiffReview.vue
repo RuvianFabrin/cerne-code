@@ -21,10 +21,11 @@ function lineClass(line: string) {
     <div class="diff-header">
       <span class="msi">{{ edit.is_new_file ? "note_add" : "difference" }}</span>
       <span class="diff-path">{{ edit.target_path }}</span>
-      <div class="diff-actions">
+      <div v-if="!edit.already_applied" class="diff-actions">
         <button class="reject" @click="sessionStore.rejectEdit(edit.id)">Rejeitar</button>
         <button class="accept" @click="sessionStore.acceptEdit(edit.id)">Aceitar</button>
       </div>
+      <span v-else class="applied-badge">Aplicado</span>
     </div>
     <pre class="diff-body"><span v-for="(line, i) in lines" :key="i" :class="lineClass(line)">{{ line }}</span></pre>
   </div>
@@ -115,5 +116,14 @@ function lineClass(line: string) {
 
 .diff-body .hunk {
   color: #a1a1aa;
+}
+
+.applied-badge {
+  font-size: 11px;
+  font-weight: 600;
+  color: #16a34a;
+  background: #ecfdf3;
+  border-radius: 4px;
+  padding: 2px 8px;
 }
 </style>

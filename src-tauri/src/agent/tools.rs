@@ -88,11 +88,11 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
     vec![
         spec(
             "read_file",
-            "Le o conteudo de um arquivo. Caminho relativo e resolvido dentro do projeto; caminho absoluto tambem funciona se estiver dentro de uma das pastas extras de leitura configuradas pra esta sessao (fora do projeto - configuravel na interface). Use offset+limit pra ler so um trecho de arquivos grandes (economiza tokens e memoria) — o retorno inclui o total de linhas pra voce saber se precisa continuar lendo.",
+            "Le o conteudo de um arquivo. Caminho relativo e resolvido dentro do projeto; caminho absoluto funciona para QUALQUER pasta do sistema (ex: F:\\outro-repo\\src\\main.rs) — use para consultar codigo de outros repositorios ou documentacao externa. Use offset+limit pra ler so um trecho de arquivos grandes (economiza tokens e memoria) — o retorno inclui o total de linhas pra voce saber se precisa continuar lendo.",
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Caminho relativo a raiz do projeto, ou caminho absoluto dentro de uma pasta extra de leitura permitida" },
+                    "path": { "type": "string", "description": "Caminho relativo a raiz do projeto, ou caminho absoluto de qualquer pasta do sistema" },
                     "offset": { "type": "integer", "description": "Linha inicial (0-based). Omita pra comecar do inicio." },
                     "limit": { "type": "integer", "description": "Maximo de linhas a retornar. Omita pra ler ate o fim (ou ate o teto de seguranca)." }
                 },
@@ -101,21 +101,21 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
         ),
         spec(
             "list_dir",
-            "Lista arquivos e subpastas de um diretorio. Caminho relativo e resolvido dentro do projeto; caminho absoluto tambem funciona se estiver dentro de uma pasta extra de leitura permitida.",
+            "Lista arquivos e subpastas de um diretorio. Caminho relativo e resolvido dentro do projeto; caminho absoluto funciona para qualquer pasta do sistema.",
             json!({
                 "type": "object",
-                "properties": { "path": { "type": "string", "description": "Caminho relativo a raiz do projeto (vazio = raiz), ou caminho absoluto dentro de uma pasta extra de leitura permitida" } },
+                "properties": { "path": { "type": "string", "description": "Caminho relativo a raiz do projeto (vazio = raiz), ou caminho absoluto de qualquer pasta" } },
                 "required": []
             }),
         ),
         spec(
             "grep",
-            "Busca um padrao (regex) no conteudo dos arquivos. Caminho relativo busca dentro do projeto; caminho absoluto tambem funciona se estiver dentro de uma pasta extra de leitura permitida.",
+            "Busca um padrao (regex) no conteudo dos arquivos. Caminho relativo busca dentro do projeto; caminho absoluto busca em qualquer pasta do sistema.",
             json!({
                 "type": "object",
                 "properties": {
                     "pattern": { "type": "string" },
-                    "path": { "type": "string", "description": "Subpasta relativa, ou caminho absoluto dentro de uma pasta extra de leitura permitida (opcional)" }
+                    "path": { "type": "string", "description": "Subpasta relativa ao projeto, ou caminho absoluto de qualquer pasta (opcional)" }
                 },
                 "required": ["pattern"]
             }),
@@ -335,13 +335,20 @@ fn resolve_path(project_root: &Path, rel: &str) -> Result<PathBuf> {
     resolve_within(project_root, &[], rel)
 }
 
-/// Como `resolve_path`, mas tambem aceita caminho ABSOLUTO dentro de
-/// qualquer uma de `extra_roots` (pastas extras de leitura configuradas pra
-/// esta sessao, fora do project_root) — usado pelas ferramentas de LEITURA
-/// (`read_file`/`list_dir`/`grep`/`ast_grep`). Caminho relativo continua
-/// resolvendo dentro do projeto, igual antes.
-fn resolve_read_path(project_root: &Path, extra_roots: &[String], rel: &str) -> Result<PathBuf> {
-    resolve_within(project_root, extra_roots, rel)
+/// Como `resolve_path`, mas para LEITURA aceita QUALQUER caminho absoluto no
+/// sistema (o usuario pode pedir pra ler `F:\outro-repo\src\main.rs` sem
+/// configurar pasta extra). Caminho relativo continua resolvendo dentro do
+/// projeto. Restricao de escrita continua em `resolve_path` (so project_root).
+fn resolve_read_path(project_root: &Path, _extra_roots: &[String], rel: &str) -> Result<PathBuf> {
+    let trimmed = rel.trim();
+    if trimmed.is_empty() {
+        return Ok(project_root.to_path_buf());
+    }
+    let candidate = PathBuf::from(trimmed);
+    if candidate.is_absolute() {
+        return Ok(candidate);
+    }
+    Ok(project_root.join(trimmed.trim_start_matches(['/', '\\'])))
 }
 
 fn resolve_within(project_root: &Path, extra_roots: &[String], rel: &str) -> Result<PathBuf> {
@@ -714,7 +721,8 @@ fn leading_whitespace(line: &str) -> &str {
 /// sandbox (so the caller can persist/emit it for the diff-review UI).
 pub struct ToolOutcome {
     pub observation: String,
-    pub pending_edit: Option<(String, String, String, bool)>, // target_path, sandbox_path, diff, is_new_file
+    /// (target_path, sandbox_path, diff, is_new_file, already_applied)
+    pub pending_edit: Option<(String, String, String, bool, bool)>,
 }
 
 fn ok(observation: impl Into<String>) -> ToolOutcome {
@@ -732,6 +740,7 @@ pub async fn execute_tool(
     background_jobs: &super::background::BackgroundJobs,
     mcp_clients: &crate::mcp::McpClients,
     app_data_dir: &Path,
+    execution_mode: &crate::models::ExecutionMode,
 ) -> Result<ToolOutcome> {
     match name {
         "web_search" => {
@@ -760,7 +769,7 @@ pub async fn execute_tool(
             })?;
             let mut extended_paths = extra_read_paths.to_vec();
             extended_paths.push(app_data_dir.to_string_lossy().to_string());
-            execute_project_tool(name, args, project_root, &extended_paths, background_jobs).await
+            execute_project_tool(name, args, project_root, &extended_paths, background_jobs, execution_mode).await
         }
     }
 }
@@ -771,6 +780,7 @@ async fn execute_project_tool(
     project_root: &Path,
     extra_read_paths: &[String],
     background_jobs: &super::background::BackgroundJobs,
+    execution_mode: &crate::models::ExecutionMode,
 ) -> Result<ToolOutcome> {
     match name {
         "read_file" => {
@@ -1106,19 +1116,34 @@ async fn execute_project_tool(
                 .as_str()
                 .ok_or_else(|| anyhow!("content obrigatorio"))?;
             let target = resolve_path(project_root, rel)?;
-            let (diff, is_new_file) = sandbox::write_sandboxed(project_root, &target, content)?;
-            let sandbox_path = sandbox::to_sandbox_path(project_root, &target)?;
-            Ok(ToolOutcome {
-                observation: format!(
-                    "Alteracao escrita na sandbox (ainda NAO aplicada ao arquivo real). Diff:\n{diff}"
-                ),
-                pending_edit: Some((
-                    target.to_string_lossy().to_string(),
-                    sandbox_path.to_string_lossy().to_string(),
-                    diff,
-                    is_new_file,
-                )),
-            })
+            if *execution_mode == crate::models::ExecutionMode::Yolo {
+                let (diff, is_new_file) = sandbox::write_direct(&target, content)?;
+                Ok(ToolOutcome {
+                    observation: format!("Arquivo escrito diretamente. Diff:\n{diff}"),
+                    pending_edit: Some((
+                        target.to_string_lossy().to_string(),
+                        String::new(),
+                        diff,
+                        is_new_file,
+                        true,
+                    )),
+                })
+            } else {
+                let (diff, is_new_file) = sandbox::write_sandboxed(project_root, &target, content)?;
+                let sandbox_path = sandbox::to_sandbox_path(project_root, &target)?;
+                Ok(ToolOutcome {
+                    observation: format!(
+                        "Alteracao escrita na sandbox (ainda NAO aplicada ao arquivo real). Diff:\n{diff}"
+                    ),
+                    pending_edit: Some((
+                        target.to_string_lossy().to_string(),
+                        sandbox_path.to_string_lossy().to_string(),
+                        diff,
+                        is_new_file,
+                        false,
+                    )),
+                })
+            }
         }
         "edit_file" => {
             let rel = args["path"]
@@ -1163,20 +1188,35 @@ async fn execute_project_tool(
                     )));
                 }
             };
-            let (diff, is_new_file) =
-                sandbox::write_sandboxed(project_root, &target, &new_content)?;
-            let sandbox_path = sandbox::to_sandbox_path(project_root, &target)?;
-            Ok(ToolOutcome {
-                observation: format!(
-                    "Alteracao escrita na sandbox (ainda NAO aplicada ao arquivo real). Diff:\n{diff}"
-                ),
-                pending_edit: Some((
-                    target.to_string_lossy().to_string(),
-                    sandbox_path.to_string_lossy().to_string(),
-                    diff,
-                    is_new_file,
-                )),
-            })
+            if *execution_mode == crate::models::ExecutionMode::Yolo {
+                let (diff, is_new_file) = sandbox::write_direct(&target, &new_content)?;
+                Ok(ToolOutcome {
+                    observation: format!("Arquivo editado diretamente. Diff:\n{diff}"),
+                    pending_edit: Some((
+                        target.to_string_lossy().to_string(),
+                        String::new(),
+                        diff,
+                        is_new_file,
+                        true,
+                    )),
+                })
+            } else {
+                let (diff, is_new_file) =
+                    sandbox::write_sandboxed(project_root, &target, &new_content)?;
+                let sandbox_path = sandbox::to_sandbox_path(project_root, &target)?;
+                Ok(ToolOutcome {
+                    observation: format!(
+                        "Alteracao escrita na sandbox (ainda NAO aplicada ao arquivo real). Diff:\n{diff}"
+                    ),
+                    pending_edit: Some((
+                        target.to_string_lossy().to_string(),
+                        sandbox_path.to_string_lossy().to_string(),
+                        diff,
+                        is_new_file,
+                        false,
+                    )),
+                })
+            }
         }
         "ast_grep" => {
             let pattern = args["pattern"]
@@ -1213,20 +1253,35 @@ async fn execute_project_tool(
                 Ok(c) => c,
                 Err(e) => return Ok(ok(format!("nao foi possivel reescrever: {e}"))),
             };
-            let (diff, is_new_file) =
-                sandbox::write_sandboxed(project_root, &target, &new_content)?;
-            let sandbox_path = sandbox::to_sandbox_path(project_root, &target)?;
-            Ok(ToolOutcome {
-                observation: format!(
-                    "Alteracao estrutural escrita na sandbox (ainda NAO aplicada ao arquivo real). Diff:\n{diff}"
-                ),
-                pending_edit: Some((
-                    target.to_string_lossy().to_string(),
-                    sandbox_path.to_string_lossy().to_string(),
-                    diff,
-                    is_new_file,
-                )),
-            })
+            if *execution_mode == crate::models::ExecutionMode::Yolo {
+                let (diff, is_new_file) = sandbox::write_direct(&target, &new_content)?;
+                Ok(ToolOutcome {
+                    observation: format!("Alteracao estrutural aplicada diretamente. Diff:\n{diff}"),
+                    pending_edit: Some((
+                        target.to_string_lossy().to_string(),
+                        String::new(),
+                        diff,
+                        is_new_file,
+                        true,
+                    )),
+                })
+            } else {
+                let (diff, is_new_file) =
+                    sandbox::write_sandboxed(project_root, &target, &new_content)?;
+                let sandbox_path = sandbox::to_sandbox_path(project_root, &target)?;
+                Ok(ToolOutcome {
+                    observation: format!(
+                        "Alteracao estrutural escrita na sandbox (ainda NAO aplicada ao arquivo real). Diff:\n{diff}"
+                    ),
+                    pending_edit: Some((
+                        target.to_string_lossy().to_string(),
+                        sandbox_path.to_string_lossy().to_string(),
+                        diff,
+                        is_new_file,
+                        false,
+                    )),
+                })
+            }
         }
         // "task" (subagente) e tratado a parte em agent::mod::run_turn, igual
         // "load_skill" - precisa de app/estado/provider que essa funcao nao
@@ -1420,6 +1475,7 @@ mod tests {
             &dir,
             &[],
             &crate::agent::background::BackgroundJobs::default(),
+            &crate::models::ExecutionMode::Auto,
         )
         .await
         .unwrap();
@@ -1428,7 +1484,7 @@ mod tests {
             "esperava sucesso, recebeu: {}",
             outcome.observation
         );
-        let (_, sandbox_path, _, _) = outcome.pending_edit.unwrap();
+        let (_, sandbox_path, _, _, _) = outcome.pending_edit.unwrap();
         let sandboxed = fs::read_to_string(sandbox_path).unwrap();
         assert!(sandboxed.contains("bye"));
         fs::remove_dir_all(&dir).ok();
@@ -1453,6 +1509,7 @@ mod tests {
             &dir,
             &[],
             &crate::agent::background::BackgroundJobs::default(),
+            &crate::models::ExecutionMode::Auto,
         )
         .await
         .unwrap();
@@ -1461,7 +1518,7 @@ mod tests {
             "esperava sucesso via fuzzy, recebeu: {}",
             outcome.observation
         );
-        let (_, sandbox_path, _, _) = outcome.pending_edit.unwrap();
+        let (_, sandbox_path, _, _, _) = outcome.pending_edit.unwrap();
         let sandboxed = fs::read_to_string(sandbox_path).unwrap();
         assert!(sandboxed.contains("compute_total(a, b) * 2;"));
         fs::remove_dir_all(&dir).ok();
@@ -1482,6 +1539,7 @@ mod tests {
             &dir,
             &[],
             &crate::agent::background::BackgroundJobs::default(),
+            &crate::models::ExecutionMode::Auto,
         )
         .await
         .unwrap();
@@ -1505,6 +1563,7 @@ mod tests {
             &dir,
             &[],
             &crate::agent::background::BackgroundJobs::default(),
+            &crate::models::ExecutionMode::Auto,
         )
         .await
         .unwrap();
@@ -1514,7 +1573,7 @@ mod tests {
             outcome.observation
         );
         assert!(outcome.pending_edit.is_some());
-        let (_, sandbox_path, _, _) = outcome.pending_edit.unwrap();
+        let (_, sandbox_path, _, _, _) = outcome.pending_edit.unwrap();
         let sandboxed = fs::read_to_string(sandbox_path).unwrap();
         assert!(
             sandboxed.contains("        let x = 2;"),
@@ -1538,6 +1597,7 @@ mod tests {
             &dir,
             &[],
             &crate::agent::background::BackgroundJobs::default(),
+            &crate::models::ExecutionMode::Auto,
         )
         .await
         .unwrap();
@@ -1572,6 +1632,7 @@ mod tests {
             &dir,
             &[],
             &crate::agent::background::BackgroundJobs::default(),
+            &crate::models::ExecutionMode::Auto,
         )
         .await
         .unwrap();
@@ -1580,7 +1641,7 @@ mod tests {
             "esperava sucesso, recebeu: {}",
             outcome.observation
         );
-        let (_, sandbox_path, _, _) = outcome.pending_edit.unwrap();
+        let (_, sandbox_path, _, _, _) = outcome.pending_edit.unwrap();
 
         let written_bytes = fs::read(&sandbox_path).unwrap();
         assert_eq!(
@@ -1610,6 +1671,7 @@ mod tests {
             &dir,
             &[],
             &crate::agent::background::BackgroundJobs::default(),
+            &crate::models::ExecutionMode::Auto,
         )
         .await
         .unwrap();
@@ -1618,7 +1680,7 @@ mod tests {
             "esperava sucesso, recebeu: {}",
             outcome.observation
         );
-        let (_, sandbox_path, _, _) = outcome.pending_edit.unwrap();
+        let (_, sandbox_path, _, _, _) = outcome.pending_edit.unwrap();
 
         let written_bytes = fs::read(&sandbox_path).unwrap();
         assert_eq!(
@@ -1635,7 +1697,7 @@ mod tests {
         let background_jobs = crate::agent::background::BackgroundJobs::default();
 
         let start_args = json!({ "command": "echo from-tool-dispatch", "background": true });
-        let outcome = execute_project_tool("run_command", &start_args, &dir, &[], &background_jobs)
+        let outcome = execute_project_tool("run_command", &start_args, &dir, &[], &background_jobs, &crate::models::ExecutionMode::Auto)
             .await
             .unwrap();
         assert!(
@@ -1662,6 +1724,7 @@ mod tests {
             &dir,
             &[],
             &background_jobs,
+            &crate::models::ExecutionMode::Auto,
         )
         .await
         .unwrap();
@@ -1672,13 +1735,13 @@ mod tests {
         );
 
         let listed =
-            execute_project_tool("list_background", &json!({}), &dir, &[], &background_jobs)
+            execute_project_tool("list_background", &json!({}), &dir, &[], &background_jobs, &crate::models::ExecutionMode::Auto)
                 .await
                 .unwrap();
         assert!(listed.observation.contains(&id));
 
         let stopped =
-            execute_project_tool("stop_background", &check_args, &dir, &[], &background_jobs)
+            execute_project_tool("stop_background", &check_args, &dir, &[], &background_jobs, &crate::models::ExecutionMode::Auto)
                 .await
                 .unwrap();
         assert!(stopped.observation.contains("encerrado"));
@@ -1707,7 +1770,7 @@ mod tests {
             "old_str": "def add(a, b):\n    return a + b",
             "new_str": "def add(a, b):\n    \"\"\"Soma dois numeros.\"\"\"\n    return a + b",
         });
-        let outcome1 = execute_project_tool("edit_file", &first, &dir, &[], &background_jobs)
+        let outcome1 = execute_project_tool("edit_file", &first, &dir, &[], &background_jobs, &crate::models::ExecutionMode::Auto)
             .await
             .unwrap();
         assert!(
@@ -1715,14 +1778,14 @@ mod tests {
             "primeira edicao deveria ter sucesso: {}",
             outcome1.observation
         );
-        let (_, sandbox_path_1, _, _) = outcome1.pending_edit.unwrap();
+        let (_, sandbox_path_1, _, _, _) = outcome1.pending_edit.unwrap();
 
         let second = json!({
             "path": "utils.py",
             "old_str": "def subtract(a, b):\n    return a - b",
             "new_str": "def subtract(a, b):\n    \"\"\"Subtrai dois numeros.\"\"\"\n    return a - b",
         });
-        let outcome2 = execute_project_tool("edit_file", &second, &dir, &[], &background_jobs)
+        let outcome2 = execute_project_tool("edit_file", &second, &dir, &[], &background_jobs, &crate::models::ExecutionMode::Auto)
             .await
             .unwrap();
         assert!(
@@ -1730,7 +1793,7 @@ mod tests {
             "segunda edicao deveria ter sucesso: {}",
             outcome2.observation
         );
-        let (_, sandbox_path_2, _, _) = outcome2.pending_edit.unwrap();
+        let (_, sandbox_path_2, _, _, _) = outcome2.pending_edit.unwrap();
 
         // Invariante que torna a correcao suficiente mesmo sem colapsar as
         // entradas de pending-edit na UI: `to_sandbox_path` e deterministico
@@ -1773,6 +1836,7 @@ mod tests {
             &background_jobs,
             &mcp_clients,
             Path::new("."),
+            &crate::models::ExecutionMode::Auto,
         )
         .await;
         match result {
@@ -1799,6 +1863,7 @@ mod tests {
             &project,
             &[extra.to_string_lossy().to_string()],
             &background_jobs,
+            &crate::models::ExecutionMode::Auto,
         )
         .await
         .unwrap();
@@ -1809,20 +1874,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn read_file_rejects_absolute_path_outside_project_and_extra_roots() {
+    async fn read_file_accepts_any_absolute_path() {
         let project = scratch_dir();
         let outsider = scratch_dir();
-        fs::write(outsider.join("secret.txt"), "nao deveria ser lido").unwrap();
+        fs::write(outsider.join("secret.txt"), "conteudo de fora").unwrap();
         let background_jobs = crate::agent::background::BackgroundJobs::default();
 
         let outsider_path = outsider.join("secret.txt").to_string_lossy().to_string();
         let args = json!({ "path": outsider_path });
         let result =
-            execute_project_tool("read_file", &args, &project, &[], &background_jobs).await;
+            execute_project_tool("read_file", &args, &project, &[], &background_jobs, &crate::models::ExecutionMode::Auto).await;
         assert!(
-            result.is_err(),
-            "esperava erro, path fica fora do projeto e de qualquer pasta extra permitida"
+            result.is_ok(),
+            "read_file deve aceitar qualquer caminho absoluto, recebeu erro: {:?}",
+            result.err()
         );
+        assert!(result.unwrap().observation.contains("conteudo de fora"));
 
         fs::remove_dir_all(&project).ok();
         fs::remove_dir_all(&outsider).ok();
@@ -1844,6 +1911,7 @@ mod tests {
             &project,
             &extra_roots,
             &background_jobs,
+            &crate::models::ExecutionMode::Auto,
         )
         .await
         .unwrap();
@@ -1852,7 +1920,7 @@ mod tests {
 
         let grep_args = json!({ "pattern": "hello", "path": extra.to_string_lossy().to_string() });
         let grepped =
-            execute_project_tool("grep", &grep_args, &project, &extra_roots, &background_jobs)
+            execute_project_tool("grep", &grep_args, &project, &extra_roots, &background_jobs, &crate::models::ExecutionMode::Auto)
                 .await
                 .unwrap();
         assert!(grepped.observation.contains("a.txt"));
@@ -1880,6 +1948,7 @@ mod tests {
             &project,
             &extra_roots,
             &background_jobs,
+            &crate::models::ExecutionMode::Auto,
         )
         .await;
         assert!(

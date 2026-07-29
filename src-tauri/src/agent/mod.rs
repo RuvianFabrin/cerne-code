@@ -11,7 +11,7 @@ use crate::context;
 use crate::models::{
     ChatMessage, ExecutionMode, PendingEdit, ProviderConfig, ProviderKind, Session, TaskItem,
 };
-use crate::{providers, sandbox, sessions, skills, AppState};
+use crate::{providers, sessions, skills, AppState};
 use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
@@ -94,6 +94,33 @@ fn is_doom_loop(recent_calls: &[(String, String)]) -> bool {
     }
     let window = &recent_calls[recent_calls.len() - DOOM_LOOP_THRESHOLD..];
     window.iter().all(|call| call == &window[0])
+}
+
+/// Extrai o caminho de arquivo dos argumentos JSON de uma tool call, quando
+/// a ferramenta opera em arquivos (read_file, write_file, edit_file, etc.).
+fn extract_file_path(tool_name: &str, args: &serde_json::Value) -> Option<String> {
+    match tool_name {
+        "read_file" | "write_file" | "edit_file" | "ast_edit" | "ast_grep" => {
+            args["path"].as_str().map(|s| s.to_string())
+        }
+        "list_dir" | "grep" => args["path"].as_str().map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
+/// Conta linhas adicionadas (+) e removidas (-) num unified diff, ignorando
+/// os headers (+++/---) e linhas de contexto.
+fn count_diff_stats(diff: &str) -> (u32, u32) {
+    let mut adds = 0u32;
+    let mut dels = 0u32;
+    for line in diff.lines() {
+        if line.starts_with('+') && !line.starts_with("+++") {
+            adds += 1;
+        } else if line.starts_with('-') && !line.starts_with("---") {
+            dels += 1;
+        }
+    }
+    (adds, dels)
 }
 
 // Once the running history crosses this fraction of the model's context
@@ -287,6 +314,15 @@ struct CompactedEvent {
     summarized_messages: usize,
 }
 
+#[derive(Serialize, Clone)]
+struct TurnStatsEvent {
+    session_id: String,
+    turn: u32,
+    elapsed_ms: u64,
+    prompt_tokens: u32,
+    completion_tokens: u32,
+}
+
 pub async fn run_turn(
     app: AppHandle,
     state: &AppState,
@@ -315,6 +351,12 @@ pub async fn run_turn(
         if session.fable_method {
             prompt.push_str("\n\n");
             prompt.push_str(FABLE_METHOD_PROMPT);
+        }
+        if let Some(ref root) = session.project_root {
+            prompt.push_str(&format!(
+                "\n\nPasta do projeto desta sessao: {root}\n\
+                 Use caminhos relativos a essa pasta (resolvidos automaticamente) ou caminhos absolutos dentro dela."
+            ));
         }
         messages.push(ChatMessage {
             role: "system".to_string(),
@@ -398,6 +440,9 @@ pub async fn run_turn(
     let mut nudge_count: usize = 0;
     let mut force_tool_choice: bool = false;
     let mut tool_steps: usize = 0;
+    let turn_start = std::time::Instant::now();
+    let mut turn_prompt_tokens: u32 = 0;
+    let mut turn_completion_tokens: u32 = 0;
 
     'steps: loop {
         if tool_steps >= MAX_AGENTIC_STEPS {
@@ -447,6 +492,8 @@ pub async fn run_turn(
         .await?;
 
         if stream_result.usage.prompt_tokens > 0 || stream_result.usage.completion_tokens > 0 {
+            turn_prompt_tokens += stream_result.usage.prompt_tokens;
+            turn_completion_tokens += stream_result.usage.completion_tokens;
             if let Ok(updated) = sessions::accumulate_usage(
                 &app_data_dir,
                 &session_id,
@@ -509,6 +556,8 @@ pub async fn run_turn(
 
             let task_id = call.id.clone();
             let task_idx = tasks.len();
+            let file_path = extract_file_path(&call.function.name, &args);
+            let task_started = std::time::Instant::now();
             tasks.push(TaskItem {
                 id: task_id.clone(),
                 label: format!(
@@ -519,6 +568,11 @@ pub async fn run_turn(
                 status: "running".to_string(),
                 detail: None,
                 turn,
+                file_path,
+                additions: 0,
+                deletions: 0,
+                started_at_ms: chrono::Utc::now().timestamp_millis() as u64,
+                duration_ms: None,
             });
             sessions::save_tasks(&app_data_dir, &session_id, &tasks)?;
 
@@ -678,6 +732,7 @@ pub async fn run_turn(
                     &state.background_jobs,
                     &state.mcp_clients,
                     &state.app_data_dir,
+                    &session.execution_mode,
                 )
                 .await
             };
@@ -688,7 +743,8 @@ pub async fn run_turn(
             };
 
             if let Ok(outcome) = &result {
-                if let Some((target_path, sandbox_path, diff, is_new_file)) = &outcome.pending_edit
+                if let Some((target_path, sandbox_path, diff, is_new_file, already_applied)) =
+                    &outcome.pending_edit
                 {
                     let edit = PendingEdit {
                         id: uuid::Uuid::new_v4().to_string(),
@@ -697,6 +753,7 @@ pub async fn run_turn(
                         sandbox_path: sandbox_path.clone(),
                         diff: diff.clone(),
                         is_new_file: *is_new_file,
+                        already_applied: *already_applied,
                     };
                     state
                         .pending_edits
@@ -705,12 +762,17 @@ pub async fn run_turn(
                         .insert(edit.id.clone(), edit.clone());
                     let _ = app.emit("agent:pending_edit", edit);
 
-                    if session.execution_mode == ExecutionMode::Auto {
-                        let _ = sandbox::accept_edit(
-                            std::path::Path::new(sandbox_path),
-                            std::path::Path::new(target_path),
-                        );
+                    // YOLO: ja escrito direto, so invalida o cache.
+                    // Auto/Manual: fica na sandbox esperando o usuario aceitar.
+                    if *already_applied {
                         walk_cache::invalidate(std::path::Path::new(target_path));
+                    }
+
+                    // Preenche stats de diff no TaskItem pra UI mostrar +N/-N.
+                    if let Some(task) = tasks.get_mut(task_idx) {
+                        let (adds, dels) = count_diff_stats(diff);
+                        task.additions = adds;
+                        task.deletions = dels;
                     }
                 }
             }
@@ -722,6 +784,7 @@ pub async fn run_turn(
                     "failed".to_string()
                 };
                 task.detail = Some(truncate(&observation, 200));
+                task.duration_ms = Some(task_started.elapsed().as_millis() as u64);
             }
             sessions::save_tasks(&app_data_dir, &session_id, &tasks)?;
 
@@ -772,6 +835,17 @@ pub async fn run_turn(
         context_length,
         is_estimated_length,
         &session,
+    );
+
+    let _ = app.emit(
+        "agent:turn_stats",
+        TurnStatsEvent {
+            session_id: session_id.clone(),
+            turn,
+            elapsed_ms: turn_start.elapsed().as_millis() as u64,
+            prompt_tokens: turn_prompt_tokens,
+            completion_tokens: turn_completion_tokens,
+        },
     );
 
     let _ = app.emit(

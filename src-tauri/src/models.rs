@@ -226,6 +226,9 @@ pub enum ExecutionMode {
     Manual,
     #[default]
     Auto,
+    /// Escreve direto no arquivo real (sem sandbox), sem pedir permissao.
+    /// Para usuarios que confiam no agente e querem velocidade maxima.
+    Yolo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -273,6 +276,22 @@ pub struct TaskItem {
     /// disparou, em vez de só aparecerem no painel lateral.
     #[serde(default)]
     pub turn: u32,
+    /// Caminho do arquivo envolvido nesta operacao (extraido dos args da
+    /// tool call) — a UI mostra como chip inline com icone de tipo de arquivo.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    /// Linhas adicionadas no diff (contagem de linhas `+` no unified diff).
+    #[serde(default)]
+    pub additions: u32,
+    /// Linhas removidas no diff (contagem de linhas `-` no unified diff).
+    #[serde(default)]
+    pub deletions: u32,
+    /// Timestamp (epoch ms) de quando a tarefa comecou a executar.
+    #[serde(default)]
+    pub started_at_ms: u64,
+    /// Duracao em ms da execucao da tarefa (None enquanto running).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,4 +302,8 @@ pub struct PendingEdit {
     pub sandbox_path: String,
     pub diff: String,
     pub is_new_file: bool,
+    /// True quando a edicao ja foi aplicada direto no arquivo real (modo
+    /// YOLO) — a UI mostra o diff mas sem botoes Aceitar/Rejeitar.
+    #[serde(default)]
+    pub already_applied: bool,
 }

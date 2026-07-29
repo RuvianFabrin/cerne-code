@@ -141,6 +141,7 @@ pub async fn run(
                 &state.background_jobs,
                 &state.mcp_clients,
                 &state.app_data_dir,
+                &crate::models::ExecutionMode::Auto,
             )
             .await;
             let observation = match &result {
@@ -149,7 +150,7 @@ pub async fn run(
             };
 
             if let Ok(outcome) = &result {
-                if let Some((target_path, sandbox_path, diff, is_new_file)) = &outcome.pending_edit
+                if let Some((target_path, sandbox_path, diff, is_new_file, already_applied)) = &outcome.pending_edit
                 {
                     let edit = PendingEdit {
                         id: uuid::Uuid::new_v4().to_string(),
@@ -158,6 +159,7 @@ pub async fn run(
                         sandbox_path: sandbox_path.clone(),
                         diff: diff.clone(),
                         is_new_file: *is_new_file,
+                        already_applied: *already_applied,
                     };
                     state
                         .pending_edits

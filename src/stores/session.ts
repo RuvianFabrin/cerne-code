@@ -13,6 +13,7 @@ import {
   onPendingEdit,
   onPermissionRequest,
   onToolCall,
+  onTurnStats,
   type AskQuestion,
   type ChatMessage,
   type ContextUsage,
@@ -23,6 +24,7 @@ import {
   type Session,
   type TaskItem,
   type TodoItem,
+  type TurnStats,
 } from "../api";
 
 export const useSessionStore = defineStore("session", {
@@ -50,6 +52,9 @@ export const useSessionStore = defineStore("session", {
     computerUseWarned: false,
     showComputerUseWarning: false,
     screenshotCount: 0,
+    thinkingStartedAt: null as number | null,
+    turnStartedAt: null as number | null,
+    turnStats: {} as Record<number, TurnStats>,
   }),
   actions: {
     async initListeners() {
@@ -77,16 +82,21 @@ export const useSessionStore = defineStore("session", {
         if (sessionId !== this.currentId) return;
         if (status === "thinking" || status === "starting_server") {
           this.status = status;
+          if (status === "thinking" && !this.thinkingStartedAt) {
+            this.thinkingStartedAt = Date.now();
+          }
           const lastRunning = [...this.tasks].reverse().find((t: TaskItem) => t.status === "running");
           if (lastRunning) lastRunning.status = "done";
         } else {
           this.status = "idle";
+          this.thinkingStartedAt = null;
         }
       });
 
       await onToolCall((sessionId, tool, args) => {
         if (sessionId !== this.currentId) return;
         this.status = "running_tool";
+        this.thinkingStartedAt = null;
         this.activeToolLabel = `${tool}(${args.slice(0, 60)})`;
         const userTurns = this.messages.filter((m) => m.role === "user").length;
         this.tasks = [...this.tasks, {
@@ -95,6 +105,8 @@ export const useSessionStore = defineStore("session", {
           status: "running" as const,
           detail: null,
           turn: userTurns,
+          started_at_ms: Date.now(),
+          duration_ms: null,
         }];
         if (tool.startsWith("computer_use_")) {
           if (["computer_use_screenshot", "computer_use_click", "computer_use_type_text", "computer_use_press_key", "computer_use_scroll", "computer_use_drag", "computer_use_right_click", "computer_use_double_click"].includes(tool)) {
@@ -110,7 +122,11 @@ export const useSessionStore = defineStore("session", {
       await onPendingEdit((edit) => {
         if (edit.session_id !== this.currentId) return;
         this.pendingEdits.push(edit);
-        this.acceptEdit(edit.id);
+        // YOLO: ja aplicado direto, remove da lista de pendentes.
+        // Auto/Manual: fica pendente pra o usuario aceitar/rejeitar.
+        if (edit.already_applied) {
+          this.pendingEdits = this.pendingEdits.filter((e) => e.id !== edit.id);
+        }
       });
 
       await onAskQuestion((question) => {
@@ -163,6 +179,12 @@ export const useSessionStore = defineStore("session", {
         if (sessionId !== this.currentId) return;
         this.lastCompactionNote = `Contexto compactado — ${summarizedMessages} mensagens antigas resumidas`;
       });
+
+      await onTurnStats((stats) => {
+        if (stats.session_id !== this.currentId) return;
+        this.turnStats = { ...this.turnStats, [stats.turn]: stats };
+        this.thinkingStartedAt = null;
+      });
     },
 
     async loadSessions() {
@@ -196,6 +218,9 @@ export const useSessionStore = defineStore("session", {
       this.computerUseWarned = false;
       this.showComputerUseWarning = false;
       this.screenshotCount = 0;
+      this.thinkingStartedAt = null;
+      this.turnStartedAt = null;
+      this.turnStats = {};
       await this.reloadCurrent();
     },
 
@@ -256,6 +281,8 @@ export const useSessionStore = defineStore("session", {
       if (!this.currentId || !text.trim()) return;
       this.messages.push({ role: "user", content: displayText ?? text, images });
       this.status = "thinking";
+      this.thinkingStartedAt = Date.now();
+      this.turnStartedAt = Date.now();
       this.error = "";
       await api.sendMessage(this.currentId, text, images, displayText);
     },

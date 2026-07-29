@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export type ProviderKind = "openrouter" | "llama_cpp" | "ollama" | "lm_studio" | "custom";
-export type ExecutionMode = "manual" | "auto";
+export type ExecutionMode = "manual" | "auto" | "yolo";
 
 export interface AppConfig {
   active_provider: ProviderKind;
@@ -64,6 +64,19 @@ export interface TaskItem {
   status: "pending" | "running" | "done" | "failed";
   detail?: string | null;
   turn: number;
+  file_path?: string | null;
+  additions?: number;
+  deletions?: number;
+  started_at_ms?: number;
+  duration_ms?: number | null;
+}
+
+export interface TurnStats {
+  session_id: string;
+  turn: number;
+  elapsed_ms: number;
+  prompt_tokens: number;
+  completion_tokens: number;
 }
 
 export interface PendingEdit {
@@ -73,6 +86,7 @@ export interface PendingEdit {
   sandbox_path: string;
   diff: string;
   is_new_file: boolean;
+  already_applied?: boolean;
 }
 
 export interface AskQuestion {
@@ -293,4 +307,8 @@ export function onContextCompacted(cb: (sessionId: string, summarizedMessages: n
   return listen<{ session_id: string; summarized_messages: number }>("agent:context_compacted", (e) =>
     cb(e.payload.session_id, e.payload.summarized_messages),
   );
+}
+
+export function onTurnStats(cb: (stats: TurnStats) => void): Promise<UnlistenFn> {
+  return listen<TurnStats>("agent:turn_stats", (e) => cb(e.payload));
 }

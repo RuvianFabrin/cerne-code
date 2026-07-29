@@ -158,6 +158,7 @@ pub async fn run(
                 &state.background_jobs,
                 &state.mcp_clients,
                 &state.app_data_dir,
+                &crate::models::ExecutionMode::Auto,
             )
             .await;
             let observation = match &result {

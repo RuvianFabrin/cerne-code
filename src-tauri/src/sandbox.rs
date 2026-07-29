@@ -90,6 +90,30 @@ pub fn write_sandboxed(
     Ok((diff, is_new_file))
 }
 
+/// Escreve `new_content` DIRETO no arquivo real (sem sandbox), preservando
+/// a codificacao original. Usado no modo YOLO. Retorna (diff, is_new_file).
+pub fn write_direct(target: &Path, new_content: &str) -> Result<(String, bool)> {
+    let is_new_file = !target.exists();
+    let (original, file_encoding) = match std::fs::read(target) {
+        Ok(bytes) => crate::encoding::decode(&bytes),
+        Err(_) => (String::new(), crate::encoding::FileEncoding::UTF8_NO_BOM),
+    };
+
+    let diff = similar::TextDiff::from_lines(original.as_str(), new_content)
+        .unified_diff()
+        .context_radius(3)
+        .header(&target.to_string_lossy(), &target.to_string_lossy())
+        .to_string();
+
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let encoded = crate::encoding::encode(new_content, file_encoding);
+    std::fs::write(target, &encoded)?;
+
+    Ok((diff, is_new_file))
+}
+
 pub fn accept_edit(sandbox_path: &Path, target: &Path) -> Result<()> {
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent)?;

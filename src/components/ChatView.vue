@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, watch, ref } from "vue";
+import { computed, nextTick, watch, ref, onMounted, onUnmounted } from "vue";
 import { useSessionStore } from "../stores/session";
 import MessageBubble from "./MessageBubble.vue";
 import MarkdownContent from "./MarkdownContent.vue";
@@ -9,12 +9,18 @@ import AskCard from "./AskCard.vue";
 import PermissionCard from "./PermissionCard.vue";
 import TaskStepGroup from "./TaskStepGroup.vue";
 import TodoCard from "./TodoCard.vue";
-import type { ChatMessage, TaskItem } from "../api";
+import { formatElapsed, formatTokens } from "../taskLabels";
+import type { ChatMessage, TaskItem, TurnStats } from "../api";
 
 defineEmits<{ "open-settings": [] }>();
 
 const sessionStore = useSessionStore();
 const scrollRef = ref<HTMLDivElement | null>(null);
+
+const now = ref(Date.now());
+let tickTimer: ReturnType<typeof setInterval> | null = null;
+onMounted(() => { tickTimer = setInterval(() => { now.value = Date.now(); }, 1000); });
+onUnmounted(() => { if (tickTimer) clearInterval(tickTimer); });
 
 // Timeline do chat: mensagem do usuário -> passos de ferramenta daquele
 // turno (rótulo amigável, expansível) -> resposta final do agente. As
@@ -23,7 +29,8 @@ const scrollRef = ref<HTMLDivElement | null>(null);
 type TimelineItem =
   | { kind: "message"; key: string; message: ChatMessage }
   | { kind: "steps"; key: string; tasks: TaskItem[] }
-  | { kind: "todo"; key: string; todos: import("../api").TodoItem[] };
+  | { kind: "todo"; key: string; todos: import("../api").TodoItem[] }
+  | { kind: "stats"; key: string; stats: TurnStats };
 
 const timeline = computed<TimelineItem[]>(() => {
   const items: TimelineItem[] = [];
@@ -31,8 +38,12 @@ const timeline = computed<TimelineItem[]>(() => {
   let todoIdx = 0;
   let taskOffset = 0;
   const allTasks = sessionStore.tasks;
+  const stats = sessionStore.turnStats;
   sessionStore.messages.forEach((m, i) => {
     if (m.role === "user") {
+      if (userTurn > 0 && stats[userTurn]) {
+        items.push({ kind: "stats", key: `stats-${userTurn}`, stats: stats[userTurn] });
+      }
       userTurn++;
       taskOffset = allTasks.findIndex((t) => t.turn === userTurn);
       if (taskOffset < 0) taskOffset = allTasks.length;
@@ -64,12 +75,21 @@ const timeline = computed<TimelineItem[]>(() => {
   if (liveTasks.length > 0) {
     items.push({ kind: "steps", key: "live-steps", tasks: liveTasks });
   }
+  if (userTurn > 0 && stats[userTurn]) {
+    items.push({ kind: "stats", key: `stats-${userTurn}`, stats: stats[userTurn] });
+  }
   return items;
 });
 
 const statusLabel = computed(() => {
   if (sessionStore.status === "starting_server") return "Iniciando servidor local...";
-  if (sessionStore.status === "thinking") return "Pensando...";
+  if (sessionStore.status === "thinking") {
+    const base = "Pensando...";
+    if (sessionStore.thinkingStartedAt) {
+      return `${base} ${formatElapsed(now.value - sessionStore.thinkingStartedAt)}`;
+    }
+    return base;
+  }
   if (sessionStore.status === "running_tool") return sessionStore.activeToolLabel;
   return "";
 });
@@ -104,7 +124,13 @@ watch(
             <template v-for="item in timeline" :key="item.key">
               <MessageBubble v-if="item.kind === 'message'" :message="item.message" />
               <TaskStepGroup v-else-if="item.kind === 'steps'" :tasks="item.tasks" />
-              <TodoCard v-else :todos="item.todos" />
+              <TodoCard v-else-if="item.kind === 'todo'" :todos="item.todos" />
+              <div v-else-if="item.kind === 'stats'" class="turn-stats">
+                <span class="msi">schedule</span>
+                {{ formatElapsed(item.stats.elapsed_ms) }}
+                <span class="stats-sep">·</span>
+                {{ formatTokens(item.stats.prompt_tokens + item.stats.completion_tokens) }} tokens
+              </div>
             </template>
             <AskCard />
             <PermissionCard />
@@ -260,6 +286,25 @@ watch(
 
 .compaction-note .msi {
   font-size: 14px;
+}
+
+.turn-stats {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 400;
+  color: #b0b0b8;
+  padding: 8px 2px 2px;
+  font-family: ui-monospace, monospace;
+}
+
+.turn-stats .msi {
+  font-size: 13px;
+}
+
+.stats-sep {
+  color: #d4d4d8;
 }
 
 .computer-use-warning {

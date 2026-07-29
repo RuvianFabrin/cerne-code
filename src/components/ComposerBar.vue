@@ -12,6 +12,7 @@ import { useLlamaHealth } from "../composables/useLlamaHealth";
 import type { ExecutionMode, ProviderKind } from "../api";
 
 const EXECUTION_MODE_OPTIONS: { value: ExecutionMode; label: string }[] = [
+  { value: "yolo", label: "⚡ YOLO" },
   { value: "auto", label: "Automático" },
   { value: "manual", label: "Manual" },
 ];
@@ -421,7 +422,7 @@ watch(
           optionValue="value"
           class="execution-mode-select"
           size="small"
-          v-tooltip.top="'Manual: cada ação pede aprovação. Automático: roda livre, cancelável a qualquer momento.'"
+          v-tooltip.top="'YOLO: edita direto, sem sandbox. Automático: sandbox + você aceita/rejeita. Manual: aprova cada ação.'"
         />
         <Select
           v-if="sessionStore.currentSession"
