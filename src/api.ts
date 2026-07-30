@@ -19,6 +19,13 @@ export interface ModelInfo {
   id: string;
   label: string;
   context_length?: number | null;
+  name?: string | null;
+  description?: string | null;
+  size_bytes?: number | null;
+  parameter_size?: string | null;
+  price_prompt?: number | null;
+  price_completion?: number | null;
+  supports_vision?: boolean | null;
 }
 
 export interface ContextUsage {
@@ -153,6 +160,9 @@ export const api = {
   hasOpenrouterKey: () => invoke<boolean>("has_openrouter_key"),
   listProviderModels: (kind: ProviderKind, customProviderId?: string | null) =>
     invoke<ModelInfo[]>("list_provider_models", { kind, customProviderId }),
+  getModelFavorites: (providerKey: string) => invoke<string[]>("get_model_favorites", { providerKey }),
+  setModelFavorites: (providerKey: string, modelIds: string[]) =>
+    invoke<void>("set_model_favorites", { providerKey, modelIds }),
   resolveContextLength: (kind: ProviderKind, model: string, forkId: string | null, customProviderId?: string | null) =>
     invoke<number | null>("resolve_context_length", { kind, model, forkId, customProviderId }),
   listLlamaForks: () => invoke<LlamaForkConfig[]>("list_llama_forks"),

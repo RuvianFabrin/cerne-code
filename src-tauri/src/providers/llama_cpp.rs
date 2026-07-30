@@ -89,6 +89,13 @@ pub fn list_presets(models_ini_path: &str) -> Result<Vec<ModelInfo>> {
                 id: s.clone(),
                 label: s,
                 context_length: ctx,
+                name: None,
+                description: None,
+                size_bytes: None,
+                parameter_size: None,
+                price_prompt: None,
+                price_completion: None,
+                supports_vision: None,
             }
         })
         .collect();

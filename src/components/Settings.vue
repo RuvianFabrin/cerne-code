@@ -1,13 +1,28 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { open } from "@tauri-apps/plugin-dialog";
-import { api, type CustomProviderConfig, type McpServerConfig, type SearchProviderKind, type SkillMeta } from "../api";
+import { api, type CustomProviderConfig, type McpServerConfig, type ProviderKind, type SearchProviderKind, type SkillMeta } from "../api";
 import { PROVIDER_LABELS, useProviderStore } from "../stores/provider";
 import LlamaForkRow from "./LlamaForkRow.vue";
+import ModelBrowserDialog from "./ModelBrowserDialog.vue";
 import SkillEditorModal from "./SkillEditorModal.vue";
 
 const providerStore = useProviderStore();
 const openrouterKeyInput = ref("");
+
+// Estado do modal de navegação de modelos — um só modal reutilizado pra
+// qualquer provedor/conexão; `openModelBrowser` define quem ele mostra.
+const modelBrowser = ref({
+  visible: false,
+  kind: "openrouter" as ProviderKind,
+  forkId: "",
+  customProviderId: "",
+  title: "",
+});
+
+function openModelBrowser(kind: ProviderKind, title: string, forkId = "", customProviderId = "") {
+  modelBrowser.value = { visible: true, kind, forkId, customProviderId, title };
+}
 
 const newForkId = ref("");
 const newForkLabel = ref("");
@@ -368,6 +383,10 @@ async function saveKey() {
           <input v-model="openrouterKeyInput" type="password" placeholder="sk-or-..." class="text-input" />
           <button class="btn-primary" @click="saveKey">Salvar</button>
         </div>
+        <button class="btn-secondary browse-models-btn" @click="openModelBrowser('openrouter', 'Modelos — OpenRouter')">
+          <span class="msi">search</span>
+          Ver modelos
+        </button>
       </section>
 
       <section>
@@ -379,7 +398,12 @@ async function saveKey() {
           assumir onde você instalou o seu).
         </p>
         <div class="fork-list">
-          <LlamaForkRow v-for="fork in providerStore.forks" :key="fork.id" :fork="fork" />
+          <LlamaForkRow
+            v-for="fork in providerStore.forks"
+            :key="fork.id"
+            :fork="fork"
+            @browse="openModelBrowser('llama_cpp', `Modelos — ${fork.label}`, fork.id)"
+          />
           <p v-if="providerStore.forks.length === 0" class="hint">Nenhum fork configurado ainda.</p>
         </div>
         <div class="fork-form">
@@ -423,6 +447,7 @@ async function saveKey() {
               <span class="skill-desc">{{ provider.base_url }}</span>
             </div>
             <div class="mcp-actions">
+              <button class="btn-secondary" @click="openModelBrowser('custom', `Modelos — ${provider.label}`, '', provider.id)">Modelos</button>
               <button class="btn-secondary" @click="startEditCustomProvider(provider)">Editar</button>
               <button class="btn-secondary" @click="removeCustomProvider(provider.id)">Remover</button>
             </div>
@@ -615,11 +640,17 @@ async function saveKey() {
         <h2>Endpoints locais</h2>
         <div class="field">
           <label>Ollama</label>
-          <input v-model="providerStore.config.ollama_base_url" class="text-input" @change="providerStore.saveConfig" />
+          <div class="endpoint-row">
+            <input v-model="providerStore.config.ollama_base_url" class="text-input" @change="providerStore.saveConfig" />
+            <button class="btn-secondary" @click="openModelBrowser('ollama', 'Modelos — Ollama')">Modelos</button>
+          </div>
         </div>
         <div class="field">
           <label>LM Studio</label>
-          <input v-model="providerStore.config.lmstudio_base_url" class="text-input" @change="providerStore.saveConfig" />
+          <div class="endpoint-row">
+            <input v-model="providerStore.config.lmstudio_base_url" class="text-input" @change="providerStore.saveConfig" />
+            <button class="btn-secondary" @click="openModelBrowser('lm_studio', 'Modelos — LM Studio')">Modelos</button>
+          </div>
         </div>
         <div class="field">
           <label>llama.cpp (router)</label>
@@ -627,6 +658,14 @@ async function saveKey() {
         </div>
       </section>
     </div>
+
+    <ModelBrowserDialog
+      v-model:visible="modelBrowser.visible"
+      :kind="modelBrowser.kind"
+      :fork-id="modelBrowser.forkId"
+      :custom-provider-id="modelBrowser.customProviderId"
+      :title="modelBrowser.title"
+    />
   </div>
 </template>
 
@@ -640,6 +679,28 @@ async function saveKey() {
   max-width: 640px;
   margin: 0 auto;
   padding: 32px 24px 60px;
+}
+
+.browse-models-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.browse-models-btn .msi {
+  font-size: 16px;
+}
+
+.endpoint-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.endpoint-row .text-input {
+  flex: 1;
+  min-width: 0;
 }
 
 h1 {

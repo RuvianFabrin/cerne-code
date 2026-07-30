@@ -26,11 +26,18 @@ function modelsCacheKey(kind: ProviderKind, forkId?: string, customProviderId?: 
   return kind;
 }
 
+// Quantos modelos mostrar no dropdown de modelo quando NÃO há favoritos —
+// o OpenRouter tem centenas e renderizar todos no Select pesa; 100 mantém a
+// busca útil sem travar. Com favoritos marcados, o dropdown mostra só eles.
+const MODEL_DROPDOWN_LIMIT = 100;
+
 export const useProviderStore = defineStore("provider", {
   state: () => ({
     config: null as AppConfig | null,
     models: {} as Record<string, ModelInfo[]>,
     modelsLoading: {} as Record<string, boolean>,
+    favorites: {} as Record<string, string[]>,
+    favoritesLoaded: {} as Record<string, boolean>,
     forks: [] as LlamaForkConfig[],
     customProviders: [] as CustomProviderConfig[],
     hasOpenrouterKey: false,
@@ -74,6 +81,45 @@ export const useProviderStore = defineStore("provider", {
     },
     modelsLoadingFor(kind: ProviderKind, forkId?: string, customProviderId?: string): boolean {
       return this.modelsLoading[modelsCacheKey(kind, forkId, customProviderId)] ?? false;
+    },
+    async loadFavorites(kind: ProviderKind, forkId?: string, customProviderId?: string) {
+      const key = modelsCacheKey(kind, forkId, customProviderId);
+      if (this.favoritesLoaded[key]) return;
+      try {
+        this.favorites[key] = await api.getModelFavorites(key);
+      } catch {
+        this.favorites[key] = [];
+      } finally {
+        this.favoritesLoaded[key] = true;
+      }
+    },
+    favoritesFor(kind: ProviderKind, forkId?: string, customProviderId?: string): string[] {
+      return this.favorites[modelsCacheKey(kind, forkId, customProviderId)] ?? [];
+    },
+    isFavorite(kind: ProviderKind, modelId: string, forkId?: string, customProviderId?: string): boolean {
+      return this.favoritesFor(kind, forkId, customProviderId).includes(modelId);
+    },
+    async toggleFavorite(kind: ProviderKind, modelId: string, forkId?: string, customProviderId?: string) {
+      const key = modelsCacheKey(kind, forkId, customProviderId);
+      const current = this.favorites[key] ?? [];
+      const next = current.includes(modelId)
+        ? current.filter((id) => id !== modelId)
+        : [...current, modelId];
+      this.favorites[key] = next;
+      this.favoritesLoaded[key] = true;
+      await api.setModelFavorites(key, next);
+    },
+    // O que o dropdown de modelo mostra: só os favoritos (na ordem em que
+    // foram marcados) quando houver algum; senão os primeiros
+    // MODEL_DROPDOWN_LIMIT pra lista gigante (OpenRouter) não travar o Select.
+    visibleModelsFor(kind: ProviderKind, forkId?: string, customProviderId?: string): ModelInfo[] {
+      const all = this.modelsFor(kind, forkId, customProviderId);
+      const favIds = this.favoritesFor(kind, forkId, customProviderId);
+      if (favIds.length > 0) {
+        const byId = new Map(all.map((m) => [m.id, m]));
+        return favIds.map((id) => byId.get(id)).filter((m): m is ModelInfo => !!m);
+      }
+      return all.slice(0, MODEL_DROPDOWN_LIMIT);
     },
     async setActiveProvider(kind: ProviderKind) {
       if (!this.config) return;

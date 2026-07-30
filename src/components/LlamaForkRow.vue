@@ -6,6 +6,7 @@ import { useProviderStore } from "../stores/provider";
 import StatusDot from "./StatusDot.vue";
 
 const props = defineProps<{ fork: LlamaForkConfig }>();
+const emit = defineEmits<{ browse: [] }>();
 
 const providerStore = useProviderStore();
 const forkId = computed(() => props.fork.id);
@@ -40,6 +41,7 @@ async function remove() {
       <span class="fork-path">{{ fork.server_exe }}</span>
     </div>
     <span v-if="actionError" class="fork-error">{{ actionError }}</span>
+    <button class="btn-secondary" @click="emit('browse')">Modelos</button>
     <button class="btn-secondary" @click="start">Iniciar</button>
     <button class="btn-secondary" @click="stop">Parar</button>
     <button class="btn-secondary" @click="remove">Remover</button>

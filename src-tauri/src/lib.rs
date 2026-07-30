@@ -145,6 +145,29 @@ async fn list_provider_models(
         .map_err(|e| e.to_string())
 }
 
+/// Favoritos do modal de navegação de modelos, por conexão (`provider_key` =
+/// "openrouter"/"ollama"/"lm_studio"/"llama_cpp:{fork}"/"custom:{id}").
+#[tauri::command]
+fn get_model_favorites(state: State<AppState>, provider_key: String) -> Vec<String> {
+    let mut map = config::load_model_favorites(&state.app_data_dir);
+    map.remove(&provider_key).unwrap_or_default()
+}
+
+#[tauri::command]
+fn set_model_favorites(
+    state: State<AppState>,
+    provider_key: String,
+    model_ids: Vec<String>,
+) -> Result<(), String> {
+    let mut map = config::load_model_favorites(&state.app_data_dir);
+    if model_ids.is_empty() {
+        map.remove(&provider_key);
+    } else {
+        map.insert(provider_key, model_ids);
+    }
+    config::save_model_favorites(&state.app_data_dir, &map).map_err(|e| e.to_string())
+}
+
 /// Best-effort context-window lookup for a given provider+model, used when
 /// creating a session so the context-usage indicator has a real number.
 #[tauri::command]
@@ -1086,6 +1109,8 @@ pub fn run() {
             set_openrouter_key,
             has_openrouter_key,
             list_provider_models,
+            get_model_favorites,
+            set_model_favorites,
             resolve_context_length,
             list_llama_forks,
             add_llama_fork,

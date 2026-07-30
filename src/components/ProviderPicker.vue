@@ -42,7 +42,18 @@ const providerOptions = (Object.keys(PROVIDER_LABELS) as ProviderKind[]).map((ki
 const forkOptions = computed(() => providerStore.forks.map((f) => ({ id: f.id, label: f.label })));
 const customProviderOptions = computed(() => providerStore.customProviders.map((p) => ({ id: p.id, label: p.label })));
 
-const modelOptions = computed(() => providerStore.modelsFor(props.provider, props.fork, props.customProviderId));
+const modelOptions = computed(() => {
+  const visible = providerStore.visibleModelsFor(props.provider, props.fork, props.customProviderId);
+  // Garante que o modelo já escolhido sempre apareça, mesmo quando ele não
+  // está nos favoritos nem nos primeiros N (senão o Select perderia o valor).
+  if (props.model && !visible.some((m) => m.id === props.model)) {
+    const current = providerStore
+      .modelsFor(props.provider, props.fork, props.customProviderId)
+      .find((m) => m.id === props.model);
+    if (current) return [current, ...visible];
+  }
+  return visible;
+});
 const modelsLoading = computed(() => providerStore.modelsLoadingFor(props.provider, props.fork, props.customProviderId));
 
 const modelLabel = computed(() => modelOptions.value.find((m) => m.id === props.model)?.label ?? props.model);
@@ -77,6 +88,16 @@ function setModel(id: string) {
 
 function refresh(kind: ProviderKind, forkId: string, customProviderId: string) {
   providerStore.refreshModels(kind, forkId, customProviderId);
+  providerStore.loadFavorites(kind, forkId, customProviderId);
+}
+
+function isFavorite(id: string): boolean {
+  return providerStore.isFavorite(props.provider, id, props.fork, props.customProviderId);
+}
+
+function toggleCurrentFavorite() {
+  if (!props.model) return;
+  providerStore.toggleFavorite(props.provider, props.model, props.fork, props.customProviderId);
 }
 
 watch(
@@ -158,7 +179,23 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
       class="picker-select model-select"
       size="small"
       filter
-    />
+    >
+      <template #option="{ option }">
+        <div class="model-option">
+          <span class="msi model-option-star" :class="{ on: isFavorite(option.id) }">star</span>
+          <span class="model-option-label">{{ option.label }}</span>
+        </div>
+      </template>
+    </Select>
+    <button
+      v-if="model"
+      class="fav-btn"
+      :class="{ active: isFavorite(model) }"
+      v-tooltip.top="isFavorite(model) ? 'Remover dos favoritos' : 'Marcar como favorito (aparece primeiro no dropdown)'"
+      @click="toggleCurrentFavorite"
+    >
+      <span class="msi">{{ isFavorite(model) ? "star" : "star_border" }}</span>
+    </button>
     <button
       v-if="model && provider !== 'llama_cpp'"
       class="vision-btn"
@@ -319,5 +356,59 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
 
 .vision-btn .msi {
   font-size: 16px;
+}
+
+.fav-btn {
+  border: var(--cerne-border);
+  background: #ffffff;
+  border-radius: 8px;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #a1a1aa;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.fav-btn:hover {
+  color: #f59e0b;
+  background: #fffbeb;
+}
+
+.fav-btn.active {
+  color: #f59e0b;
+  border-color: #fcd34d;
+  background: #fffbeb;
+}
+
+.fav-btn .msi {
+  font-size: 17px;
+}
+
+.model-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.model-option-star {
+  font-size: 15px;
+  color: #e4e4e7;
+  flex-shrink: 0;
+}
+
+.model-option-star.on {
+  color: #f59e0b;
+}
+
+.model-option-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 </style>

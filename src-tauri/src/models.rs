@@ -69,6 +69,32 @@ pub struct ModelInfo {
     pub label: String,
     #[serde(default)]
     pub context_length: Option<u32>,
+    /// Nome legível do modelo — OpenRouter traz (`name`); provedores
+    /// OpenAI-compat genéricos não, então a UI cai no `id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Descrição curta do modelo (OpenRouter). Usada como tooltip no modal
+    /// de navegação de modelos.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Tamanho do arquivo do modelo em bytes — só o Ollama (`/api/tags`)
+    /// informa; os demais provedores não expõem isso na listagem.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
+    /// Tamanho em parâmetros (ex: "7B", "70B") — Ollama
+    /// (`details.parameter_size`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parameter_size: Option<String>,
+    /// Preço por token de entrada (USD) — OpenRouter (`pricing.prompt`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_prompt: Option<f64>,
+    /// Preço por token de saída (USD) — OpenRouter (`pricing.completion`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_completion: Option<f64>,
+    /// Se o modelo aceita imagem — inferido das modalidades de entrada
+    /// (OpenRouter `architecture.input_modalities` contém "image").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_vision: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -364,10 +364,21 @@ pub async fn list_models(cfg: &ProviderConfig, api_key: Option<String>, app_data
                 .into_iter()
                 .filter_map(|m| {
                     let id = m["name"].as_str()?.to_string();
+                    let size_bytes = m["size"].as_u64();
+                    let parameter_size = m["details"]["parameter_size"]
+                        .as_str()
+                        .map(|s| s.to_string());
                     Some(ModelInfo {
                         label: id.clone(),
                         id,
                         context_length: None,
+                        name: None,
+                        description: None,
+                        size_bytes,
+                        parameter_size,
+                        price_prompt: None,
+                        price_completion: None,
+                        supports_vision: None,
                     })
                 })
                 .collect();
@@ -397,10 +408,31 @@ pub async fn list_models(cfg: &ProviderConfig, api_key: Option<String>, app_data
                         .or_else(|| m["top_provider"]["context_length"].as_u64())
                         .map(|v| v as u32);
                     let context_length = Some(resolve_context_length(app_data_dir, &id, api_ctx));
+                    // OpenRouter traz nome/descrição/preço/modalidades; um
+                    // endpoint OpenAI-compat genérico (Custom/LM Studio) não
+                    // traz nada disso e os campos ficam None.
+                    let name = m["name"].as_str().map(|s| s.to_string());
+                    let description = m["description"].as_str().map(|s| s.to_string());
+                    let price_prompt = m["pricing"]["prompt"]
+                        .as_str()
+                        .and_then(|s| s.parse::<f64>().ok());
+                    let price_completion = m["pricing"]["completion"]
+                        .as_str()
+                        .and_then(|s| s.parse::<f64>().ok());
+                    let supports_vision = m["architecture"]["input_modalities"]
+                        .as_array()
+                        .map(|arr| arr.iter().any(|v| v.as_str() == Some("image")));
                     Some(ModelInfo {
                         label: id.clone(),
                         id,
                         context_length,
+                        name,
+                        description,
+                        size_bytes: None,
+                        parameter_size: None,
+                        price_prompt,
+                        price_completion,
+                        supports_vision,
                     })
                 })
                 .collect();
