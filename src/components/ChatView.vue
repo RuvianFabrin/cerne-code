@@ -17,6 +17,36 @@ defineEmits<{ "open-settings": [] }>();
 const sessionStore = useSessionStore();
 const scrollRef = ref<HTMLDivElement | null>(null);
 
+// Auto-stick no fundo do chat: gruda no final enquanto o usuário não rolar
+// pra cima. Assim que ele rolar, para de forçar o scroll (pra poder ler
+// mensagens antigas em paz); volta a grudar quando ele manda a próxima
+// mensagem ou clica no botão "ir pro final".
+const NEAR_BOTTOM_PX = 80;
+const autoStick = ref(true);
+const showJumpToBottom = ref(false);
+let lastMessageCount = 0;
+
+function isNearBottom(): boolean {
+  const el = scrollRef.value;
+  if (!el) return true;
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
+}
+
+function onChatScroll() {
+  autoStick.value = isNearBottom();
+  showJumpToBottom.value = !autoStick.value;
+}
+
+function scrollToBottom(behavior: ScrollBehavior = "auto") {
+  scrollRef.value?.scrollTo({ top: scrollRef.value.scrollHeight, behavior });
+}
+
+function jumpToBottom() {
+  autoStick.value = true;
+  showJumpToBottom.value = false;
+  scrollToBottom("smooth");
+}
+
 const now = ref(Date.now());
 let tickTimer: ReturnType<typeof setInterval> | null = null;
 onMounted(() => { tickTimer = setInterval(() => { now.value = Date.now(); }, 1000); });
@@ -68,13 +98,6 @@ const timeline = computed<TimelineItem[]>(() => {
       }
     }
   });
-  // Tasks "live": empurrados pelo onToolCall mas ainda sem mensagem de
-  // assistente correspondente em sessionStore.messages. Sem isso os steps
-  // só aparecem depois que o turno termina e o reloadCurrent recarrega.
-  const liveTasks = allTasks.slice(taskOffset);
-  if (liveTasks.length > 0) {
-    items.push({ kind: "steps", key: "live-steps", tasks: liveTasks });
-  }
   if (userTurn > 0 && stats[userTurn]) {
     items.push({ kind: "stats", key: `stats-${userTurn}`, stats: stats[userTurn] });
   }
@@ -108,11 +131,40 @@ const thinkingTail = computed(() => {
 });
 
 watch(
-  () => [sessionStore.messages.length, sessionStore.streamingText, sessionStore.thinkingText, sessionStore.tasks.length],
+  () => [
+    sessionStore.messages.length,
+    sessionStore.streamingText,
+    sessionStore.thinkingText,
+    sessionStore.tasks.length,
+    sessionStore.pendingQuestion,
+  ],
   async () => {
+    const count = sessionStore.messages.length;
+    // Mensagem nova do usuário (ele mandou algo) sempre volta a grudar no
+    // final, mesmo que ele tivesse rolado pra cima lendo o histórico.
+    if (count > lastMessageCount && sessionStore.messages[count - 1]?.role === "user") {
+      autoStick.value = true;
+      showJumpToBottom.value = false;
+    }
+    lastMessageCount = count;
     await nextTick();
-    scrollRef.value?.scrollTo({ top: scrollRef.value.scrollHeight });
+    if (autoStick.value) scrollToBottom();
   },
+);
+
+// Trocar de sessão (ou abrir uma com histórico) sempre começa grudado no
+// final — sem isso o scroll ficava em 0 e parecia que "tudo" estava
+// amontoado no topo até o usuário rolar manualmente.
+watch(
+  () => sessionStore.currentId,
+  async () => {
+    autoStick.value = true;
+    showJumpToBottom.value = false;
+    lastMessageCount = sessionStore.messages.length;
+    await nextTick();
+    scrollToBottom();
+  },
+  { immediate: true },
 );
 </script>
 
@@ -124,9 +176,8 @@ watch(
   <template v-else>
     <div class="chat-layout">
       <div class="chat-column">
-        <div class="chat-scroll" ref="scrollRef">
+        <div class="chat-scroll" ref="scrollRef" @scroll="onChatScroll">
           <div class="chat-inner">
-            <DiffReview v-for="edit in sessionStore.pendingEdits" :key="edit.id" :edit="edit" />
             <template v-for="item in timeline" :key="item.key">
               <MessageBubble v-if="item.kind === 'message'" :message="item.message" />
               <TaskStepGroup v-else-if="item.kind === 'steps'" :tasks="item.tasks" />
@@ -138,8 +189,19 @@ watch(
                 {{ formatTokens(item.stats.prompt_tokens + item.stats.completion_tokens) }} tokens
               </div>
             </template>
-            <AskCard />
-            <PermissionCard />
+            <!-- Blocos do turno em andamento, na ordem real em que texto e
+                 chamadas de ferramenta aconteceram (ver liveBlocks em
+                 session.ts) — sem isso tudo aparecia agrupado (steps
+                 primeiro, texto todo concatenado depois) até o turno
+                 terminar e recarregar do histórico. -->
+            <template v-for="block in sessionStore.liveBlocks" :key="block.id">
+              <TaskStepGroup v-if="block.kind === 'tools'" :tasks="block.tasks" />
+              <div v-else class="row">
+                <div class="bubble streaming">
+                  <MarkdownContent :content="block.text" />
+                </div>
+              </div>
+            </template>
             <div v-if="sessionStore.showComputerUseWarning" class="computer-use-warning">
               <span class="msi">warning</span>
               <div class="warning-text">
@@ -147,11 +209,6 @@ watch(
                 <p>Cada screenshot consome ~1.500 tokens de visão. Uma sessão com 20 ações pode usar ~30K tokens extras.</p>
               </div>
               <button class="warning-dismiss" @click="sessionStore.showComputerUseWarning = false">Entendi</button>
-            </div>
-            <div v-if="sessionStore.streamingText" class="row">
-              <div class="bubble streaming">
-                <MarkdownContent :content="sessionStore.streamingText" />
-              </div>
             </div>
             <div v-if="statusLabel" class="status-line">
               <span class="msi spin">progress_activity</span>
@@ -169,6 +226,18 @@ watch(
           </div>
         </div>
         <div class="composer-wrap">
+          <button v-if="showJumpToBottom" class="jump-to-bottom" @click="jumpToBottom" title="Ir para o final">
+            <span class="msi">arrow_downward</span>
+          </button>
+          <!-- Tudo que pede uma ação do usuário (aceitar edição, aprovar
+               ferramenta em modo Manual, responder pergunta) fica ancorado
+               aqui, fora da área de scroll — enterrado lá no topo, junto
+               com o histórico, passava despercebido. -->
+          <div v-if="sessionStore.pendingEdits.length > 0" class="pending-edits-anchor">
+            <DiffReview v-for="edit in sessionStore.pendingEdits" :key="edit.id" :edit="edit" />
+          </div>
+          <PermissionCard />
+          <AskCard />
           <ComposerBar />
         </div>
       </div>
@@ -217,10 +286,43 @@ watch(
 }
 
 .composer-wrap {
+  position: relative;
   max-width: 820px;
   width: 100%;
   margin: 0 auto;
   padding: 0 24px 20px;
+}
+
+.jump-to-bottom {
+  position: absolute;
+  top: -44px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: var(--cerne-border);
+  background: #ffffff;
+  color: #3f3f46;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  z-index: 2;
+}
+
+.jump-to-bottom:hover {
+  background: #f4f4f5;
+}
+
+.jump-to-bottom .msi {
+  font-size: 18px;
+}
+
+.pending-edits-anchor {
+  max-height: 40vh;
+  overflow-y: auto;
 }
 
 .row {

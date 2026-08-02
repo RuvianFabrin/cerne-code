@@ -108,6 +108,35 @@ function isWriteTool(task: TaskItem): boolean {
   const name = toolNameFromLabel(task.label);
   return ["write_file", "edit_file", "ast_edit"].includes(name);
 }
+
+// t.detail pras ferramentas de escrita vem como "<frase>. Diff:\n<diff
+// unificado>" (ver agent/tools.rs) — separa a frase (nota) do diff de
+// verdade, que a gente colore linha a linha em vez de jogar tudo cru
+// num bloco de texto so.
+function splitDiffDetail(detail: string | null | undefined): { note: string; diffText: string } {
+  const raw = detail ?? "";
+  const marker = "Diff:\n";
+  const idx = raw.indexOf(marker);
+  if (idx === -1) return { note: raw, diffText: "" };
+  return { note: raw.slice(0, idx + "Diff:".length), diffText: raw.slice(idx + marker.length) };
+}
+
+type DiffLineKind = "add" | "del" | "hunk" | "header" | "context";
+
+function diffLines(detail: string | null | undefined): { kind: DiffLineKind; text: string }[] {
+  const { diffText } = splitDiffDetail(detail);
+  if (!diffText) return [];
+  return diffText
+    .split("\n")
+    .filter((line, idx, arr) => !(line === "" && idx === arr.length - 1))
+    .map((line) => {
+      if (line.startsWith("+++") || line.startsWith("---")) return { kind: "header" as const, text: line };
+      if (line.startsWith("@@")) return { kind: "hunk" as const, text: line };
+      if (line.startsWith("+")) return { kind: "add" as const, text: line };
+      if (line.startsWith("-")) return { kind: "del" as const, text: line };
+      return { kind: "context" as const, text: line };
+    });
+}
 </script>
 
 <template>
@@ -154,6 +183,12 @@ function isWriteTool(task: TaskItem): boolean {
                 : `mostrar mais ${linesInfo(t.detail).lines.length - PREVIEW_LINES} linhas`
             }}
           </button>
+        </div>
+      </div>
+      <div v-else-if="isWriteTool(t) && expanded.has(t.id)" class="step-detail diff-detail">
+        <div class="step-detail-label">{{ splitDiffDetail(t.detail).note }}</div>
+        <div class="diff-box">
+          <div v-for="(line, idx) in diffLines(t.detail)" :key="idx" class="diff-line" :class="`diff-${line.kind}`">{{ line.text || " " }}</div>
         </div>
       </div>
       <div v-else-if="expanded.has(t.id)" class="step-detail">
@@ -320,6 +355,50 @@ function isWriteTool(task: TaskItem): boolean {
   overflow-wrap: break-word;
   max-height: 240px;
   overflow-y: auto;
+}
+
+.diff-detail {
+  background: #1e1e1e;
+}
+
+.diff-detail .step-detail-label {
+  color: #9d9d9d;
+}
+
+.diff-box {
+  margin-top: 6px;
+  border-radius: 6px;
+  overflow: hidden auto;
+  max-height: 320px;
+  font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.diff-line {
+  padding: 0 8px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  color: #d4d4d4;
+}
+
+.diff-line.diff-add {
+  background: rgba(46, 160, 67, 0.2);
+  color: #7ee787;
+}
+
+.diff-line.diff-del {
+  background: rgba(248, 81, 73, 0.2);
+  color: #ff9492;
+}
+
+.diff-line.diff-hunk {
+  color: #a371f7;
+  background: rgba(163, 113, 247, 0.1);
+}
+
+.diff-line.diff-header {
+  color: #8b949e;
 }
 
 .cmd-block {

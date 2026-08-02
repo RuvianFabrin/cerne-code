@@ -15,16 +15,38 @@ pub fn sandbox_root_for(project_root: &Path) -> Result<PathBuf> {
     Ok(parent.join(format!("{name}_cerne_sandbox")))
 }
 
-/// Maps a path (absolute, under project_root) to its sandbox mirror path.
+/// Maps a path to its sandbox mirror path. Caminhos sob `project_root`
+/// mantêm a estrutura relativa de sempre; caminhos externos (permitidos nas
+/// ferramentas de escrita em modo Auto/YOLO — ver `resolve_path` em
+/// `agent/tools.rs`) caem num subdiretório `_external`, espelhados por uma
+/// versão sanitizada do caminho absoluto (preserva a estrutura de pastas
+/// pra facilitar debug, sem colidir entre unidades/pastas diferentes).
 pub fn to_sandbox_path(project_root: &Path, target: &Path) -> Result<PathBuf> {
-    let rel = target.strip_prefix(project_root).map_err(|_| {
-        anyhow!(
-            "target path {:?} is not under project root {:?}",
-            target,
-            project_root
-        )
-    })?;
-    Ok(sandbox_root_for(project_root)?.join(rel))
+    let root = sandbox_root_for(project_root)?;
+    if let Ok(rel) = target.strip_prefix(project_root) {
+        return Ok(root.join(rel));
+    }
+    Ok(root.join("_external").join(sanitize_external_path(target)))
+}
+
+fn sanitize_external_path(target: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in target.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => {
+                let name = prefix
+                    .as_os_str()
+                    .to_string_lossy()
+                    .replace([':', '\\', '/'], "_");
+                out.push(format!("{name}_drive"));
+            }
+            std::path::Component::Normal(part) => out.push(part),
+            std::path::Component::RootDir
+            | std::path::Component::CurDir
+            | std::path::Component::ParentDir => {}
+        }
+    }
+    out
 }
 
 /// Conteudo "atual" de um arquivo pra fins de EDICAO (nao de exibicao de

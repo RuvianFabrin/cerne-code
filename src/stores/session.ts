@@ -41,6 +41,15 @@ export const useSessionStore = defineStore("session", {
     pendingPermission: null as PermissionRequest | null,
     status: "idle" as "idle" | "thinking" | "running_tool" | "starting_server",
     streamingText: "",
+    // Espelha texto e chamadas de ferramenta do turno em andamento na ORDEM
+    // real em que aconteceram (texto, ferramenta, texto, ferramenta...) —
+    // ao contrario de streamingText (uma string so, tudo concatenado) e
+    // tasks (todas as chamadas do turno num bloco so), que nao davam pra
+    // intercalar corretamente enquanto o turno ainda estava rolando.
+    liveBlocks: [] as Array<
+      | { kind: "text"; id: string; text: string }
+      | { kind: "tools"; id: string; tasks: TaskItem[] }
+    >,
     thinkingText: "",
     todoSnapshots: [] as { turn: number; todos: TodoItem[] }[],
     activeToolLabel: "",
@@ -65,6 +74,12 @@ export const useSessionStore = defineStore("session", {
         if (sessionId !== this.currentId) return;
         this.thinkingText = "";
         this.streamingText += delta;
+        const last = this.liveBlocks[this.liveBlocks.length - 1];
+        if (last && last.kind === "text") {
+          last.text += delta;
+        } else {
+          this.liveBlocks.push({ kind: "text", id: `live-text-${Date.now()}-${this.liveBlocks.length}`, text: delta });
+        }
       });
 
       await onThinkingToken((sessionId, delta) => {
@@ -99,7 +114,7 @@ export const useSessionStore = defineStore("session", {
         this.thinkingStartedAt = null;
         this.activeToolLabel = `${tool}(${args.slice(0, 60)})`;
         const userTurns = this.messages.filter((m) => m.role === "user").length;
-        this.tasks = [...this.tasks, {
+        const task: TaskItem = {
           id: `live-${Date.now()}`,
           label: `${tool}(${args.slice(0, 80)})`,
           status: "running" as const,
@@ -107,7 +122,14 @@ export const useSessionStore = defineStore("session", {
           turn: userTurns,
           started_at_ms: Date.now(),
           duration_ms: null,
-        }];
+        };
+        this.tasks = [...this.tasks, task];
+        const lastBlock = this.liveBlocks[this.liveBlocks.length - 1];
+        if (lastBlock && lastBlock.kind === "tools") {
+          lastBlock.tasks.push(task);
+        } else {
+          this.liveBlocks.push({ kind: "tools", id: `live-tools-${Date.now()}`, tasks: [task] });
+        }
         if (tool.startsWith("computer_use_")) {
           if (["computer_use_screenshot", "computer_use_click", "computer_use_type_text", "computer_use_press_key", "computer_use_scroll", "computer_use_drag", "computer_use_right_click", "computer_use_double_click"].includes(tool)) {
             this.screenshotCount++;
@@ -144,6 +166,7 @@ export const useSessionStore = defineStore("session", {
         if (sessionId !== this.currentId) return;
         this.status = "idle";
         this.streamingText = "";
+        this.liveBlocks = [];
         this.thinkingText = "";
         this.activeToolLabel = "";
         this.pendingPermission = null;
@@ -165,6 +188,7 @@ export const useSessionStore = defineStore("session", {
         }
         this.status = "idle";
         this.streamingText = "";
+        this.liveBlocks = [];
         this.thinkingText = "";
         this.error = message;
         this.pendingPermission = null;
@@ -210,6 +234,7 @@ export const useSessionStore = defineStore("session", {
     async selectSession(id: string) {
       this.currentId = id;
       this.streamingText = "";
+      this.liveBlocks = [];
       this.thinkingText = "";
       this.todoSnapshots = [];
       this.status = "idle";
@@ -280,6 +305,7 @@ export const useSessionStore = defineStore("session", {
     async send(text: string, displayText?: string, images: string[] = []) {
       if (!this.currentId || !text.trim()) return;
       this.messages.push({ role: "user", content: displayText ?? text, images });
+      this.liveBlocks = [];
       this.status = "thinking";
       this.thinkingStartedAt = Date.now();
       this.turnStartedAt = Date.now();

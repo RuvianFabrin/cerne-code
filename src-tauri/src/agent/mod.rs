@@ -766,18 +766,22 @@ pub async fn run_turn(
                         is_new_file: *is_new_file,
                         already_applied: *already_applied,
                     };
-                    state
-                        .pending_edits
-                        .lock()
-                        .unwrap()
-                        .insert(edit.id.clone(), edit.clone());
-                    let _ = app.emit("agent:pending_edit", edit);
-
-                    // YOLO: ja escrito direto, so invalida o cache.
+                    // YOLO (already_applied): ja escrito direto, nao entra na
+                    // lista persistente - nao ha accept/reject pra tirar de
+                    // la depois, entao ficaria "zumbi" pra sempre em
+                    // list_pending_edits (accept_edit/reject_edit sao os
+                    // unicos pontos que removem do mapa). So invalida o cache.
                     // Auto/Manual: fica na sandbox esperando o usuario aceitar.
                     if *already_applied {
                         walk_cache::invalidate(std::path::Path::new(target_path));
+                    } else {
+                        state
+                            .pending_edits
+                            .lock()
+                            .unwrap()
+                            .insert(edit.id.clone(), edit.clone());
                     }
+                    let _ = app.emit("agent:pending_edit", edit);
 
                     // Preenche stats de diff no TaskItem pra UI mostrar +N/-N.
                     if let Some(task) = tasks.get_mut(task_idx) {

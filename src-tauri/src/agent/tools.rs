@@ -327,12 +327,21 @@ fn spec(name: &str, description: &str, parameters: Value) -> ToolSpec {
     }
 }
 
-/// Resolve um caminho (relativo ou absoluto) restrito a `project_root` — usado
-/// pelas ferramentas de ESCRITA (`write_file`/`edit_file`/`ast_edit`). Nunca
-/// aceita pasta extra de leitura: a sandbox so espelha o `project_root`,
-/// entao escrever fora dele nao tem onde ficar "pendente de aceite".
-fn resolve_path(project_root: &Path, rel: &str) -> Result<PathBuf> {
-    resolve_within(project_root, &[], rel)
+/// Resolve um caminho (relativo ou absoluto) pras ferramentas de ESCRITA
+/// (`write_file`/`edit_file`/`ast_edit`/`create_excel`/`create_word`/
+/// `create_pdf`). Caminho relativo sempre resolve dentro do `project_root`.
+/// Caminho absoluto fora do projeto so e aceito em modo Auto ou YOLO — em
+/// Manual, cada tool call ja pausa pedindo aprovacao explicita, mas ainda
+/// assim mantemos a mesma restricao de sempre por consistencia, ja que
+/// ninguem pediu pra mudar esse modo. `to_sandbox_path` (sandbox.rs) sabe
+/// espelhar caminhos externos num subdiretorio `_external` da sandbox.
+fn resolve_path(
+    project_root: &Path,
+    rel: &str,
+    execution_mode: &crate::models::ExecutionMode,
+) -> Result<PathBuf> {
+    let allow_external = *execution_mode != crate::models::ExecutionMode::Manual;
+    resolve_within(project_root, &[], rel, allow_external)
 }
 
 /// Como `resolve_path`, mas para LEITURA aceita QUALQUER caminho absoluto no
@@ -351,8 +360,17 @@ fn resolve_read_path(project_root: &Path, _extra_roots: &[String], rel: &str) ->
     Ok(project_root.join(trimmed.trim_start_matches(['/', '\\'])))
 }
 
-fn resolve_within(project_root: &Path, extra_roots: &[String], rel: &str) -> Result<PathBuf> {
-    let candidate = project_root.join(rel.trim_start_matches(['/', '\\']));
+fn resolve_within(
+    project_root: &Path,
+    extra_roots: &[String],
+    rel: &str,
+    allow_external: bool,
+) -> Result<PathBuf> {
+    let trimmed = rel.trim();
+    let candidate = project_root.join(trimmed.trim_start_matches(['/', '\\']));
+    if allow_external && Path::new(trimmed).is_absolute() {
+        return Ok(candidate);
+    }
     let root = project_root
         .canonicalize()
         .map_err(|e| anyhow!("raiz do projeto invalida: {e}"))?;
@@ -908,7 +926,7 @@ async fn execute_project_tool(
             let rel = args["path"]
                 .as_str()
                 .ok_or_else(|| anyhow!("path obrigatorio"))?;
-            let target = resolve_path(project_root, rel)?;
+            let target = resolve_path(project_root, rel, execution_mode)?;
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -968,7 +986,7 @@ async fn execute_project_tool(
             let rel = args["path"]
                 .as_str()
                 .ok_or_else(|| anyhow!("path obrigatorio"))?;
-            let target = resolve_path(project_root, rel)?;
+            let target = resolve_path(project_root, rel, execution_mode)?;
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -1035,7 +1053,7 @@ async fn execute_project_tool(
             let rel = args["path"]
                 .as_str()
                 .ok_or_else(|| anyhow!("path obrigatorio"))?;
-            let target = resolve_path(project_root, rel)?;
+            let target = resolve_path(project_root, rel, execution_mode)?;
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -1128,7 +1146,7 @@ async fn execute_project_tool(
             let content = args["content"]
                 .as_str()
                 .ok_or_else(|| anyhow!("content obrigatorio"))?;
-            let target = resolve_path(project_root, rel)?;
+            let target = resolve_path(project_root, rel, execution_mode)?;
             if *execution_mode == crate::models::ExecutionMode::Yolo {
                 let (diff, is_new_file) = sandbox::write_direct(&target, content)?;
                 Ok(ToolOutcome {
@@ -1168,7 +1186,7 @@ async fn execute_project_tool(
             let new_str = args["new_str"]
                 .as_str()
                 .ok_or_else(|| anyhow!("new_str obrigatorio"))?;
-            let target = resolve_path(project_root, rel)?;
+            let target = resolve_path(project_root, rel, execution_mode)?;
             let original = sandbox::read_current_content(project_root, &target)?;
             let occurrences = original.matches(old_str).count();
             let new_content = match occurrences {
@@ -1260,7 +1278,7 @@ async fn execute_project_tool(
             let lang = args["language"]
                 .as_str()
                 .ok_or_else(|| anyhow!("language obrigatorio"))?;
-            let target = resolve_path(project_root, rel)?;
+            let target = resolve_path(project_root, rel, execution_mode)?;
             let original = sandbox::read_current_content(project_root, &target)?;
             let new_content = match ast_tools::rewrite_file(&original, pattern, rewrite, lang) {
                 Ok(c) => c,
@@ -1943,11 +1961,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_file_rejects_absolute_path_outside_project_root_even_with_extra_read_paths_configured(
-    ) {
-        // Ferramenta de ESCRITA nunca deve aceitar uma pasta extra de
-        // leitura como destino - a sandbox so espelha o project_root, entao
-        // nao ha onde deixar uma edicao "pendente de aceite" fora dele.
+    async fn write_file_rejects_absolute_path_outside_project_root_in_manual_mode() {
+        // Em modo Manual cada tool call ja pausa pedindo aprovacao, mas por
+        // consistencia com o comportamento historico continuamos restritos
+        // ao project_root nesse modo especifico.
         let project = scratch_dir();
         let extra = scratch_dir();
         let background_jobs = crate::agent::background::BackgroundJobs::default();
@@ -1961,15 +1978,61 @@ mod tests {
             &project,
             &extra_roots,
             &background_jobs,
-            &crate::models::ExecutionMode::Auto,
+            &crate::models::ExecutionMode::Manual,
         )
         .await;
         assert!(
             result.is_err(),
-            "write_file nao deveria aceitar caminho absoluto de uma pasta extra de leitura"
+            "write_file em modo Manual nao deveria aceitar caminho absoluto fora do projeto"
         );
 
         fs::remove_dir_all(&project).ok();
         fs::remove_dir_all(&extra).ok();
+    }
+
+    #[tokio::test]
+    async fn write_file_allows_absolute_path_outside_project_root_in_auto_and_yolo_mode() {
+        // Auto e YOLO liberam escrever num caminho absoluto fora do projeto
+        // (ex: usuario aponta uma pasta externa no composer) - a sandbox
+        // espelha em `_external` (Auto) ou escreve direto (YOLO).
+        for mode in [
+            crate::models::ExecutionMode::Auto,
+            crate::models::ExecutionMode::Yolo,
+        ] {
+            let project = scratch_dir();
+            let extra = scratch_dir();
+            let background_jobs = crate::agent::background::BackgroundJobs::default();
+
+            let target = extra.join("novo.txt");
+            let args =
+                json!({ "path": target.to_string_lossy().to_string(), "content": "conteudo externo" });
+            let result = execute_project_tool(
+                "write_file",
+                &args,
+                &project,
+                &[],
+                &background_jobs,
+                &mode,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("write_file deveria aceitar caminho externo em modo {mode:?}: {e}"));
+
+            if mode == crate::models::ExecutionMode::Yolo {
+                assert!(
+                    target.exists(),
+                    "YOLO deveria ter escrito direto no arquivo externo"
+                );
+                assert_eq!(fs::read_to_string(&target).unwrap(), "conteudo externo");
+            } else {
+                assert!(
+                    result.observation.contains("sandbox"),
+                    "Auto deveria escrever a edicao pendente na sandbox, nao direto no externo"
+                );
+                assert!(!target.exists(), "Auto nao deveria escrever direto no arquivo externo");
+            }
+
+            fs::remove_dir_all(&project).ok();
+            fs::remove_dir_all(&extra).ok();
+        }
     }
 }
