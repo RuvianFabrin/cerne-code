@@ -60,6 +60,7 @@
     "computer_use_type_text": "Escribió texto en la pantalla",
     "computer_use_press_key": "Presionó una tecla",
     "computer_use_list_windows": "Listó ventanas abiertas",
+    "computer_use_focus_window": "Trajo una ventana al primer plano",
     "computer_use_scroll": "Desplazó la pantalla",
     "computer_use_authorize": "Autorizó aplicación",
     "computer_use_browser_execute": "Ejecutó en el navegador (CDP)",

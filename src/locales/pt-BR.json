@@ -60,6 +60,7 @@
     "computer_use_type_text": "Digitou texto na tela",
     "computer_use_press_key": "Pressionou tecla",
     "computer_use_list_windows": "Listou janelas abertas",
+    "computer_use_focus_window": "Trouxe uma janela pro primeiro plano",
     "computer_use_scroll": "Rolou a tela",
     "computer_use_authorize": "Autorizou aplicação",
     "computer_use_browser_execute": "Executou no browser (CDP)",

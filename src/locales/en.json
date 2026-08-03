@@ -60,6 +60,7 @@
     "computer_use_type_text": "Typed text on screen",
     "computer_use_press_key": "Pressed a key",
     "computer_use_list_windows": "Listed open windows",
+    "computer_use_focus_window": "Brought a window to the foreground",
     "computer_use_scroll": "Scrolled the screen",
     "computer_use_authorize": "Authorized application",
     "computer_use_browser_execute": "Ran in browser (CDP)",

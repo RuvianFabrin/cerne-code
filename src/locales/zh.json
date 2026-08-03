@@ -60,6 +60,7 @@
     "computer_use_type_text": "在屏幕上输入了文本",
     "computer_use_press_key": "按下了按键",
     "computer_use_list_windows": "列出了打开的窗口",
+    "computer_use_focus_window": "将窗口置于前台",
     "computer_use_scroll": "滚动了屏幕",
     "computer_use_authorize": "授权了应用程序",
     "computer_use_browser_execute": "在浏览器中执行了操作（CDP）",

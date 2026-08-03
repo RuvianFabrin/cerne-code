@@ -106,6 +106,132 @@ fn get_foreground_exe_name() -> Result<String> {
     Err(anyhow!("get_foreground_exe_name nao implementado nesta plataforma"))
 }
 
+/// Acha a primeira janela visivel cujo titulo contem `title_substr`
+/// (case-insensitive) - mesmo criterio de match usado por
+/// `capture_screen_base64` pra screenshot de janela especifica.
+#[cfg(windows)]
+fn find_window_by_title(title_substr: &str) -> Result<windows::Win32::Foundation::HWND> {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowTextW, IsWindowVisible};
+
+    struct FindCtx {
+        needle: String,
+        found: Option<HWND>,
+    }
+    let mut ctx = FindCtx {
+        needle: title_substr.to_lowercase(),
+        found: None,
+    };
+
+    unsafe extern "system" fn callback(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let ctx = unsafe { &mut *(lparam.0 as *mut FindCtx) };
+        unsafe {
+            if IsWindowVisible(hwnd).as_bool() {
+                let mut buf = [0u16; 256];
+                let len = GetWindowTextW(hwnd, &mut buf);
+                if len > 0 {
+                    let title = String::from_utf16_lossy(&buf[..len as usize]).to_lowercase();
+                    if title.contains(&ctx.needle) {
+                        ctx.found = Some(hwnd);
+                        return BOOL(0); // achou - para a enumeracao
+                    }
+                }
+            }
+        }
+        BOOL(1)
+    }
+
+    unsafe {
+        let _ = EnumWindows(Some(callback), LPARAM(&mut ctx as *mut FindCtx as isize));
+    }
+    ctx.found
+        .ok_or_else(|| anyhow!("janela com titulo contendo '{title_substr}' nao encontrada"))
+}
+
+/// Restaura (se minimizada) e traz `hwnd` pro primeiro plano de verdade.
+///
+/// O Windows tem uma protecao ("foreground lock") que ignora
+/// `SetForegroundWindow` vindo de um processo que nao foi o ultimo a
+/// receber input do usuario - sem isso, computer_use so conseguia
+/// clicar/digitar em cima da janela que ja estava em primeiro plano por
+/// acaso. A tecnica padrao (mesma usada por AutoHotkey/pywinauto) e
+/// anexar temporariamente a fila de mensagens da nossa thread a da
+/// janela em primeiro plano atual e a da janela alvo via
+/// `AttachThreadInput` - isso concede a permissao de trocar o foco,
+/// que e revogada de novo assim que desanexamos.
+#[cfg(windows)]
+fn focus_window(hwnd: windows::Win32::Foundation::HWND) -> Result<()> {
+    use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, IsIconic,
+        SetForegroundWindow, ShowWindow, SW_RESTORE,
+    };
+
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_RESTORE);
+        }
+
+        let foreground = GetForegroundWindow();
+        let foreground_thread = GetWindowThreadProcessId(foreground, None);
+        let target_thread = GetWindowThreadProcessId(hwnd, None);
+        let current_thread = GetCurrentThreadId();
+
+        let attach_fg = foreground_thread != 0 && foreground_thread != current_thread;
+        let attach_target =
+            target_thread != 0 && target_thread != current_thread && target_thread != foreground_thread;
+
+        if attach_fg {
+            let _ = AttachThreadInput(current_thread, foreground_thread, true);
+        }
+        if attach_target {
+            let _ = AttachThreadInput(current_thread, target_thread, true);
+        }
+
+        let _ = BringWindowToTop(hwnd);
+        let result = SetForegroundWindow(hwnd);
+
+        if attach_target {
+            let _ = AttachThreadInput(current_thread, target_thread, false);
+        }
+        if attach_fg {
+            let _ = AttachThreadInput(current_thread, foreground_thread, false);
+        }
+
+        if !result.as_bool() {
+            return Err(anyhow!(
+                "SetForegroundWindow falhou - o Windows pode ter recusado a troca de foco"
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn exec_focus_window(_args: &Value) -> Result<ComputerOutcome> {
+    Ok(ComputerOutcome {
+        text: "focus_window so disponivel no Windows.".to_string(),
+        screenshot_base64: None,
+    })
+}
+
+#[cfg(windows)]
+fn exec_focus_window(args: &Value) -> Result<ComputerOutcome> {
+    rate_limit()?;
+    let title = args["window_title"]
+        .as_str()
+        .ok_or_else(|| anyhow!("window_title obrigatorio"))?;
+    let hwnd = find_window_by_title(title)?;
+    focus_window(hwnd)?;
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    Ok(ComputerOutcome {
+        text: format!(
+            "Janela contendo '{title}' trazida para primeiro plano. Use computer_use_screenshot pra ver o estado atual antes de clicar/digitar."
+        ),
+        screenshot_base64: None,
+    })
+}
+
 fn check_authorization(app_data_dir: &Path) -> Result<()> {
     let exe = get_foreground_exe_name()?;
     if is_authorized(app_data_dir, &exe) {
@@ -177,6 +303,17 @@ pub fn tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         spec(
+            "computer_use_focus_window",
+            "Traz uma janela (pelo titulo parcial, igual computer_use_list_windows mostra) para primeiro plano, restaurando-a se estiver minimizada. Use ISSO antes de click/type/scroll sempre que a aplicacao alvo nao for a que ja esta em primeiro plano - sem focar primeiro, o clique/digitacao vai pra janela errada (a que o usuario estiver usando no momento). Depois de focar, chame computer_use_screenshot pra confirmar o estado antes de interagir. Nao requer visao.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "window_title": { "type": "string", "description": "Titulo parcial da janela (case-insensitive), ex: 'Notepad' ou 'Cerne Code'" }
+                },
+                "required": ["window_title"]
+            }),
+        ),
+        spec(
             "computer_use_scroll",
             "Rola a tela ou janela focada. Use computer_use_click ANTES para garantir que a janela certa esta focada. REQUER modelo com visao.",
             json!({
@@ -239,6 +376,24 @@ pub fn tool_specs() -> Vec<ToolSpec> {
     ]
 }
 
+/// Ferramentas que realmente trabalham em cima de pixels/screenshot - as
+/// unicas que fazem sentido ficar de fora quando o modelo nao tem visao.
+/// list_windows/focus_window/authorize/browser_execute/AX-tree (get_window_state,
+/// click_element) sao baseadas em texto/estrutura, sem imagem nenhuma
+/// envolvida, entao continuam disponiveis mesmo sem visao - da pra automatizar
+/// tela via AX tree (mais confiavel que coordenada de pixel de qualquer jeito).
+pub const VISION_REQUIRED_TOOLS: &[&str] = &[
+    "computer_use_screenshot",
+    "computer_use_click",
+    "computer_use_type_text",
+    "computer_use_press_key",
+    "computer_use_scroll",
+];
+
+pub fn requires_vision(tool_name: &str) -> bool {
+    VISION_REQUIRED_TOOLS.contains(&tool_name)
+}
+
 fn spec(name: &str, description: &str, parameters: Value) -> ToolSpec {
     ToolSpec {
         kind: "function".to_string(),
@@ -259,6 +414,7 @@ pub async fn execute(name: &str, args: &Value, app_data_dir: &Path) -> Result<Co
     match name {
         "computer_use_screenshot" => exec_screenshot(args),
         "computer_use_list_windows" => exec_list_windows(),
+        "computer_use_focus_window" => exec_focus_window(args),
         "computer_use_authorize" => exec_authorize(args, app_data_dir),
         "computer_use_click" => {
             check_authorization(app_data_dir)?;

@@ -197,13 +197,17 @@ verify_completion pra um verificador independente confirmar com evidencia real (
 build, nao so lendo codigo) antes de voce alegar sucesso pro usuario - NAO use isso pra um pedido \
 simples que uma unica chamada de ferramenta ja resolve e confirma. Se o veredito vier REFUTADO, \
 NAO alegue sucesso - continue trabalhando a partir da evidencia que o verificador trouxe. \
-Quando usar computer_use (screenshot, click, type, key, scroll, list_windows): voce so ve o \
-MONITOR PRIMARIO do usuario. Antes de comecar qualquer automacao de tela, SEMPRE faca um \
+Quando usar computer_use (screenshot, click, type, key, scroll, list_windows, focus_window): voce \
+so ve o MONITOR PRIMARIO do usuario. Antes de comecar qualquer automacao de tela, SEMPRE faca um \
 screenshot primeiro e descreva o que ve. Se a aplicacao que voce precisa controlar nao estiver \
 visivel no monitor primario, use ask para pedir ao usuario: 'Nao vejo a aplicacao [X] no monitor \
 primario. Pode move-la para a tela principal?' Nao prossiga sem confirmacao. As coordenadas de \
 click sao relativas ao canto superior esquerdo do monitor primario (0,0). Nao tente interagir com \
-janelas que estao em outro monitor - peça ao usuario para move-las. \
+janelas que estao em outro monitor - peça ao usuario para move-las. Se a aplicacao alvo nao for a \
+que ja esta em primeiro plano (ex: o usuario esta digitando em outra janela, ou a aplicacao esta \
+minimizada), chame computer_use_focus_window(titulo) ANTES de click/type/scroll - sem isso a acao \
+vai pra janela errada, ja que click/type/scroll sempre agem sobre o que estiver em primeiro plano \
+no momento. Use computer_use_list_windows pra descobrir o titulo exato antes de focar. \
 \n\n## Regra de Loop\n\
 - Continue chamando ferramentas ate a tarefa estar 100% completa.\n\
 - NUNCA pare no meio para narrar o que falta. Execute.\n\
@@ -429,7 +433,16 @@ pub async fn run_turn(
         tool_specs.extend(computer::tool_specs());
     } else {
         // Modelo sem visão: remove imagens do histórico pra não enviar
-        // multimodal data que o provider rejeitaria (400 Bad Request).
+        // multimodal data que o provider rejeitaria (400 Bad Request). As
+        // tools de computer_use que NÃO dependem de screenshot (list_windows,
+        // focus_window, authorize, browser_execute, AX-tree) continuam
+        // disponíveis — dá pra automatizar tela via árvore de acessibilidade
+        // sem nunca precisar "ver" um pixel.
+        tool_specs.extend(
+            computer::tool_specs()
+                .into_iter()
+                .filter(|s| !computer::requires_vision(&s.function.name)),
+        );
         for msg in &mut messages {
             msg.images.clear();
         }
@@ -718,7 +731,7 @@ pub async fn run_turn(
                     _ => Err(anyhow::anyhow!("task_summary e how_to_verify obrigatorios")),
                 }
             } else if call.function.name.starts_with("computer_use_") {
-                if !has_vision {
+                if computer::requires_vision(&call.function.name) && !has_vision {
                     Err(anyhow::anyhow!(
                         "computer_use requer um modelo com suporte a visao. O modelo atual nao suporta imagens."
                     ))

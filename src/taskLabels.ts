@@ -28,6 +28,7 @@ const TOOL_NAMES = [
   "computer_use_type_text",
   "computer_use_press_key",
   "computer_use_list_windows",
+  "computer_use_focus_window",
   "computer_use_scroll",
   "computer_use_authorize",
   "computer_use_browser_execute",
