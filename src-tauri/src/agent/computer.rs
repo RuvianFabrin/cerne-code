@@ -215,6 +215,31 @@ fn exec_focus_window(_args: &Value) -> Result<ComputerOutcome> {
     })
 }
 
+/// Foca a janela indicada em `args["window_title"]` (se presente e não
+/// vazio) ANTES de qualquer outra coisa - usado por click/type_text/
+/// press_key/scroll pra deixar focar+agir numa aplicação em segundo plano
+/// numa chamada só, sem depender do modelo lembrar de chamar
+/// `computer_use_focus_window` separadamente antes. Precisa rodar ANTES de
+/// `check_authorization`, senão a autorização seria checada contra a
+/// janela antiga (normalmente o próprio Cerne Code, já que é nele que o
+/// usuário estava digitando o pedido).
+#[cfg(windows)]
+pub fn maybe_focus_from_args(args: &Value) -> Result<()> {
+    if let Some(title) = args["window_title"].as_str() {
+        if !title.trim().is_empty() {
+            let hwnd = find_window_by_title(title)?;
+            focus_window(hwnd)?;
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn maybe_focus_from_args(_args: &Value) -> Result<()> {
+    Ok(())
+}
+
 #[cfg(windows)]
 fn exec_focus_window(args: &Value) -> Result<ComputerOutcome> {
     rate_limit()?;
@@ -265,30 +290,33 @@ pub fn tool_specs() -> Vec<ToolSpec> {
                 "properties": {
                     "x": { "type": "integer", "description": "Coordenada X em pixels de tela" },
                     "y": { "type": "integer", "description": "Coordenada Y em pixels de tela" },
-                    "button": { "type": "string", "enum": ["left", "right", "middle"], "description": "Botao do mouse (default: left)" }
+                    "button": { "type": "string", "enum": ["left", "right", "middle"], "description": "Botao do mouse (default: left)" },
+                    "window_title": { "type": "string", "description": "Titulo parcial da janela alvo (opcional). Se informado, ela e trazida pro primeiro plano ANTES do clique - use sempre que a aplicacao alvo nao for a que o usuario estava usando (ex: o Cerne Code) no momento do pedido, senao o clique cai na janela errada." }
                 },
                 "required": ["x", "y"]
             }),
         ),
         spec(
             "computer_use_type_text",
-            "Digita texto via teclado no elemento focado. Use computer_use_click ANTES para focar o campo desejado. Max 500 chars por chamada. REQUER modelo com visao.",
+            "Digita texto via teclado no elemento focado. Foque o campo desejado ANTES, com computer_use_click (precisa de visao) ou computer_use_click_element (via AX-tree, nao precisa de visao). Max 500 chars por chamada. Nao requer visao (desde que o foco tenha sido feito por outra via).",
             json!({
                 "type": "object",
                 "properties": {
-                    "text": { "type": "string", "description": "Texto a digitar (max 500 chars)" }
+                    "text": { "type": "string", "description": "Texto a digitar (max 500 chars)" },
+                    "window_title": { "type": "string", "description": "Titulo parcial da janela alvo (opcional). Se informado, ela e trazida pro primeiro plano ANTES de digitar - use sempre que a aplicacao alvo nao for a que o usuario estava usando (ex: o Cerne Code) no momento do pedido." }
                 },
                 "required": ["text"]
             }),
         ),
         spec(
             "computer_use_press_key",
-            "Pressiona uma tecla ou combinacao (ex: ctrl+c, alt+tab, enter). Combinacoes destrutivas (alt+f4, ctrl+shift+esc) sao bloqueadas. REQUER modelo com visao.",
+            "Pressiona uma tecla ou combinacao (ex: ctrl+c, alt+tab, enter). Combinacoes destrutivas (alt+f4, ctrl+shift+esc) sao bloqueadas. Nao requer visao.",
             json!({
                 "type": "object",
                 "properties": {
                     "key": { "type": "string", "description": "Tecla: return, tab, escape, up, down, left, right, space, delete, home, end, pageup, pagedown, f1-f12, ou letra/digito" },
-                    "modifiers": { "type": "array", "items": { "type": "string" }, "description": "Modificadores: ctrl, shift, alt, win" }
+                    "modifiers": { "type": "array", "items": { "type": "string" }, "description": "Modificadores: ctrl, shift, alt, win" },
+                    "window_title": { "type": "string", "description": "Titulo parcial da janela alvo (opcional). Se informado, ela e trazida pro primeiro plano ANTES de pressionar a tecla." }
                 },
                 "required": ["key"]
             }),
@@ -315,12 +343,13 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         ),
         spec(
             "computer_use_scroll",
-            "Rola a tela ou janela focada. Use computer_use_click ANTES para garantir que a janela certa esta focada. REQUER modelo com visao.",
+            "Rola a tela ou janela focada. Use computer_use_click ou computer_use_focus_window ANTES para garantir que a janela certa esta focada. Nao requer visao.",
             json!({
                 "type": "object",
                 "properties": {
                     "direction": { "type": "string", "enum": ["up", "down", "left", "right"] },
-                    "amount": { "type": "integer", "description": "Quantidade de linhas/scrolls (default: 3)" }
+                    "amount": { "type": "integer", "description": "Quantidade de linhas/scrolls (default: 3)" },
+                    "window_title": { "type": "string", "description": "Titulo parcial da janela alvo (opcional). Se informado, ela e trazida pro primeiro plano ANTES de rolar." }
                 },
                 "required": ["direction"]
             }),
@@ -376,19 +405,16 @@ pub fn tool_specs() -> Vec<ToolSpec> {
     ]
 }
 
-/// Ferramentas que realmente trabalham em cima de pixels/screenshot - as
-/// unicas que fazem sentido ficar de fora quando o modelo nao tem visao.
+/// Ferramentas que exigem TER VISTO a tela em pixel pra funcionar - screenshot
+/// obviamente, e click porque as coordenadas x,y vem de olhar o screenshot.
+/// Todo o resto continua disponivel sem visao:
 /// list_windows/focus_window/authorize/browser_execute/AX-tree (get_window_state,
-/// click_element) sao baseadas em texto/estrutura, sem imagem nenhuma
-/// envolvida, entao continuam disponiveis mesmo sem visao - da pra automatizar
-/// tela via AX tree (mais confiavel que coordenada de pixel de qualquer jeito).
-pub const VISION_REQUIRED_TOOLS: &[&str] = &[
-    "computer_use_screenshot",
-    "computer_use_click",
-    "computer_use_type_text",
-    "computer_use_press_key",
-    "computer_use_scroll",
-];
+/// click_element) sao baseadas em texto/estrutura; type_text/press_key/scroll
+/// so agem sobre o elemento que ja estiver focado (via computer_use_click_element,
+/// por exemplo) e nao precisam saber onde nada esta na tela - um modelo sem
+/// visao consegue automatizar 100% via arvore de acessibilidade: list_windows
+/// -> focus_window -> get_window_state -> click_element -> type_text/press_key.
+pub const VISION_REQUIRED_TOOLS: &[&str] = &["computer_use_screenshot", "computer_use_click"];
 
 pub fn requires_vision(tool_name: &str) -> bool {
     VISION_REQUIRED_TOOLS.contains(&tool_name)
@@ -417,18 +443,22 @@ pub async fn execute(name: &str, args: &Value, app_data_dir: &Path) -> Result<Co
         "computer_use_focus_window" => exec_focus_window(args),
         "computer_use_authorize" => exec_authorize(args, app_data_dir),
         "computer_use_click" => {
+            maybe_focus_from_args(args)?;
             check_authorization(app_data_dir)?;
             exec_click(args)
         }
         "computer_use_type_text" => {
+            maybe_focus_from_args(args)?;
             check_authorization(app_data_dir)?;
             exec_type_text(args)
         }
         "computer_use_press_key" => {
+            maybe_focus_from_args(args)?;
             check_authorization(app_data_dir)?;
             exec_press_key(args)
         }
         "computer_use_scroll" => {
+            maybe_focus_from_args(args)?;
             check_authorization(app_data_dir)?;
             exec_scroll(args)
         }
