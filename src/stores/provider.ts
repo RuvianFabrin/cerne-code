@@ -7,14 +7,16 @@ import {
   type ModelInfo,
   type ProviderKind,
 } from "../api";
+import { i18n } from "../i18n";
 
-export const PROVIDER_LABELS: Record<ProviderKind, string> = {
-  openrouter: "OpenRouter",
-  llama_cpp: "llama.cpp local",
-  ollama: "Ollama",
-  lm_studio: "LM Studio",
-  custom: "Customizado",
-};
+export const PROVIDER_KINDS: ProviderKind[] = ["openrouter", "llama_cpp", "ollama", "lm_studio", "custom"];
+
+// Funcao (nao objeto estatico) pra reagir a troca de idioma - chamada de
+// dentro de computed/template, entao o acesso a `i18n.global.locale`
+// dentro de `t()` registra a dependencia reativa normalmente.
+export function providerLabel(kind: ProviderKind): string {
+  return i18n.global.t(`providers.${kind}`);
+}
 
 // Modelos são cacheados por provider+conexão específica — pra "llama_cpp" a
 // chave é o fork, pra "custom" é o id do provider customizado (senão trocar

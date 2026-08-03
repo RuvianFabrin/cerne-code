@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import { useSessionStore } from "../stores/session";
 
+const { t, locale } = useI18n();
 const sessionStore = useSessionStore();
 
 const usage = computed(() => sessionStore.contextUsage);
@@ -28,10 +30,14 @@ const label = computed(() => {
 
 const tooltip = computed(() => {
   if (!usage.value) return "";
-  const base = `${usage.value.used_tokens} de ${usage.value.context_length} tokens (${percent.value.toFixed(0)}%) — estimativa (chars/4)`;
+  const base = t("contextGauge.tooltipBase", {
+    used: usage.value.used_tokens,
+    total: usage.value.context_length,
+    percent: percent.value.toFixed(0),
+  });
   return usage.value.is_estimated_length
-    ? `${base}. Contexto do modelo desconhecido, usando padrão. Clique pra corrigir manualmente.`
-    : `${base}. Clique pra corrigir manualmente.`;
+    ? `${base}. ${t("contextGauge.tooltipEstimated")}`
+    : `${base}. ${t("contextGauge.tooltipClickToFix")}`;
 });
 
 const editing = ref(false);
@@ -61,7 +67,7 @@ async function save() {
   }
   const parsed = Number(trimmed);
   if (!Number.isFinite(parsed) || parsed <= 0) {
-    error.value = "Informe um número de tokens válido";
+    error.value = t("contextGauge.invalidTokens");
     return;
   }
   try {
@@ -99,14 +105,14 @@ function cancel() {
         v-model="inputValue"
         type="number"
         class="context-edit-input"
-        placeholder="tokens (ex: 131072)"
+        :placeholder="$t('contextGauge.tokensPlaceholder')"
         @keydown.enter="save"
         @keydown.escape="cancel"
       />
-      <button class="context-edit-btn" v-tooltip.top="'Salvar'" @click="save">
+      <button class="context-edit-btn" v-tooltip.top="$t('sidebar.save')" @click="save">
         <span class="msi">check</span>
       </button>
-      <button class="context-edit-btn" v-tooltip.top="'Cancelar'" @click="cancel">
+      <button class="context-edit-btn" v-tooltip.top="$t('taskList.cancel')" @click="cancel">
         <span class="msi">close</span>
       </button>
     </div>
@@ -114,7 +120,7 @@ function cancel() {
     <span
       v-if="!editing && usage.total_requests > 0"
       class="usage-badges"
-      v-tooltip.top="`Tokens nesta sessão — Entrada: ${usage.total_prompt_tokens.toLocaleString('pt-BR')} | Saída: ${usage.total_completion_tokens.toLocaleString('pt-BR')} | Requisições: ${usage.total_requests}`"
+      v-tooltip.top="$t('contextGauge.usageTooltip', { input: usage.total_prompt_tokens.toLocaleString(locale), output: usage.total_completion_tokens.toLocaleString(locale), requests: usage.total_requests })"
     >
       ↓{{ formatTokens(usage.total_prompt_tokens) }}
       ↑{{ formatTokens(usage.total_completion_tokens) }}

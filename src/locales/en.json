@@ -1,0 +1,344 @@
+{
+  "sidebar": {
+    "collapse": "Collapse",
+    "newSession": "New session",
+    "searchPlaceholder": "Search sessions",
+    "recent": "Recent",
+    "codeTooltip": "Code — {path}",
+    "chatTooltip": "Chat",
+    "save": "Save",
+    "rename": "Rename",
+    "delete": "Delete",
+    "empty": "No sessions yet.",
+    "help": "Help",
+    "settings": "Settings"
+  },
+  "composer": {
+    "modeAuto": "Automatic",
+    "modeManual": "Manual",
+    "reasoningOff": "Off",
+    "reasoningAuto": "Auto",
+    "reasoningLow": "Low",
+    "reasoningMedium": "Medium",
+    "reasoningHigh": "High",
+    "documentsAndCode": "Documents and code",
+    "images": "Images",
+    "visionUnsupported": "This session's provider/model doesn't have vision support configured — the image won't be sent.",
+    "pasteImageFailed": "Failed to read the pasted image",
+    "optimizing": "Optimizing...",
+    "ready": "Ready!",
+    "remove": "Remove",
+    "optimizingHint": "Please wait, optimizing file to save tokens...",
+    "placeholder": "Ask Cerne Code to read, edit or run something in your project...",
+    "attachFile": "Attach file",
+    "executionModeTooltip": "YOLO: edits directly, no sandbox. Automatic: sandbox + you accept/reject. Manual: approve every action.",
+    "reasoningTooltip": "Model reasoning. 💤 Off = no thinking (faster, default for local models). Auto = the model decides.",
+    "fableTooltip": "Fable method (for small/medium models): turns on a classify → act → verify loop so the model doesn't abandon tasks. Off by default; on large models it just bloats the prompt.",
+    "cancelExecution": "Cancel execution"
+  },
+  "toolLabels": {
+    "web_search": "Searched the web",
+    "web_fetch": "Read a web page",
+    "load_skill": "Loaded a skill",
+    "ask": "Asked you something",
+    "read_file": "Read a file",
+    "list_dir": "Listed a folder",
+    "grep": "Searched for a pattern in files",
+    "ast_grep": "Searched the code structure",
+    "run_command": "Ran a command",
+    "check_background_output": "Checked a background process",
+    "stop_background": "Stopped a background process",
+    "list_background": "Listed background processes",
+    "write_file": "Created/overwrote a file",
+    "edit_file": "Edited a file",
+    "ast_edit": "Rewrote code structure",
+    "task": "Delegated to a sub-agent",
+    "verify_completion": "Verified task completion",
+    "todo_list": "Updated the task list",
+    "computer_use_screenshot": "Captured the screen",
+    "computer_use_click": "Clicked on screen",
+    "computer_use_type_text": "Typed text on screen",
+    "computer_use_press_key": "Pressed a key",
+    "computer_use_list_windows": "Listed open windows",
+    "computer_use_scroll": "Scrolled the screen",
+    "computer_use_authorize": "Authorized application",
+    "computer_use_browser_execute": "Ran in browser (CDP)",
+    "computer_use_get_window_state": "Read accessibility tree",
+    "computer_use_click_element": "Clicked element (AX)",
+    "create_excel": "Created Excel spreadsheet",
+    "mcpTool": "Called MCP tool: {tool}",
+    "genericTool": "Ran {name}"
+  },
+  "skillEditor": {
+    "newSkill": "New skill",
+    "skillHeader": "Skill: {name}",
+    "whatIsASkill": "<strong>What a skill is:</strong> a <code>SKILL.md</code> file with instructions the agent loads on demand (via <code>load_skill</code>) when it notices they're relevant to the current request — a way to teach the agent a specific step-by-step process or convention without having to rewrite it every conversation.",
+    "whenToCreateOne": "<strong>When it's worth creating one:</strong> when you catch yourself explaining the same thing to the agent across different conversations (a team process, a specific output format, the right steps to review a PR, etc.). The <code>description</code> is what the agent reads to decide whether the skill is relevant — make it clearly state WHEN to use it.",
+    "namePlaceholder": "skill-name",
+    "descriptionPlaceholder": "When to use it (one line)",
+    "fillNameAndDescription": "Fill in the name and \"when to use it\" before saving."
+  },
+  "extraReadPaths": {
+    "tooltip": "Extra read folders (outside the project)",
+    "title": "Extra read folders",
+    "hint": "The agent can read (not edit) files from these folders, in addition to the project folder.",
+    "noneConfigured": "No extra folders configured.",
+    "addFolder": "Add folder"
+  },
+  "llamaForkRow": {
+    "models": "Models",
+    "start": "Start",
+    "stop": "Stop"
+  },
+  "modelBrowser": {
+    "searchPlaceholder": "Search model...",
+    "onlyFavorites": "Favorites only",
+    "modelCount": "{count} model(s)",
+    "loadingModels": "Loading models...",
+    "noModelsFound": "No models found.",
+    "markFavorite": "Mark as favorite",
+    "acceptsImage": "Accepts images",
+    "ctx": "Ctx",
+    "size": "Size",
+    "price": "Price $/1M (in/out)"
+  },
+  "settings": {
+    "title": "Settings",
+    "language": "Language",
+    "languageHint": "Changes the language of the entire interface — messages, labels, titles and skills.",
+    "activeProvider": "Active provider",
+    "activeProviderHint": "Choose where Cerne Code sources inference from for new sessions.",
+    "apiKeyVaultHint": "API key saved in the system's credential vault (never in plain text).",
+    "keyConfigured": "Key configured.",
+    "noKeySaved": "No key saved yet.",
+    "modelsOpenRouterTitle": "Models — OpenRouter",
+    "viewModels": "View models",
+    "llamaCppLocal": "llama.cpp local",
+    "llamaCppHint": "Forks configured in <code>providers.toml</code> — each one points to the <code>llama-server.exe</code> and <code>models.ini</code> of a specific llama.cpp build on your machine. No fork comes pre-configured (Cerne Code ships without assuming where you installed yours).",
+    "noForksYet": "No forks configured yet.",
+    "labelOptional": "label (optional)",
+    "port": "port",
+    "addFork": "Add fork",
+    "customProviders": "Custom providers",
+    "customProvidersHint": "Any endpoint compatible with OpenAI's chat completions API — Claude (via <code>https://api.anthropic.com/v1/</code>), Grok/xAI (<code>https://api.x.ai/v1</code>), ChatGPT/OpenAI (<code>https://api.openai.com/v1</code>), Qwen/DashScope, Kimi/Moonshot, or any other. Shows up in the sessions' provider picker with the label you give it.",
+    "visionEnabledConnection": "Image support enabled on this connection",
+    "modelsForTitle": "Models — {name}",
+    "edit": "Edit",
+    "remove": "Remove",
+    "noCustomProvidersYet": "No custom providers yet.",
+    "idCannotChange": "The id identifies the provider, it can't be changed by editing",
+    "newApiKeyPlaceholder": "new API key (leave blank to keep the current one)",
+    "apiKeyPlaceholder": "API key",
+    "visionCheckboxLabel": "Models on this connection accept images (manual confirmation — can't be confirmed automatically on a generic OpenAI-compatible endpoint)",
+    "contextLengthPlaceholder": "context size in tokens (optional — most custom endpoints don't report this)",
+    "testing": "Testing...",
+    "testConnection": "Test connection",
+    "add": "Add",
+    "connectedModelsFound": "Connected! {count} model(s) found{list}.",
+    "skills": "Skills",
+    "skillsHint": "Folders with <code>SKILL.md</code> that the agent discovers on its own and loads on demand (<code>load_skill</code>). Project skills (<code>&lt;project&gt;/.cerne/skills/</code>) only show up here from inside the session — this list shows the global ones.",
+    "noSkillsYet": "No skills yet besides the README.",
+    "createSkill": "Create skill",
+    "openSkillsFolder": "Open skills folder",
+    "mcpServers": "MCP servers",
+    "mcpHintBefore": "External tools via Model Context Protocol — each server runs as a subprocess (stdio) and its tools show up to the agent as",
+    "mcpHintAfter": ". Configuration saved to",
+    "mcpHintAfter2": ", in the",
+    "mcpHintAfter3": "object-by-name format that most MCP servers already document ready to paste in.",
+    "disable": "Disable",
+    "enable": "Enable",
+    "noMcpServersYet": "No MCP servers configured yet.",
+    "nameCannotChange": "The name identifies the server, it can't be changed by editing — remove and recreate it if you need to rename it",
+    "envVarsPlaceholder": "environment variables, one per line (e.g. GITHUB_TOKEN=ghp_...)",
+    "connectedToolsFound": "Connected! {count} tool(s) found{list}.",
+    "webSearch": "Web search",
+    "webSearchHint": "By default (<strong>Automatic</strong>) the <code>web_search</code> tool uses DuckDuckGo directly — no install, no API key. If you'd rather use a paid API's results (Brave, Tavily) or already run your own SearXNG instance, you can switch here.",
+    "apiKey": "API key",
+    "keyAlreadyConfigured": "key already configured — leave blank to keep it",
+    "removeKey": "Remove key",
+    "searxngUrl": "SearXNG URL",
+    "connectedResultsFound": "Connected! {count} result(s) found in a test search.",
+    "localEndpoints": "Local endpoints",
+    "llamaCppRouter": "llama.cpp (router)",
+    "executableFilter": "Executable",
+    "iniConfigFilter": "Config (.ini)",
+    "searchAuto": "Automatic (DuckDuckGo, no key)",
+    "searchSearxng": "SearXNG (self-hosted instance)"
+  },
+  "providers": {
+    "openrouter": "OpenRouter",
+    "llama_cpp": "llama.cpp local",
+    "ollama": "Ollama",
+    "lm_studio": "LM Studio",
+    "custom": "Custom"
+  },
+  "providerPicker": {
+    "pickModel": "Pick a model",
+    "connection": "Connection",
+    "loading": "Loading...",
+    "model": "Model",
+    "removeFavorite": "Remove from favorites",
+    "markFavorite": "Mark as favorite (shows first in the dropdown)",
+    "supportsImages": "Model supports images",
+    "noImageSupport": "Model does NOT support images",
+    "testImageSupport": "Test whether the model supports images"
+  },
+  "newSession": {
+    "defaultTitle": "New session",
+    "header": "New session",
+    "titleLabel": "Title",
+    "titlePlaceholder": "E.g.: refactor sessions API",
+    "projectFolderLabel": "Project folder (optional — without it the agent only has web search and MCP, no file reading/editing or running commands)",
+    "pickFolder": "Pick a folder...",
+    "providerAndModelLabel": "Provider and model",
+    "cancel": "Cancel",
+    "createSession": "Create session"
+  },
+  "diffReview": {
+    "reject": "Reject",
+    "accept": "Accept",
+    "applied": "Applied"
+  },
+  "permissionCard": {
+    "title": "Manual mode: approve",
+    "approve": "Approve",
+    "deny": "Deny"
+  },
+  "askCard": {
+    "freeTextPlaceholder": "Or answer with free text...",
+    "answer": "Answer"
+  },
+  "statusDot": {
+    "checking": "Checking...",
+    "serverUp": "Server running",
+    "serverDown": "Server stopped"
+  },
+  "contextGauge": {
+    "tooltipBase": "{used} of {total} tokens ({percent}%) — estimate (chars/4)",
+    "tooltipEstimated": "Model context unknown, using default. Click to fix it manually.",
+    "tooltipClickToFix": "Click to fix it manually.",
+    "invalidTokens": "Enter a valid token count",
+    "tokensPlaceholder": "tokens (e.g. 131072)",
+    "usageTooltip": "Tokens in this session — Input: {input} | Output: {output} | Requests: {requests}"
+  },
+  "todoCard": {
+    "title": "Task list"
+  },
+  "taskList": {
+    "title": "Tasks in this session",
+    "cancel": "Cancel"
+  },
+  "taskStep": {
+    "showLess": "show less",
+    "showMoreLines": "show {count} more lines"
+  },
+  "chat": {
+    "emptyState": "Create a new session to get started.",
+    "startingServer": "Starting local server...",
+    "thinking": "Thinking...",
+    "awaitingModel": "Awaiting model response...",
+    "tokens": "{count} tokens",
+    "computerUseWarningTitle": "Screen automation active",
+    "computerUseWarningBody": "Each screenshot costs ~1,500 vision tokens. A session with 20 actions can use ~30K extra tokens.",
+    "gotIt": "Got it",
+    "jumpToBottom": "Jump to bottom"
+  },
+  "help": {
+    "title": "Help",
+    "searchPlaceholder": "Search prompts...",
+    "hint": "Clicking <strong>Use</strong> pastes the prompt into your chat — feel free to edit it before sending.",
+    "scopeCode": "⌨️ code",
+    "scopeChat": "💬 chat",
+    "scopeBoth": "🔀 both",
+    "viewFull": "View full prompt",
+    "use": "Use",
+    "noPromptsFound": "No prompts found.",
+    "toolCatalog": "Tool catalog"
+  },
+  "readyPrompts": {
+    "search-summarize": {
+      "title": "Research and summarize a topic",
+      "toolsLabel": "🔍 Web search · 🌐 Reads page",
+      "preview": "Searches a topic on the web and summarizes the main points found.",
+      "full": "Search the web about [TOPIC] and write a summary of the main points found. Cite the sources."
+    },
+    "read-large-file": {
+      "title": "Read a large file in chunks",
+      "toolsLabel": "📁 Reads file",
+      "preview": "Reads a large file in chunks using offset/limit, without blowing the context.",
+      "full": "Read the file [PATH] in chunks: start with read_file(path=\"[PATH]\", offset=0, limit=200) and keep advancing 200 lines at a time. Summarize the content of each section."
+    },
+    "create-file": {
+      "title": "Create a new file",
+      "toolsLabel": "✏️ Writes file",
+      "preview": "Creates a new file with the specified content in the project.",
+      "full": "Create a file at [PATH] with the following content:\n\n[DESCRIBE THE CONTENT]"
+    },
+    "edit-file": {
+      "title": "Edit a snippet in a file",
+      "toolsLabel": "✏️ Edits file",
+      "preview": "Modifies a specific snippet in an existing file.",
+      "full": "In the file [PATH], find the snippet [OLD SNIPPET] and replace it with [NEW SNIPPET]."
+    },
+    "run-command": {
+      "title": "Run a terminal command",
+      "toolsLabel": "⚡ Runs command",
+      "preview": "Runs a shell command and shows the result.",
+      "full": "Run the command: [COMMAND]\n\nExplain the result."
+    },
+    "computer-use": {
+      "title": "Automate a task on screen",
+      "toolsLabel": "🖥️ Uses computer",
+      "preview": "Automates clicks and typing on screen to carry out a repetitive task.",
+      "full": "Use computer_use to: [DESCRIBE THE SCREEN TASK].\n\nTake a screenshot first to see the current state, then carry out the necessary steps."
+    },
+    "create-excel": {
+      "title": "Generate an Excel spreadsheet",
+      "toolsLabel": "📊 Creates Excel",
+      "preview": "Creates a .xlsx file with tabs, formatted headers and data.",
+      "full": "Create an Excel spreadsheet at [PATH.xlsx] with the following columns: [COLUMNS].\nInclude the data: [DATA].\nFormat the headers in bold and turn on autofilter."
+    },
+    "create-word": {
+      "title": "Generate a Word document",
+      "toolsLabel": "📝 Creates Word",
+      "preview": "Creates a .docx file with titles, paragraphs, tables and lists.",
+      "full": "Create a Word document at [PATH.docx] with:\n- A title: [TITLE]\n- Paragraphs with the content: [CONTENT]\n- A table with columns [COLUMNS] and data [DATA]"
+    },
+    "create-pdf": {
+      "title": "Generate a PDF report",
+      "toolsLabel": "📄 Creates PDF",
+      "preview": "Creates a PDF document with titles, paragraphs and tables.",
+      "full": "Create a PDF at [PATH.pdf] with the title \"[TITLE]\".\nInclude the sections: [SECTIONS].\nAdd a table with [COLUMNS] and [DATA]."
+    },
+    "refactor-code": {
+      "title": "Refactor code with AST",
+      "toolsLabel": "🔧 AST search · ✏️ AST edit",
+      "preview": "Finds and replaces code patterns using syntactic (AST) analysis.",
+      "full": "Use ast_grep to find every occurrence of [PATTERN] in the project.\nThen use ast_edit to replace it with [NEW PATTERN]."
+    },
+    "subagent-task": {
+      "title": "Delegate a parallel task",
+      "toolsLabel": "🤖 Sub-agent",
+      "preview": "Creates a sub-agent to solve an independent task in parallel.",
+      "full": "Use the task tool to create a sub-agent that: [DESCRIBE THE TASK].\nThe sub-agent should work independently and report the result."
+    },
+    "plan-todo": {
+      "title": "Plan a complex task",
+      "toolsLabel": "📋 Task list",
+      "preview": "Creates a visual plan with steps for a complex task.",
+      "full": "Plan the following task using todo_list: [DESCRIBE THE COMPLEX TASK].\nBreak it into clear steps and carry out each one."
+    },
+    "grep-search": {
+      "title": "Search for a term in the project",
+      "toolsLabel": "🔎 Text search",
+      "preview": "Searches for a term or regex across all project files.",
+      "full": "Search for \"[TERM]\" in every file in the project using grep.\nList the files and lines where it appears."
+    },
+    "fetch-page": {
+      "title": "Extract content from a URL",
+      "toolsLabel": "🌐 Reads page",
+      "preview": "Fetches the content of a web page and extracts the relevant information.",
+      "full": "Visit [URL] and extract the main information from the page. Summarize the content."
+    }
+  }
+}

@@ -6,7 +6,7 @@ defineProps<{ up: boolean | null }>();
   <span
     class="status-dot"
     :class="{ up: up === true, down: up === false, unknown: up === null }"
-    v-tooltip.top="up === null ? 'Verificando...' : up ? 'Servidor rodando' : 'Servidor parado'"
+    v-tooltip.top="up === null ? $t('statusDot.checking') : up ? $t('statusDot.serverUp') : $t('statusDot.serverDown')"
   />
 </template>
 

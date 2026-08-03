@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { open } from "@tauri-apps/plugin-dialog";
 import Dialog from "primevue/dialog";
 import { useProviderStore } from "../stores/provider";
@@ -7,13 +8,14 @@ import { useSessionStore } from "../stores/session";
 import ProviderPicker from "./ProviderPicker.vue";
 import type { ProviderKind } from "../api";
 
+const { t } = useI18n();
 const props = defineProps<{ visible: boolean }>();
 const emit = defineEmits<{ "update:visible": [value: boolean] }>();
 
 const providerStore = useProviderStore();
 const sessionStore = useSessionStore();
 
-const title = ref("Nova sessão");
+const title = ref(t("newSession.defaultTitle"));
 const projectRoot = ref<string | null>(null);
 // Own picker state, seeded from the global defaults but independent from
 // them from here on — this dialog is the only place those defaults are
@@ -27,7 +29,7 @@ watch(
   () => props.visible,
   (v) => {
     if (v) {
-      title.value = "Nova sessão";
+      title.value = t("newSession.defaultTitle");
       projectRoot.value = null;
       provider.value = providerStore.config?.active_provider ?? "ollama";
       fork.value = providerStore.config?.active_llama_fork ?? "turboquant";
@@ -45,7 +47,7 @@ async function pickFolder() {
 async function create() {
   if (!model.value) return;
   await sessionStore.createSession(
-    title.value.trim() || "Nova sessão",
+    title.value.trim() || t("newSession.defaultTitle"),
     provider.value,
     model.value,
     projectRoot.value,
@@ -60,23 +62,23 @@ async function create() {
   <Dialog
     :visible="props.visible"
     @update:visible="(v) => emit('update:visible', v)"
-    header="Nova sessão"
+    :header="$t('newSession.header')"
     modal
     :style="{ width: '440px' }"
   >
     <div class="field">
-      <label>Título</label>
-      <input v-model="title" class="text-input" placeholder="Ex: refatorar API de sessões" />
+      <label>{{ $t("newSession.titleLabel") }}</label>
+      <input v-model="title" class="text-input" :placeholder="$t('newSession.titlePlaceholder')" />
     </div>
     <div class="field">
-      <label>Pasta do projeto (opcional — sem ela o agente só tem busca na web e MCP, sem leitura/edição de arquivos nem execução de comandos)</label>
+      <label>{{ $t("newSession.projectFolderLabel") }}</label>
       <button class="folder-btn" @click="pickFolder">
         <span class="msi">folder_open</span>
-        <span class="folder-path">{{ projectRoot ?? "Escolher pasta..." }}</span>
+        <span class="folder-path">{{ projectRoot ?? $t("newSession.pickFolder") }}</span>
       </button>
     </div>
     <div class="field">
-      <label>Provider e modelo</label>
+      <label>{{ $t("newSession.providerAndModelLabel") }}</label>
       <ProviderPicker
         v-model:provider="provider"
         v-model:fork="fork"
@@ -86,8 +88,8 @@ async function create() {
       <p v-if="providerStore.error" class="error-text">{{ providerStore.error }}</p>
     </div>
     <template #footer>
-      <button class="btn-secondary" @click="emit('update:visible', false)">Cancelar</button>
-      <button class="btn-primary" :disabled="!model" @click="create">Criar sessão</button>
+      <button class="btn-secondary" @click="emit('update:visible', false)">{{ $t("newSession.cancel") }}</button>
+      <button class="btn-primary" :disabled="!model" @click="create">{{ $t("newSession.createSession") }}</button>
     </template>
   </Dialog>
 </template>

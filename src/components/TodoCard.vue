@@ -14,7 +14,7 @@ const statusIcon: Record<string, string> = {
   <div class="todo-card">
     <div class="todo-title">
       <span class="msi">checklist</span>
-      TodoList
+      {{ $t("todoCard.title") }}
     </div>
     <div v-for="(t, i) in todos" :key="i" class="todo-item" :class="t.status">
       <span class="msi status" :class="t.status">{{ statusIcon[t.status] ?? "radio_button_unchecked" }}</span>

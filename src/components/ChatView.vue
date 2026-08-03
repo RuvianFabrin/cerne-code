@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, watch, ref, onMounted, onUnmounted } from "vue";
+import { useI18n } from "vue-i18n";
 import { useSessionStore } from "../stores/session";
 import MessageBubble from "./MessageBubble.vue";
 import MarkdownContent from "./MarkdownContent.vue";
@@ -14,6 +15,7 @@ import type { ChatMessage, TaskItem, TurnStats } from "../api";
 
 defineEmits<{ "open-settings": [] }>();
 
+const { t } = useI18n();
 const sessionStore = useSessionStore();
 const scrollRef = ref<HTMLDivElement | null>(null);
 
@@ -105,7 +107,7 @@ const timeline = computed<TimelineItem[]>(() => {
 });
 
 const statusLabel = computed(() => {
-  if (sessionStore.status === "starting_server") return "Iniciando servidor local...";
+  if (sessionStore.status === "starting_server") return t("chat.startingServer");
   if (sessionStore.status === "thinking") {
     // Nem todo provider/modelo transmite tokens de raciocínio visíveis
     // (thinkingText) — sem isso, "Pensando..." parado por minutos parece
@@ -113,7 +115,7 @@ const statusLabel = computed(() => {
     // raciocínio nem de resposta, deixa claro que é o modelo processando
     // (TTFT), não uma sessão de "pensamento" visível.
     const hasVisibleReasoning = !!sessionStore.thinkingText;
-    const base = hasVisibleReasoning ? "Pensando..." : "Aguardando resposta do modelo...";
+    const base = hasVisibleReasoning ? t("chat.thinking") : t("chat.awaitingModel");
     if (sessionStore.thinkingStartedAt) {
       return `${base} ${formatElapsed(now.value - sessionStore.thinkingStartedAt)}`;
     }
@@ -171,7 +173,7 @@ watch(
 <template>
   <div v-if="!sessionStore.currentId" class="empty-state">
     <span class="msi big">graphic_eq</span>
-    <p>Crie uma nova sessão pra começar.</p>
+    <p>{{ $t("chat.emptyState") }}</p>
   </div>
   <template v-else>
     <div class="chat-layout">
@@ -186,7 +188,7 @@ watch(
                 <span class="msi">schedule</span>
                 {{ formatElapsed(item.stats.elapsed_ms) }}
                 <span class="stats-sep">·</span>
-                {{ formatTokens(item.stats.prompt_tokens + item.stats.completion_tokens) }} tokens
+                {{ $t("chat.tokens", { count: formatTokens(item.stats.prompt_tokens + item.stats.completion_tokens) }) }}
               </div>
             </template>
             <!-- Blocos do turno em andamento, na ordem real em que texto e
@@ -205,10 +207,10 @@ watch(
             <div v-if="sessionStore.showComputerUseWarning" class="computer-use-warning">
               <span class="msi">warning</span>
               <div class="warning-text">
-                <strong>Automação de tela ativa</strong>
-                <p>Cada screenshot consome ~1.500 tokens de visão. Uma sessão com 20 ações pode usar ~30K tokens extras.</p>
+                <strong>{{ $t("chat.computerUseWarningTitle") }}</strong>
+                <p>{{ $t("chat.computerUseWarningBody") }}</p>
               </div>
-              <button class="warning-dismiss" @click="sessionStore.showComputerUseWarning = false">Entendi</button>
+              <button class="warning-dismiss" @click="sessionStore.showComputerUseWarning = false">{{ $t("chat.gotIt") }}</button>
             </div>
             <div v-if="statusLabel" class="status-line">
               <span class="msi spin">progress_activity</span>
@@ -226,7 +228,7 @@ watch(
           </div>
         </div>
         <div class="composer-wrap">
-          <button v-if="showJumpToBottom" class="jump-to-bottom" @click="jumpToBottom" title="Ir para o final">
+          <button v-if="showJumpToBottom" class="jump-to-bottom" @click="jumpToBottom" :title="$t('chat.jumpToBottom')">
             <span class="msi">arrow_downward</span>
           </button>
           <!-- Tudo que pede uma ação do usuário (aceitar edição, aprovar

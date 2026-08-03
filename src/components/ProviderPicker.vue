@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import Select from "primevue/select";
-import { PROVIDER_LABELS, useProviderStore } from "../stores/provider";
+import { PROVIDER_KINDS, providerLabel, useProviderStore } from "../stores/provider";
 import { api } from "../api";
 import type { ProviderKind } from "../api";
 
@@ -34,10 +34,10 @@ const providerStore = useProviderStore();
 // sem modelo, faz sentido já abrir expandido pra escolher.
 const expanded = ref(!props.collapsible || !props.model);
 
-const providerOptions = (Object.keys(PROVIDER_LABELS) as ProviderKind[]).map((kind) => ({
+const providerOptions = computed(() => PROVIDER_KINDS.map((kind) => ({
   kind,
-  label: PROVIDER_LABELS[kind],
-}));
+  label: providerLabel(kind),
+})));
 
 const forkOptions = computed(() => providerStore.forks.map((f) => ({ id: f.id, label: f.label })));
 const customProviderOptions = computed(() => providerStore.customProviders.map((p) => ({ id: p.id, label: p.label })));
@@ -62,8 +62,8 @@ const modelLabel = computed(() => modelOptions.value.find((m) => m.id === props.
 // escolhida (ex: "Claude") em vez do genérico "Customizado" — mesma clareza
 // de "fornecedor + modelo" que os providers embutidos já têm.
 const providerSummaryLabel = computed(() => {
-  if (props.provider !== "custom") return PROVIDER_LABELS[props.provider];
-  return customProviderOptions.value.find((p) => p.id === props.customProviderId)?.label ?? PROVIDER_LABELS.custom;
+  if (props.provider !== "custom") return providerLabel(props.provider);
+  return customProviderOptions.value.find((p) => p.id === props.customProviderId)?.label ?? providerLabel("custom");
 });
 
 function setProvider(kind: ProviderKind) {
@@ -134,7 +134,7 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
   <button v-if="collapsible && !expanded" class="picker-summary" @click="expanded = true">
     <span class="summary-provider">{{ providerSummaryLabel }}</span>
     <span class="summary-sep">·</span>
-    <span class="summary-model">{{ modelLabel ?? "Escolher modelo" }}</span>
+    <span class="summary-model">{{ modelLabel ?? $t("providerPicker.pickModel") }}</span>
     <span class="msi">expand_more</span>
   </button>
   <div v-else class="picker-row">
@@ -164,7 +164,7 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
       :options="customProviderOptions"
       optionLabel="label"
       optionValue="id"
-      placeholder="Conexão"
+      :placeholder="$t('providerPicker.connection')"
       class="picker-select fork-select"
       size="small"
     />
@@ -174,7 +174,7 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
       :options="modelOptions"
       optionLabel="label"
       optionValue="id"
-      :placeholder="modelsLoading ? 'Carregando...' : 'Modelo'"
+      :placeholder="modelsLoading ? $t('providerPicker.loading') : $t('providerPicker.model')"
       :loading="modelsLoading"
       class="picker-select model-select"
       size="small"
@@ -191,7 +191,7 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
       v-if="model"
       class="fav-btn"
       :class="{ active: isFavorite(model) }"
-      v-tooltip.top="isFavorite(model) ? 'Remover dos favoritos' : 'Marcar como favorito (aparece primeiro no dropdown)'"
+      v-tooltip.top="isFavorite(model) ? $t('providerPicker.removeFavorite') : $t('providerPicker.markFavorite')"
       @click="toggleCurrentFavorite"
     >
       <span class="msi">{{ isFavorite(model) ? "star" : "star_border" }}</span>
@@ -201,7 +201,7 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
       class="vision-btn"
       :class="visionStatus"
       :disabled="visionStatus === 'checking'"
-      v-tooltip.top="visionStatus === 'yes' ? 'Modelo suporta imagens' : visionStatus === 'no' ? 'Modelo NÃO suporta imagens' : visionStatus === 'error' ? visionError : 'Testar se o modelo suporta imagens'"
+      v-tooltip.top="visionStatus === 'yes' ? $t('providerPicker.supportsImages') : visionStatus === 'no' ? $t('providerPicker.noImageSupport') : visionStatus === 'error' ? visionError : $t('providerPicker.testImageSupport')"
       @click="checkVision"
     >
       <span class="msi spin" v-if="visionStatus === 'checking'">progress_activity</span>
@@ -210,7 +210,7 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
       <span v-else-if="visionStatus === 'error'">⚠️</span>
       <span v-else class="msi">visibility</span>
     </button>
-    <button v-if="collapsible && model" class="collapse-btn" v-tooltip.top="'Recolher'" @click="expanded = false">
+    <button v-if="collapsible && model" class="collapse-btn" v-tooltip.top="$t('sidebar.collapse')" @click="expanded = false">
       <span class="msi">expand_less</span>
     </button>
   </div>

@@ -33,7 +33,7 @@ function folderName(path: string) {
   <button
     class="extra-paths-btn"
     :class="{ active: (sessionStore.currentSession?.extra_read_paths.length ?? 0) > 0 }"
-    v-tooltip.top="'Pastas extras de leitura (fora do projeto)'"
+    v-tooltip.top="$t('extraReadPaths.tooltip')"
     @click="toggle"
   >
     <span class="msi">folder_open</span>
@@ -45,24 +45,24 @@ function folderName(path: string) {
   <Popover ref="popoverRef">
     <div class="extra-paths-panel">
       <div class="panel-header">
-        <span class="panel-title">Pastas extras de leitura</span>
-        <span class="panel-hint">O agente pode ler (não editar) arquivos dessas pastas, além da pasta do projeto.</span>
+        <span class="panel-title">{{ $t("extraReadPaths.title") }}</span>
+        <span class="panel-hint">{{ $t("extraReadPaths.hint") }}</span>
       </div>
 
       <ul v-if="sessionStore.currentSession?.extra_read_paths.length" class="path-list">
         <li v-for="path in sessionStore.currentSession.extra_read_paths" :key="path" class="path-row" v-tooltip.top="path">
           <span class="msi path-icon">folder</span>
           <span class="path-name">{{ folderName(path) }}</span>
-          <button class="remove-btn" v-tooltip.top="'Remover'" @click="removeFolder(path)">
+          <button class="remove-btn" v-tooltip.top="$t('settings.remove')" @click="removeFolder(path)">
             <span class="msi">close</span>
           </button>
         </li>
       </ul>
-      <div v-else class="empty-state">Nenhuma pasta extra configurada.</div>
+      <div v-else class="empty-state">{{ $t("extraReadPaths.noneConfigured") }}</div>
 
       <button class="add-btn" @click="addFolder">
         <span class="msi">add</span>
-        Adicionar pasta
+        {{ $t("extraReadPaths.addFolder") }}
       </button>
     </div>
   </Popover>

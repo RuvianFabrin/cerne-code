@@ -31,10 +31,10 @@ function submitFreeText() {
       <input
         v-model="freeText"
         class="text-input"
-        placeholder="Ou responda com texto livre..."
+        :placeholder="$t('askCard.freeTextPlaceholder')"
         @keyup.enter="submitFreeText"
       />
-      <button class="btn-primary" @click="submitFreeText">Responder</button>
+      <button class="btn-primary" @click="submitFreeText">{{ $t("askCard.answer") }}</button>
     </div>
   </div>
 </template>

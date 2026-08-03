@@ -1,0 +1,344 @@
+{
+  "sidebar": {
+    "collapse": "折叠",
+    "newSession": "新建会话",
+    "searchPlaceholder": "搜索会话",
+    "recent": "最近",
+    "codeTooltip": "代码 — {path}",
+    "chatTooltip": "聊天",
+    "save": "保存",
+    "rename": "重命名",
+    "delete": "删除",
+    "empty": "还没有会话。",
+    "help": "帮助",
+    "settings": "设置"
+  },
+  "composer": {
+    "modeAuto": "自动",
+    "modeManual": "手动",
+    "reasoningOff": "关闭",
+    "reasoningAuto": "自动",
+    "reasoningLow": "低",
+    "reasoningMedium": "中",
+    "reasoningHigh": "高",
+    "documentsAndCode": "文档和代码",
+    "images": "图片",
+    "visionUnsupported": "此会话的提供方/模型未配置视觉支持——图片将不会发送。",
+    "pasteImageFailed": "读取粘贴的图片失败",
+    "optimizing": "正在优化...",
+    "ready": "已就绪！",
+    "remove": "移除",
+    "optimizingHint": "请稍候，正在优化文件以节省 token...",
+    "placeholder": "让 Cerne Code 读取、编辑或运行你项目中的内容...",
+    "attachFile": "添加附件",
+    "executionModeTooltip": "YOLO：直接编辑，无沙盒。自动：沙盒 + 你来接受/拒绝。手动：每个操作都需批准。",
+    "reasoningTooltip": "模型推理。💤 关闭 = 无思考过程（更快，本地模型默认）。自动 = 由模型决定。",
+    "fableTooltip": "Fable 方法（适用于中小模型）：开启分类→执行→验证循环，防止模型放弃任务。默认关闭；在大模型上只会让提示词变得臃肿。",
+    "cancelExecution": "取消执行"
+  },
+  "toolLabels": {
+    "web_search": "搜索了网页",
+    "web_fetch": "读取了一个网页",
+    "load_skill": "加载了一个技能",
+    "ask": "向你提了一个问题",
+    "read_file": "读取了一个文件",
+    "list_dir": "列出了一个文件夹",
+    "grep": "在文件中搜索了一个模式",
+    "ast_grep": "搜索了代码结构",
+    "run_command": "运行了一个命令",
+    "check_background_output": "查看了一个后台进程",
+    "stop_background": "停止了一个后台进程",
+    "list_background": "列出了后台进程",
+    "write_file": "创建/覆盖了一个文件",
+    "edit_file": "编辑了一个文件",
+    "ast_edit": "重写了代码结构",
+    "task": "委托给了一个子智能体",
+    "verify_completion": "验证了任务完成情况",
+    "todo_list": "更新了任务列表",
+    "computer_use_screenshot": "截取了屏幕",
+    "computer_use_click": "点击了屏幕",
+    "computer_use_type_text": "在屏幕上输入了文本",
+    "computer_use_press_key": "按下了按键",
+    "computer_use_list_windows": "列出了打开的窗口",
+    "computer_use_scroll": "滚动了屏幕",
+    "computer_use_authorize": "授权了应用程序",
+    "computer_use_browser_execute": "在浏览器中执行了操作（CDP）",
+    "computer_use_get_window_state": "读取了辅助功能树",
+    "computer_use_click_element": "点击了元素（AX）",
+    "create_excel": "创建了 Excel 表格",
+    "mcpTool": "调用了 MCP 工具：{tool}",
+    "genericTool": "执行了 {name}"
+  },
+  "skillEditor": {
+    "newSkill": "新建技能",
+    "skillHeader": "技能：{name}",
+    "whatIsASkill": "<strong>什么是技能：</strong>一个 <code>SKILL.md</code> 文件，包含智能体在判断相关时按需加载（通过 <code>load_skill</code>）的指令——用于教会智能体遵循特定的步骤或约定，而无需在每次对话中重新说明。",
+    "whenToCreateOne": "<strong>什么时候值得创建一个：</strong>当你发现自己在不同对话中反复向智能体解释同一件事时（团队的某个流程、特定的输出格式、审查 PR 的正确步骤等）。<code>description</code> 是智能体用来判断该技能是否相关的依据——请清楚说明应该在什么时候使用它。",
+    "namePlaceholder": "技能名称",
+    "descriptionPlaceholder": "何时使用（一行说明）",
+    "fillNameAndDescription": "保存前请填写名称和\"何时使用\"。"
+  },
+  "extraReadPaths": {
+    "tooltip": "额外的读取文件夹（项目之外）",
+    "title": "额外的读取文件夹",
+    "hint": "除了项目文件夹外，智能体还可以读取（不能编辑）这些文件夹中的文件。",
+    "noneConfigured": "尚未配置额外文件夹。",
+    "addFolder": "添加文件夹"
+  },
+  "llamaForkRow": {
+    "models": "模型",
+    "start": "启动",
+    "stop": "停止"
+  },
+  "modelBrowser": {
+    "searchPlaceholder": "搜索模型...",
+    "onlyFavorites": "仅收藏",
+    "modelCount": "{count} 个模型",
+    "loadingModels": "正在加载模型...",
+    "noModelsFound": "未找到模型。",
+    "markFavorite": "标记为收藏",
+    "acceptsImage": "支持图片",
+    "ctx": "上下文",
+    "size": "大小",
+    "price": "价格 $/1M（输入/输出）"
+  },
+  "settings": {
+    "title": "设置",
+    "language": "语言",
+    "languageHint": "更改整个界面的语言——消息、标签、标题和技能。",
+    "activeProvider": "当前提供方",
+    "activeProviderHint": "选择新会话从哪里获取推理服务。",
+    "apiKeyVaultHint": "API 密钥保存在系统的凭据保管库中（绝不以明文形式存储）。",
+    "keyConfigured": "密钥已配置。",
+    "noKeySaved": "尚未保存任何密钥。",
+    "modelsOpenRouterTitle": "模型 — OpenRouter",
+    "viewModels": "查看模型",
+    "llamaCppLocal": "本地 llama.cpp",
+    "llamaCppHint": "在 <code>providers.toml</code> 中配置的 fork——每一个都指向你机器上某个特定 llama.cpp 构建版本的 <code>llama-server.exe</code> 和 <code>models.ini</code>。没有预配置任何 fork（Cerne Code 发布时不会假设你安装在哪里）。",
+    "noForksYet": "尚未配置任何 fork。",
+    "labelOptional": "标签（可选）",
+    "port": "端口",
+    "addFork": "添加 fork",
+    "customProviders": "自定义提供方",
+    "customProvidersHint": "任何兼容 OpenAI 聊天补全 API 的端点——Claude（通过 <code>https://api.anthropic.com/v1/</code>）、Grok/xAI（<code>https://api.x.ai/v1</code>）、ChatGPT/OpenAI（<code>https://api.openai.com/v1</code>）、Qwen/DashScope、Kimi/Moonshot 或其他任何服务。会以你设置的标签出现在各会话的提供方选择器中。",
+    "visionEnabledConnection": "此连接已启用图片支持",
+    "modelsForTitle": "模型 — {name}",
+    "edit": "编辑",
+    "remove": "移除",
+    "noCustomProvidersYet": "尚未配置任何自定义提供方。",
+    "idCannotChange": "id 用于标识该提供方，编辑时无法更改",
+    "newApiKeyPlaceholder": "新的 API 密钥（留空以保留当前密钥）",
+    "apiKeyPlaceholder": "API 密钥",
+    "visionCheckboxLabel": "此连接的模型支持图片（手动确认——在通用的 OpenAI 兼容端点上无法自动确认）",
+    "contextLengthPlaceholder": "上下文长度（token 数，可选——大多数自定义端点不会提供此信息）",
+    "testing": "正在测试...",
+    "testConnection": "测试连接",
+    "add": "添加",
+    "connectedModelsFound": "已连接！找到 {count} 个模型{list}。",
+    "skills": "技能",
+    "skillsHint": "包含 <code>SKILL.md</code> 的文件夹，智能体会自动发现并按需加载（<code>load_skill</code>）。项目技能（<code>&lt;项目&gt;/.cerne/skills/</code>）只有在会话内部才会显示——此列表显示的是全局技能。",
+    "noSkillsYet": "除了 README 之外还没有任何技能。",
+    "createSkill": "创建技能",
+    "openSkillsFolder": "打开技能文件夹",
+    "mcpServers": "MCP 服务器",
+    "mcpHintBefore": "通过 Model Context Protocol 提供的外部工具——每个服务器作为子进程（stdio）运行，其工具会以如下形式出现在智能体的工具列表中：",
+    "mcpHintAfter": "。配置保存在",
+    "mcpHintAfter2": "中，采用大多数 MCP 服务器文档中已说明、可直接粘贴使用的按名称分组的",
+    "mcpHintAfter3": "对象格式。",
+    "disable": "禁用",
+    "enable": "启用",
+    "noMcpServersYet": "尚未配置任何 MCP 服务器。",
+    "nameCannotChange": "名称用于标识该服务器，编辑时无法更改——如需重命名请删除后重新创建",
+    "envVarsPlaceholder": "环境变量，每行一个（例如：GITHUB_TOKEN=ghp_...）",
+    "connectedToolsFound": "已连接！找到 {count} 个工具{list}。",
+    "webSearch": "网页搜索",
+    "webSearchHint": "默认情况下（<strong>自动</strong>），<code>web_search</code> 工具直接使用 DuckDuckGo——无需安装，无需 API 密钥。如果你更喜欢付费 API 的结果（Brave、Tavily）或已经运行了自己的 SearXNG 实例，可以在这里切换。",
+    "apiKey": "API 密钥",
+    "keyAlreadyConfigured": "密钥已配置——留空以保留",
+    "removeKey": "移除密钥",
+    "searxngUrl": "SearXNG 地址",
+    "connectedResultsFound": "已连接！测试搜索找到了 {count} 个结果。",
+    "localEndpoints": "本地端点",
+    "llamaCppRouter": "llama.cpp（路由器）",
+    "executableFilter": "可执行文件",
+    "iniConfigFilter": "配置文件 (.ini)",
+    "searchAuto": "自动（DuckDuckGo，无需密钥）",
+    "searchSearxng": "SearXNG（自建实例）"
+  },
+  "providers": {
+    "openrouter": "OpenRouter",
+    "llama_cpp": "本地 llama.cpp",
+    "ollama": "Ollama",
+    "lm_studio": "LM Studio",
+    "custom": "自定义"
+  },
+  "providerPicker": {
+    "pickModel": "选择模型",
+    "connection": "连接",
+    "loading": "正在加载...",
+    "model": "模型",
+    "removeFavorite": "取消收藏",
+    "markFavorite": "标记为收藏（在下拉列表中优先显示）",
+    "supportsImages": "该模型支持图片",
+    "noImageSupport": "该模型不支持图片",
+    "testImageSupport": "测试该模型是否支持图片"
+  },
+  "newSession": {
+    "defaultTitle": "新建会话",
+    "header": "新建会话",
+    "titleLabel": "标题",
+    "titlePlaceholder": "例如：重构会话 API",
+    "projectFolderLabel": "项目文件夹（可选——没有它，智能体只能使用网页搜索和 MCP，无法读取/编辑文件或执行命令）",
+    "pickFolder": "选择文件夹...",
+    "providerAndModelLabel": "提供方和模型",
+    "cancel": "取消",
+    "createSession": "创建会话"
+  },
+  "diffReview": {
+    "reject": "拒绝",
+    "accept": "接受",
+    "applied": "已应用"
+  },
+  "permissionCard": {
+    "title": "手动模式：批准",
+    "approve": "批准",
+    "deny": "拒绝"
+  },
+  "askCard": {
+    "freeTextPlaceholder": "或用自由文本回答...",
+    "answer": "回答"
+  },
+  "statusDot": {
+    "checking": "正在检查...",
+    "serverUp": "服务器运行中",
+    "serverDown": "服务器已停止"
+  },
+  "contextGauge": {
+    "tooltipBase": "{used} / {total} tokens（{percent}%）— 估算值（字符数/4）",
+    "tooltipEstimated": "模型上下文长度未知，使用默认值。点击可手动修正。",
+    "tooltipClickToFix": "点击可手动修正。",
+    "invalidTokens": "请输入有效的 token 数量",
+    "tokensPlaceholder": "tokens（例如：131072）",
+    "usageTooltip": "本会话的 token 数 — 输入：{input} | 输出：{output} | 请求次数：{requests}"
+  },
+  "todoCard": {
+    "title": "任务列表"
+  },
+  "taskList": {
+    "title": "此会话的任务",
+    "cancel": "取消"
+  },
+  "taskStep": {
+    "showLess": "收起",
+    "showMoreLines": "显示更多 {count} 行"
+  },
+  "chat": {
+    "emptyState": "创建一个新会话开始使用。",
+    "startingServer": "正在启动本地服务器...",
+    "thinking": "思考中...",
+    "awaitingModel": "正在等待模型响应...",
+    "tokens": "{count} tokens",
+    "computerUseWarningTitle": "屏幕自动化已启用",
+    "computerUseWarningBody": "每次截图消耗约 1,500 个视觉 token。一个包含 20 个操作的会话可能会额外消耗约 30K token。",
+    "gotIt": "知道了",
+    "jumpToBottom": "跳转到底部"
+  },
+  "help": {
+    "title": "帮助",
+    "searchPlaceholder": "搜索提示词...",
+    "hint": "点击<strong>使用</strong>后，提示词会粘贴到你的聊天框中——发送前可以随意编辑。",
+    "scopeCode": "⌨️ 代码",
+    "scopeChat": "💬 聊天",
+    "scopeBoth": "🔀 两者",
+    "viewFull": "查看完整提示词",
+    "use": "使用",
+    "noPromptsFound": "未找到提示词。",
+    "toolCatalog": "工具目录"
+  },
+  "readyPrompts": {
+    "search-summarize": {
+      "title": "搜索并总结一个主题",
+      "toolsLabel": "🔍 网页搜索 · 🌐 读取页面",
+      "preview": "在网上搜索一个主题并总结找到的要点。",
+      "full": "在网上搜索关于[主题]的信息，并总结找到的主要要点。请注明来源。"
+    },
+    "read-large-file": {
+      "title": "分段读取大文件",
+      "toolsLabel": "📁 读取文件",
+      "preview": "使用 offset/limit 分段读取大文件，避免超出上下文限制。",
+      "full": "分段读取文件 [路径]：先执行 read_file(path=\"[路径]\", offset=0, limit=200)，然后每次前进 200 行。总结每一段的内容。"
+    },
+    "create-file": {
+      "title": "创建一个新文件",
+      "toolsLabel": "✏️ 写入文件",
+      "preview": "在项目中创建一个包含指定内容的新文件。",
+      "full": "在 [路径] 创建一个文件，内容如下：\n\n[描述内容]"
+    },
+    "edit-file": {
+      "title": "编辑文件中的一段内容",
+      "toolsLabel": "✏️ 编辑文件",
+      "preview": "修改现有文件中的特定内容片段。",
+      "full": "在文件 [路径] 中，找到片段 [旧片段] 并替换为 [新片段]。"
+    },
+    "run-command": {
+      "title": "在终端运行一个命令",
+      "toolsLabel": "⚡ 运行命令",
+      "preview": "运行一个 shell 命令并显示结果。",
+      "full": "运行命令：[命令]\n\n解释结果。"
+    },
+    "computer-use": {
+      "title": "自动化屏幕上的任务",
+      "toolsLabel": "🖥️ 使用电脑",
+      "preview": "自动执行屏幕上的点击和输入操作，完成重复性任务。",
+      "full": "使用 computer_use 来：[描述屏幕任务]。\n\n先截图查看当前状态，然后执行所需的步骤。"
+    },
+    "create-excel": {
+      "title": "生成一个 Excel 表格",
+      "toolsLabel": "📊 创建 Excel",
+      "preview": "创建一个包含多个工作表、格式化表头和数据的 .xlsx 文件。",
+      "full": "在 [路径.xlsx] 创建一个 Excel 表格，包含以下列：[列名]。\n包含数据：[数据]。\n将表头加粗并启用自动筛选。"
+    },
+    "create-word": {
+      "title": "生成一个 Word 文档",
+      "toolsLabel": "📝 创建 Word",
+      "preview": "创建一个包含标题、段落、表格和列表的 .docx 文件。",
+      "full": "在 [路径.docx] 创建一个 Word 文档，包含：\n- 标题：[标题]\n- 内容段落：[内容]\n- 一个包含列 [列名] 和数据 [数据] 的表格"
+    },
+    "create-pdf": {
+      "title": "生成一份 PDF 报告",
+      "toolsLabel": "📄 创建 PDF",
+      "preview": "创建一个包含标题、段落和表格的 PDF 文档。",
+      "full": "在 [路径.pdf] 创建一个 PDF，标题为 \"[标题]\"。\n包含以下部分：[各部分]。\n添加一个包含 [列名] 和 [数据] 的表格。"
+    },
+    "refactor-code": {
+      "title": "使用 AST 重构代码",
+      "toolsLabel": "🔧 AST 搜索 · ✏️ AST 编辑",
+      "preview": "使用语法（AST）分析查找并替换代码模式。",
+      "full": "使用 ast_grep 查找项目中所有匹配 [模式] 的地方。\n然后使用 ast_edit 将其替换为 [新模式]。"
+    },
+    "subagent-task": {
+      "title": "委托一个并行任务",
+      "toolsLabel": "🤖 子智能体",
+      "preview": "创建一个子智能体来并行解决一个独立的任务。",
+      "full": "使用 task 工具创建一个子智能体来：[描述任务]。\n子智能体应独立工作并汇报结果。"
+    },
+    "plan-todo": {
+      "title": "规划一个复杂任务",
+      "toolsLabel": "📋 任务列表",
+      "preview": "为一个复杂任务创建包含各步骤的可视化计划。",
+      "full": "使用 todo_list 规划以下任务：[描述复杂任务]。\n将其拆分为清晰的步骤并逐一执行。"
+    },
+    "grep-search": {
+      "title": "在项目中搜索一个词",
+      "toolsLabel": "🔎 文本搜索",
+      "preview": "使用 grep 在项目所有文件中搜索一个词或正则表达式。",
+      "full": "使用 grep 在项目所有文件中搜索 \"[词]\"。\n列出它出现的文件和行号。"
+    },
+    "fetch-page": {
+      "title": "提取某个 URL 的内容",
+      "toolsLabel": "🌐 读取页面",
+      "preview": "获取一个网页的内容并提取相关信息。",
+      "full": "访问 [URL] 并提取页面的主要信息。总结内容。"
+    }
+  }
+}

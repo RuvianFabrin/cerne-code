@@ -22,10 +22,10 @@ function lineClass(line: string) {
       <span class="msi">{{ edit.is_new_file ? "note_add" : "difference" }}</span>
       <span class="diff-path">{{ edit.target_path }}</span>
       <div v-if="!edit.already_applied" class="diff-actions">
-        <button class="reject" @click="sessionStore.rejectEdit(edit.id)">Rejeitar</button>
-        <button class="accept" @click="sessionStore.acceptEdit(edit.id)">Aceitar</button>
+        <button class="reject" @click="sessionStore.rejectEdit(edit.id)">{{ $t("diffReview.reject") }}</button>
+        <button class="accept" @click="sessionStore.acceptEdit(edit.id)">{{ $t("diffReview.accept") }}</button>
       </div>
-      <span v-else class="applied-badge">Aplicado</span>
+      <span v-else class="applied-badge">{{ $t("diffReview.applied") }}</span>
     </div>
     <pre class="diff-body"><span v-for="(line, i) in lines" :key="i" :class="lineClass(line)">{{ line }}</span></pre>
   </div>

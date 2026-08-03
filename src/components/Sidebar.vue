@@ -51,7 +51,7 @@ async function remove(id: string) {
 <template>
   <aside class="sidebar" :class="{ collapsed }">
     <div class="top-row">
-      <button class="icon-btn" @click="collapsed = !collapsed" v-tooltip.right="'Recolher'">
+      <button class="icon-btn" @click="collapsed = !collapsed" v-tooltip.right="$t('sidebar.collapse')">
         <span class="msi">dock_to_right</span>
       </button>
       <span v-if="!collapsed" class="brand">Cerne Code</span>
@@ -59,16 +59,16 @@ async function remove(id: string) {
 
     <button class="new-session" @click="emit('new-session')">
       <span class="msi">add</span>
-      <span v-if="!collapsed">Nova sessão</span>
+      <span v-if="!collapsed">{{ $t("sidebar.newSession") }}</span>
     </button>
 
     <template v-if="!collapsed">
       <div class="search-box">
         <span class="msi">search</span>
-        <input v-model="search" placeholder="Buscar sessões" />
+        <input v-model="search" :placeholder="$t('sidebar.searchPlaceholder')" />
       </div>
 
-      <div class="section-label">Recentes</div>
+      <div class="section-label">{{ $t("sidebar.recent") }}</div>
       <div class="session-list">
         <div
           v-for="s in filtered"
@@ -80,7 +80,7 @@ async function remove(id: string) {
           <span
             class="msi session-icon"
             :class="{ 'code-icon': s.project_root }"
-            v-tooltip.right="s.project_root ? `Código — ${s.project_root}` : 'Chat'"
+            v-tooltip.right="s.project_root ? $t('sidebar.codeTooltip', { path: s.project_root }) : $t('sidebar.chatTooltip')"
           >{{ s.project_root ? "terminal" : "chat_bubble" }}</span>
           <input
             v-if="editingId === s.id"
@@ -94,36 +94,36 @@ async function remove(id: string) {
           />
           <span v-else class="session-title">{{ s.title }}</span>
           <div v-if="editingId === s.id" class="session-actions editing">
-            <button class="session-action-btn" v-tooltip.top="'Salvar'" @mousedown.prevent="confirmRename">
+            <button class="session-action-btn" v-tooltip.top="$t('sidebar.save')" @mousedown.prevent="confirmRename">
               <span class="msi">save</span>
             </button>
           </div>
           <div v-else class="session-actions">
-            <button class="session-action-btn" v-tooltip.top="'Renomear'" @click.stop="startRename(s.id, s.title)">
+            <button class="session-action-btn" v-tooltip.top="$t('sidebar.rename')" @click.stop="startRename(s.id, s.title)">
               <span class="msi">edit</span>
             </button>
-            <button class="session-action-btn" v-tooltip.top="'Excluir'" @click.stop="remove(s.id)">
+            <button class="session-action-btn" v-tooltip.top="$t('sidebar.delete')" @click.stop="remove(s.id)">
               <span class="msi">delete</span>
             </button>
           </div>
         </div>
-        <p v-if="filtered.length === 0" class="empty">Nenhuma sessão ainda.</p>
+        <p v-if="filtered.length === 0" class="empty">{{ $t("sidebar.empty") }}</p>
       </div>
     </template>
 
     <div class="bottom-row">
-      <button class="icon-btn" @click="emit('open-help')" v-tooltip.right="'Ajuda'">
+      <button class="icon-btn" @click="emit('open-help')" v-tooltip.right="$t('sidebar.help')">
         <span class="msi">help</span>
-        <span v-if="!collapsed">Ajuda</span>
+        <span v-if="!collapsed">{{ $t("sidebar.help") }}</span>
       </button>
       <button
         class="icon-btn"
         :class="{ active: props.view === 'settings' }"
         @click="emit('update:view', 'settings')"
-        v-tooltip.right="'Configurações'"
+        v-tooltip.right="$t('sidebar.settings')"
       >
         <span class="msi">settings</span>
-        <span v-if="!collapsed">Configurações</span>
+        <span v-if="!collapsed">{{ $t("sidebar.settings") }}</span>
       </button>
     </div>
   </aside>

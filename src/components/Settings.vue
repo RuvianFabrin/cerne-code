@@ -1,14 +1,21 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, onMounted, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, type CustomProviderConfig, type McpServerConfig, type ProviderKind, type SearchProviderKind, type SkillMeta } from "../api";
-import { PROVIDER_LABELS, useProviderStore } from "../stores/provider";
+import { PROVIDER_KINDS, providerLabel, useProviderStore } from "../stores/provider";
+import { SUPPORTED_LOCALES, setLocale, type LocaleCode } from "../i18n";
 import LlamaForkRow from "./LlamaForkRow.vue";
 import ModelBrowserDialog from "./ModelBrowserDialog.vue";
 import SkillEditorModal from "./SkillEditorModal.vue";
 
+const { t, locale } = useI18n();
 const providerStore = useProviderStore();
 const openrouterKeyInput = ref("");
+
+function onLocaleChange(value: string) {
+  setLocale(value as LocaleCode);
+}
 
 // Estado do modal de navegação de modelos — um só modal reutilizado pra
 // qualquer provedor/conexão; `openModelBrowser` define quem ele mostra.
@@ -32,12 +39,12 @@ const newForkPort = ref(8082);
 const forkError = ref("");
 
 async function pickForkExe() {
-  const selected = await open({ directory: false, multiple: false, filters: [{ name: "Executável", extensions: ["exe"] }] });
+  const selected = await open({ directory: false, multiple: false, filters: [{ name: t("settings.executableFilter"), extensions: ["exe"] }] });
   if (typeof selected === "string") newForkExe.value = selected;
 }
 
 async function pickForkIni() {
-  const selected = await open({ directory: false, multiple: false, filters: [{ name: "Config (.ini)", extensions: ["ini"] }] });
+  const selected = await open({ directory: false, multiple: false, filters: [{ name: t("settings.iniConfigFilter"), extensions: ["ini"] }] });
   if (typeof selected === "string") newForkIni.value = selected;
 }
 
@@ -272,12 +279,12 @@ async function toggleMcpServer(server: McpServerConfig) {
   await loadMcpServers();
 }
 
-const SEARCH_PROVIDER_OPTIONS: { value: SearchProviderKind; label: string }[] = [
-  { value: "auto", label: "Automático (DuckDuckGo, sem chave)" },
+const SEARCH_PROVIDER_OPTIONS = computed<{ value: SearchProviderKind; label: string }[]>(() => [
+  { value: "auto", label: t("settings.searchAuto") },
   { value: "brave", label: "Brave Search API" },
   { value: "tavily", label: "Tavily" },
-  { value: "searxng", label: "SearXNG (instância própria)" },
-];
+  { value: "searxng", label: t("settings.searchSearxng") },
+]);
 
 const searchProvider = ref<SearchProviderKind>("auto");
 const searchSearxngUrl = ref("http://127.0.0.1:8888");
@@ -355,20 +362,28 @@ async function saveKey() {
 <template>
   <div class="settings">
     <div class="settings-inner">
-      <h1>Configurações</h1>
+      <h1>{{ $t("settings.title") }}</h1>
 
       <section>
-        <h2>Provider ativo</h2>
-        <p class="hint">Escolha de onde o Cerne Code busca inferência para novas sessões.</p>
+        <h2>{{ $t("settings.language") }}</h2>
+        <p class="hint">{{ $t("settings.languageHint") }}</p>
+        <select :value="locale" class="text-input" @change="onLocaleChange(($event.target as HTMLSelectElement).value)">
+          <option v-for="l in SUPPORTED_LOCALES" :key="l.code" :value="l.code">{{ l.label }}</option>
+        </select>
+      </section>
+
+      <section>
+        <h2>{{ $t("settings.activeProvider") }}</h2>
+        <p class="hint">{{ $t("settings.activeProviderHint") }}</p>
         <div class="provider-grid">
           <button
-            v-for="(label, kind) in PROVIDER_LABELS"
+            v-for="kind in PROVIDER_KINDS"
             :key="kind"
             class="provider-card"
             :class="{ active: providerStore.config?.active_provider === kind }"
             @click="providerStore.setActiveProvider(kind as any)"
           >
-            {{ label }}
+            {{ providerLabel(kind) }}
           </button>
         </div>
       </section>
@@ -376,27 +391,22 @@ async function saveKey() {
       <section>
         <h2>OpenRouter</h2>
         <p class="hint">
-          Chave de API salva no cofre de credenciais do sistema (nunca em texto puro).
-          <strong>{{ providerStore.hasOpenrouterKey ? "Chave configurada." : "Nenhuma chave salva ainda." }}</strong>
+          {{ $t("settings.apiKeyVaultHint") }}
+          <strong>{{ providerStore.hasOpenrouterKey ? $t("settings.keyConfigured") : $t("settings.noKeySaved") }}</strong>
         </p>
         <div class="key-row">
           <input v-model="openrouterKeyInput" type="password" placeholder="sk-or-..." class="text-input" />
-          <button class="btn-primary" @click="saveKey">Salvar</button>
+          <button class="btn-primary" @click="saveKey">{{ $t("sidebar.save") }}</button>
         </div>
-        <button class="btn-secondary browse-models-btn" @click="openModelBrowser('openrouter', 'Modelos — OpenRouter')">
+        <button class="btn-secondary browse-models-btn" @click="openModelBrowser('openrouter', $t('settings.modelsOpenRouterTitle'))">
           <span class="msi">search</span>
-          Ver modelos
+          {{ $t("settings.viewModels") }}
         </button>
       </section>
 
       <section>
-        <h2>llama.cpp local</h2>
-        <p class="hint">
-          Forks configurados em <code>providers.toml</code> — cada um aponta pro
-          <code>llama-server.exe</code> e o <code>models.ini</code> de um build específico do
-          llama.cpp na sua máquina. Nenhum fork vem pré-configurado (o Cerne Code é distribuído sem
-          assumir onde você instalou o seu).
-        </p>
+        <h2>{{ $t("settings.llamaCppLocal") }}</h2>
+        <p class="hint" v-html="$t('settings.llamaCppHint')"></p>
         <div class="fork-list">
           <LlamaForkRow
             v-for="fork in providerStore.forks"
@@ -404,13 +414,13 @@ async function saveKey() {
             :fork="fork"
             @browse="openModelBrowser('llama_cpp', `Modelos — ${fork.label}`, fork.id)"
           />
-          <p v-if="providerStore.forks.length === 0" class="hint">Nenhum fork configurado ainda.</p>
+          <p v-if="providerStore.forks.length === 0" class="hint">{{ $t("settings.noForksYet") }}</p>
         </div>
         <div class="fork-form">
           <div class="fork-form-row">
             <input v-model="newForkId" class="text-input" placeholder="id (ex: turboquant)" />
-            <input v-model="newForkLabel" class="text-input" placeholder="rótulo (opcional)" />
-            <input v-model.number="newForkPort" type="number" class="text-input fork-port-input" placeholder="porta" />
+            <input v-model="newForkLabel" class="text-input" :placeholder="$t('settings.labelOptional')" />
+            <input v-model.number="newForkPort" type="number" class="text-input fork-port-input" :placeholder="$t('settings.port')" />
           </div>
           <div class="fork-form-row">
             <button class="folder-btn" @click="pickForkExe">
@@ -422,37 +432,32 @@ async function saveKey() {
               <span class="folder-path">{{ newForkIni || "models.ini..." }}</span>
             </button>
           </div>
-          <button class="btn-primary" @click="addFork">Adicionar fork</button>
+          <button class="btn-primary" @click="addFork">{{ $t("settings.addFork") }}</button>
         </div>
         <p v-if="forkError" class="error-text">{{ forkError }}</p>
       </section>
 
       <section>
-        <h2>Providers customizados</h2>
-        <p class="hint">
-          Qualquer endpoint compatível com a API de chat completions da OpenAI — Claude (via
-          <code>https://api.anthropic.com/v1/</code>), Grok/xAI (<code>https://api.x.ai/v1</code>),
-          ChatGPT/OpenAI (<code>https://api.openai.com/v1</code>), Qwen/DashScope, Kimi/Moonshot, ou
-          qualquer outro. Aparece no seletor de provider das sessões com o rótulo que você der.
-        </p>
+        <h2>{{ $t("settings.customProviders") }}</h2>
+        <p class="hint" v-html="$t('settings.customProvidersHint')"></p>
         <div class="skill-list">
           <div v-for="provider in providerStore.customProviders" :key="provider.id" class="skill-row mcp-row">
             <div class="skill-info">
               <span class="skill-name">
                 {{ provider.label }}
-                <span v-if="provider.supports_vision" class="vision-badge" v-tooltip.top="'Imagem liberada nesta conexão'">
+                <span v-if="provider.supports_vision" class="vision-badge" v-tooltip.top="$t('settings.visionEnabledConnection')">
                   <span class="msi">image</span>
                 </span>
               </span>
               <span class="skill-desc">{{ provider.base_url }}</span>
             </div>
             <div class="mcp-actions">
-              <button class="btn-secondary" @click="openModelBrowser('custom', `Modelos — ${provider.label}`, '', provider.id)">Modelos</button>
-              <button class="btn-secondary" @click="startEditCustomProvider(provider)">Editar</button>
-              <button class="btn-secondary" @click="removeCustomProvider(provider.id)">Remover</button>
+              <button class="btn-secondary" @click="openModelBrowser('custom', $t('settings.modelsForTitle', { name: provider.label }), '', provider.id)">{{ $t("settings.viewModels") }}</button>
+              <button class="btn-secondary" @click="startEditCustomProvider(provider)">{{ $t("settings.edit") }}</button>
+              <button class="btn-secondary" @click="removeCustomProvider(provider.id)">{{ $t("settings.remove") }}</button>
             </div>
           </div>
-          <p v-if="providerStore.customProviders.length === 0" class="hint">Nenhum provider customizado ainda.</p>
+          <p v-if="providerStore.customProviders.length === 0" class="hint">{{ $t("settings.noCustomProvidersYet") }}</p>
         </div>
         <div class="mcp-form">
           <div class="mcp-form-row">
@@ -461,7 +466,7 @@ async function saveKey() {
               class="text-input"
               placeholder="id (ex: claude)"
               :disabled="!!editingCustomId"
-              v-tooltip.top="editingCustomId ? 'O id identifica o provider, não dá pra mudar editando' : ''"
+              v-tooltip.top="editingCustomId ? $t('settings.idCannotChange') : ''"
             />
             <input v-model="newCustomLabel" class="text-input" placeholder="rótulo (ex: Claude)" />
           </div>
@@ -470,29 +475,28 @@ async function saveKey() {
             v-model="newCustomApiKey"
             type="password"
             class="text-input"
-            :placeholder="editingCustomId ? 'nova chave de API (deixe em branco pra manter a atual)' : 'chave de API'"
+            :placeholder="editingCustomId ? $t('settings.newApiKeyPlaceholder') : $t('settings.apiKeyPlaceholder')"
           />
           <label class="vision-checkbox">
             <input type="checkbox" v-model="newCustomSupportsVision" />
-            Modelos desta conexão aceitam imagem (confirmação manual — não dá pra confirmar
-            automaticamente num endpoint OpenAI-compatible genérico)
+            {{ $t("settings.visionCheckboxLabel") }}
           </label>
           <input
             v-model.number="newCustomContextLength"
             type="number"
             class="text-input"
-            placeholder="tamanho de contexto em tokens (opcional — a maioria dos endpoints customizados não informa isso)"
+            :placeholder="$t('settings.contextLengthPlaceholder')"
           />
           <div class="mcp-form-actions">
             <button class="btn-secondary" :disabled="customTestStatus === 'testing'" @click="testCustomProvider">
-              {{ customTestStatus === "testing" ? "Testando..." : "Testar conexão" }}
+              {{ customTestStatus === "testing" ? $t("settings.testing") : $t("settings.testConnection") }}
             </button>
-            <button class="btn-primary" @click="saveCustomProvider">{{ editingCustomId ? "Salvar" : "Adicionar" }}</button>
-            <button v-if="editingCustomId" class="btn-secondary" @click="resetCustomForm">Cancelar</button>
+            <button class="btn-primary" @click="saveCustomProvider">{{ editingCustomId ? $t("sidebar.save") : $t("settings.add") }}</button>
+            <button v-if="editingCustomId" class="btn-secondary" @click="resetCustomForm">{{ $t("newSession.cancel") }}</button>
           </div>
           <p v-if="customTestStatus === 'success'" class="mcp-test-success">
             <span class="msi">check_circle</span>
-            Conectou! {{ customTestModels.length }} modelo(s) encontrado(s){{ customTestModels.length ? ": " + customTestModels.slice(0, 8).join(", ") + (customTestModels.length > 8 ? "..." : "") : "" }}.
+            {{ $t("settings.connectedModelsFound", { count: customTestModels.length, list: customTestModels.length ? ": " + customTestModels.slice(0, 8).join(", ") + (customTestModels.length > 8 ? "..." : "") : "" }) }}
           </p>
           <p v-if="customTestStatus === 'error'" class="error-text">{{ customTestError }}</p>
         </div>
@@ -500,12 +504,8 @@ async function saveKey() {
       </section>
 
       <section>
-        <h2>Skills</h2>
-        <p class="hint">
-          Pastas com <code>SKILL.md</code> que o agente descobre sozinho e carrega sob demanda
-          (<code>load_skill</code>). Skills de projeto (<code>&lt;projeto&gt;/.cerne/skills/</code>) só
-          aparecem aqui de dentro da sessão — esta lista mostra as globais.
-        </p>
+        <h2>{{ $t("settings.skills") }}</h2>
+        <p class="hint" v-html="$t('settings.skillsHint')"></p>
         <div class="skill-list">
           <div v-for="skill in skills" :key="skill.dir" class="skill-row mcp-row">
             <div class="skill-info">
@@ -513,27 +513,26 @@ async function saveKey() {
               <span class="skill-desc">{{ skill.description }}</span>
             </div>
             <div class="mcp-actions">
-              <button class="btn-secondary" @click="openSkillModal(skill)">Editar</button>
+              <button class="btn-secondary" @click="openSkillModal(skill)">{{ $t("settings.edit") }}</button>
             </div>
           </div>
-          <p v-if="skills.length === 0" class="hint">Nenhuma skill ainda além do README.</p>
+          <p v-if="skills.length === 0" class="hint">{{ $t("settings.noSkillsYet") }}</p>
         </div>
         <div class="skill-new">
-          <button class="btn-primary" @click="openSkillModal(null)">Criar skill</button>
-          <button class="btn-secondary" @click="api.openSkillsFolder()">Abrir pasta de skills</button>
+          <button class="btn-primary" @click="openSkillModal(null)">{{ $t("settings.createSkill") }}</button>
+          <button class="btn-secondary" @click="api.openSkillsFolder()">{{ $t("settings.openSkillsFolder") }}</button>
         </div>
       </section>
 
       <SkillEditorModal v-model:visible="skillModalVisible" :skill="skillModalTarget" @saved="loadSkills" />
 
       <section>
-        <h2>Servidores MCP</h2>
+        <h2>{{ $t("settings.mcpServers") }}</h2>
         <p class="hint">
-          Ferramentas externas via Model Context Protocol — cada servidor sobe como subprocesso
-          (stdio) e as ferramentas dele aparecem pro agente como
-          <code>mcp__{{ '{servidor}' }}__{{ '{tool}' }}</code>. Configuração salva em
-          <code>mcp_servers.json</code>, no formato objeto <code>mcpServers</code> por nome que a
-          maioria dos servidores MCP já documenta pra colar direto.
+          {{ $t("settings.mcpHintBefore") }}
+          <code>mcp__{{ '{servidor}' }}__{{ '{tool}' }}</code>{{ $t("settings.mcpHintAfter") }}
+          <code>mcp_servers.json</code>{{ $t("settings.mcpHintAfter2") }}
+          <code>mcpServers</code>{{ $t("settings.mcpHintAfter3") }}
         </p>
         <div class="skill-list">
           <div v-for="server in mcpServers" :key="server.name" class="skill-row mcp-row">
@@ -542,14 +541,14 @@ async function saveKey() {
               <span class="skill-desc">{{ server.command }} {{ server.args.join(" ") }}</span>
             </div>
             <div class="mcp-actions">
-              <button class="btn-secondary" @click="startEditMcpServer(server)">Editar</button>
+              <button class="btn-secondary" @click="startEditMcpServer(server)">{{ $t("settings.edit") }}</button>
               <button class="btn-secondary" @click="toggleMcpServer(server)">
-                {{ server.enabled ? "Desabilitar" : "Habilitar" }}
+                {{ server.enabled ? $t("settings.disable") : $t("settings.enable") }}
               </button>
-              <button class="btn-secondary" @click="removeMcpServer(server.name)">Remover</button>
+              <button class="btn-secondary" @click="removeMcpServer(server.name)">{{ $t("settings.remove") }}</button>
             </div>
           </div>
-          <p v-if="mcpServers.length === 0" class="hint">Nenhum servidor MCP configurado ainda.</p>
+          <p v-if="mcpServers.length === 0" class="hint">{{ $t("settings.noMcpServersYet") }}</p>
         </div>
         <div class="mcp-form">
           <div class="mcp-form-row">
@@ -558,7 +557,7 @@ async function saveKey() {
               class="text-input"
               placeholder="nome (ex: github)"
               :disabled="!!editingMcpName"
-              v-tooltip.top="editingMcpName ? 'O nome identifica o servidor, não dá pra mudar editando — remova e crie de novo se precisar renomear' : ''"
+              v-tooltip.top="editingMcpName ? $t('settings.nameCannotChange') : ''"
             />
             <input v-model="newMcpCommand" class="text-input" placeholder="comando (ex: npx)" />
           </div>
@@ -567,18 +566,18 @@ async function saveKey() {
             v-model="newMcpEnv"
             class="text-input mcp-env-input"
             rows="2"
-            placeholder="variáveis de ambiente, uma por linha (ex: GITHUB_TOKEN=ghp_...)"
+            :placeholder="$t('settings.envVarsPlaceholder')"
           />
           <div class="mcp-form-actions">
             <button class="btn-secondary" :disabled="mcpTestStatus === 'testing'" @click="testMcpServer">
-              {{ mcpTestStatus === "testing" ? "Testando..." : "Testar conexão" }}
+              {{ mcpTestStatus === "testing" ? $t("settings.testing") : $t("settings.testConnection") }}
             </button>
-            <button class="btn-primary" @click="saveMcpServer">{{ editingMcpName ? "Salvar" : "Adicionar" }}</button>
-            <button v-if="editingMcpName" class="btn-secondary" @click="resetMcpForm">Cancelar</button>
+            <button class="btn-primary" @click="saveMcpServer">{{ editingMcpName ? $t("sidebar.save") : $t("settings.add") }}</button>
+            <button v-if="editingMcpName" class="btn-secondary" @click="resetMcpForm">{{ $t("newSession.cancel") }}</button>
           </div>
           <p v-if="mcpTestStatus === 'success'" class="mcp-test-success">
             <span class="msi">check_circle</span>
-            Conectou! {{ mcpTestTools.length }} ferramenta(s) encontrada(s){{ mcpTestTools.length ? ": " + mcpTestTools.join(", ") : "" }}.
+            {{ $t("settings.connectedToolsFound", { count: mcpTestTools.length, list: mcpTestTools.length ? ": " + mcpTestTools.join(", ") : "" }) }}
           </p>
           <p v-if="mcpTestStatus === 'error'" class="error-text">{{ mcpTestError }}</p>
         </div>
@@ -586,12 +585,8 @@ async function saveKey() {
       </section>
 
       <section>
-        <h2>Busca na web</h2>
-        <p class="hint">
-          Por padrão (<strong>Automático</strong>) a ferramenta <code>web_search</code> usa o
-          DuckDuckGo direto — sem instalar nada, sem chave de API. Se preferir resultados de uma
-          API paga (Brave, Tavily) ou já roda uma instância própria de SearXNG, pode trocar aqui.
-        </p>
+        <h2>{{ $t("settings.webSearch") }}</h2>
+        <p class="hint" v-html="$t('settings.webSearchHint')"></p>
         <div class="field">
           <label>Provider</label>
           <select v-model="searchProvider" class="text-input">
@@ -599,15 +594,15 @@ async function saveKey() {
           </select>
         </div>
         <div v-if="searchProvider === 'brave' || searchProvider === 'tavily'" class="field">
-          <label>Chave de API</label>
+          <label>{{ $t("settings.apiKey") }}</label>
           <input
             v-model="searchApiKeyInput"
             type="password"
             class="text-input"
             :placeholder="
               (searchProvider === 'brave' ? searchHasBraveKey : searchHasTavilyKey)
-                ? 'chave já configurada — deixe em branco pra manter'
-                : 'chave de API'
+                ? $t('settings.keyAlreadyConfigured')
+                : $t('settings.apiKeyPlaceholder')
             "
           />
           <button
@@ -615,45 +610,45 @@ async function saveKey() {
             class="btn-secondary"
             @click="clearSearchApiKey"
           >
-            Remover chave
+            {{ $t("settings.removeKey") }}
           </button>
         </div>
         <div v-if="searchProvider === 'searxng'" class="field">
-          <label>URL do SearXNG</label>
+          <label>{{ $t("settings.searxngUrl") }}</label>
           <input v-model="searchSearxngUrl" class="text-input" placeholder="http://127.0.0.1:8888" />
         </div>
         <div class="mcp-form-actions">
           <button class="btn-secondary" :disabled="searchTestStatus === 'testing'" @click="testSearchProvider">
-            {{ searchTestStatus === "testing" ? "Testando..." : "Testar conexão" }}
+            {{ searchTestStatus === "testing" ? $t("settings.testing") : $t("settings.testConnection") }}
           </button>
-          <button class="btn-primary" @click="saveSearchConfig">Salvar</button>
+          <button class="btn-primary" @click="saveSearchConfig">{{ $t("sidebar.save") }}</button>
         </div>
         <p v-if="searchTestStatus === 'success'" class="mcp-test-success">
           <span class="msi">check_circle</span>
-          Conectou! {{ searchTestCount }} resultado(s) encontrado(s) numa busca de teste.
+          {{ $t("settings.connectedResultsFound", { count: searchTestCount }) }}
         </p>
         <p v-if="searchTestStatus === 'error'" class="error-text">{{ searchTestError }}</p>
         <p v-if="searchError" class="error-text">{{ searchError }}</p>
       </section>
 
       <section v-if="providerStore.config">
-        <h2>Endpoints locais</h2>
+        <h2>{{ $t("settings.localEndpoints") }}</h2>
         <div class="field">
           <label>Ollama</label>
           <div class="endpoint-row">
             <input v-model="providerStore.config.ollama_base_url" class="text-input" @change="providerStore.saveConfig" />
-            <button class="btn-secondary" @click="openModelBrowser('ollama', 'Modelos — Ollama')">Modelos</button>
+            <button class="btn-secondary" @click="openModelBrowser('ollama', $t('settings.modelsForTitle', { name: 'Ollama' }))">{{ $t("settings.viewModels") }}</button>
           </div>
         </div>
         <div class="field">
           <label>LM Studio</label>
           <div class="endpoint-row">
             <input v-model="providerStore.config.lmstudio_base_url" class="text-input" @change="providerStore.saveConfig" />
-            <button class="btn-secondary" @click="openModelBrowser('lm_studio', 'Modelos — LM Studio')">Modelos</button>
+            <button class="btn-secondary" @click="openModelBrowser('lm_studio', $t('settings.modelsForTitle', { name: 'LM Studio' }))">{{ $t("settings.viewModels") }}</button>
           </div>
         </div>
         <div class="field">
-          <label>llama.cpp (router)</label>
+          <label>{{ $t("settings.llamaCppRouter") }}</label>
           <input v-model="providerStore.config.llama_cpp_base_url" class="text-input" @change="providerStore.saveConfig" />
         </div>
       </section>

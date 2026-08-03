@@ -15,10 +15,10 @@ const statusIcon: Record<string, string> = {
   <div v-if="sessionStore.tasks.length > 0" class="task-panel">
     <div class="task-panel-title">
       <span class="msi">checklist</span>
-      Tarefas desta sessão
-      <button v-if="sessionStore.status !== 'idle'" class="cancel-btn" v-tooltip.top="'Cancelar execução'" @click="sessionStore.cancelTurn()">
+      {{ $t("taskList.title") }}
+      <button v-if="sessionStore.status !== 'idle'" class="cancel-btn" v-tooltip.top="$t('composer.cancelExecution')" @click="sessionStore.cancelTurn()">
         <span class="msi">stop_circle</span>
-        Cancelar
+        {{ $t("taskList.cancel") }}
       </button>
     </div>
     <div class="task-item" v-for="t in sessionStore.tasks" :key="t.id">

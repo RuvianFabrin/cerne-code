@@ -1,10 +1,13 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import Dialog from "primevue/dialog";
 import DataTable from "primevue/datatable";
 import Column from "primevue/column";
 import { useProviderStore } from "../stores/provider";
 import type { ModelInfo, ProviderKind } from "../api";
+
+const { locale } = useI18n();
 
 // Modal de navegação de modelos — tabela com busca, paginação e favoritos
 // (estrela). Abre a partir da tela de configurações pra cada provedor/conexão.
@@ -68,7 +71,7 @@ function displayName(m: ModelInfo): string {
 
 function formatCtx(n?: number | null): string {
   if (n == null) return "—";
-  if (n >= 1_000_000) return `${(n / 1_000_000).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}M`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toLocaleString(locale.value, { maximumFractionDigits: 1 })}M`;
   if (n >= 1000) return `${Math.round(n / 1000)}K`;
   return `${n}`;
 }
@@ -78,7 +81,7 @@ function formatSize(m: ModelInfo): string {
   if (m.parameter_size) parts.push(m.parameter_size);
   if (m.size_bytes != null) {
     const gb = m.size_bytes / 1024 ** 3;
-    parts.push(`${gb.toLocaleString("pt-BR", { maximumFractionDigits: 1 })} GB`);
+    parts.push(`${gb.toLocaleString(locale.value, { maximumFractionDigits: 1 })} GB`);
   }
   return parts.length ? parts.join(" · ") : "—";
 }
@@ -86,7 +89,7 @@ function formatSize(m: ModelInfo): string {
 function formatPrice(p?: number | null): string {
   if (p == null) return "—";
   const perMillion = p * 1_000_000;
-  return `$${perMillion.toLocaleString("pt-BR", { maximumFractionDigits: 2 })}`;
+  return `$${perMillion.toLocaleString(locale.value, { maximumFractionDigits: 2 })}`;
 }
 
 function priceLabel(m: ModelInfo): string {
@@ -105,12 +108,12 @@ function priceLabel(m: ModelInfo): string {
     :contentStyle="{ padding: 0 }"
   >
     <div class="browser-toolbar">
-      <input v-model="search" class="text-input search-input" placeholder="Buscar modelo..." />
+      <input v-model="search" class="text-input search-input" :placeholder="$t('modelBrowser.searchPlaceholder')" />
       <label class="fav-filter">
         <input type="checkbox" v-model="onlyFavorites" />
-        Só favoritos
+        {{ $t("modelBrowser.onlyFavorites") }}
       </label>
-      <span class="count">{{ filteredModels.length }} modelo(s)</span>
+      <span class="count">{{ $t("modelBrowser.modelCount", { count: filteredModels.length }) }}</span>
     </div>
 
     <DataTable
@@ -125,26 +128,26 @@ function priceLabel(m: ModelInfo): string {
       class="model-table"
     >
       <template #empty>
-        <p class="empty-hint">{{ loading ? "Carregando modelos..." : "Nenhum modelo encontrado." }}</p>
+        <p class="empty-hint">{{ loading ? $t("modelBrowser.loadingModels") : $t("modelBrowser.noModelsFound") }}</p>
       </template>
       <Column :sortable="false" style="width: 44px; text-align: center">
         <template #body="{ data }">
           <button
             class="star-btn"
             :class="{ active: isFavorite(data.id) }"
-            v-tooltip.top="isFavorite(data.id) ? 'Remover dos favoritos' : 'Marcar como favorito'"
+            v-tooltip.top="isFavorite(data.id) ? $t('providerPicker.removeFavorite') : $t('modelBrowser.markFavorite')"
             @click="toggleFavorite(data.id)"
           >
             <span class="msi">{{ isFavorite(data.id) ? "star" : "star_border" }}</span>
           </button>
         </template>
       </Column>
-      <Column field="id" header="Modelo" sortable style="min-width: 240px">
+      <Column field="id" :header="$t('providerPicker.model')" sortable style="min-width: 240px">
         <template #body="{ data }">
           <div class="model-cell">
             <span class="model-name">
               {{ displayName(data) }}
-              <span v-if="data.supports_vision" class="vision-badge" v-tooltip.top="'Aceita imagem'">
+              <span v-if="data.supports_vision" class="vision-badge" v-tooltip.top="$t('modelBrowser.acceptsImage')">
                 <span class="msi">image</span>
               </span>
             </span>
@@ -153,13 +156,13 @@ function priceLabel(m: ModelInfo): string {
           </div>
         </template>
       </Column>
-      <Column field="context_length" header="Ctx" sortable style="width: 90px; text-align: right">
+      <Column field="context_length" :header="$t('modelBrowser.ctx')" sortable style="width: 90px; text-align: right">
         <template #body="{ data }">{{ formatCtx(data.context_length) }}</template>
       </Column>
-      <Column field="size_bytes" header="Tamanho" sortable style="width: 130px; text-align: right">
+      <Column field="size_bytes" :header="$t('modelBrowser.size')" sortable style="width: 130px; text-align: right">
         <template #body="{ data }">{{ formatSize(data) }}</template>
       </Column>
-      <Column field="price_prompt" header="Preço $/1M (in/out)" sortable style="width: 150px; text-align: right">
+      <Column field="price_prompt" :header="$t('modelBrowser.price')" sortable style="width: 150px; text-align: right">
         <template #body="{ data }">{{ priceLabel(data) }}</template>
       </Column>
     </DataTable>

@@ -1,0 +1,344 @@
+{
+  "sidebar": {
+    "collapse": "Contraer",
+    "newSession": "Nueva sesión",
+    "searchPlaceholder": "Buscar sesiones",
+    "recent": "Recientes",
+    "codeTooltip": "Código — {path}",
+    "chatTooltip": "Chat",
+    "save": "Guardar",
+    "rename": "Renombrar",
+    "delete": "Eliminar",
+    "empty": "Todavía no hay sesiones.",
+    "help": "Ayuda",
+    "settings": "Configuración"
+  },
+  "composer": {
+    "modeAuto": "Automático",
+    "modeManual": "Manual",
+    "reasoningOff": "Desactivado",
+    "reasoningAuto": "Auto",
+    "reasoningLow": "Bajo",
+    "reasoningMedium": "Medio",
+    "reasoningHigh": "Alto",
+    "documentsAndCode": "Documentos y código",
+    "images": "Imágenes",
+    "visionUnsupported": "El proveedor/modelo de esta sesión no tiene soporte de visión configurado — la imagen no se enviará.",
+    "pasteImageFailed": "Error al leer la imagen pegada",
+    "optimizing": "Optimizando...",
+    "ready": "¡Listo!",
+    "remove": "Quitar",
+    "optimizingHint": "Espere, optimizando archivo para ahorrar tokens...",
+    "placeholder": "Pídele a Cerne Code que lea, edite o ejecute algo en tu proyecto...",
+    "attachFile": "Adjuntar archivo",
+    "executionModeTooltip": "YOLO: edita directo, sin sandbox. Automático: sandbox + tú aceptas/rechazas. Manual: aprueba cada acción.",
+    "reasoningTooltip": "Razonamiento del modelo. 💤 Desactivado = sin thinking (más rápido, predeterminado en modelos locales). Auto = el modelo decide.",
+    "fableTooltip": "Método Fable (para modelos pequeños/medianos): activa un ciclo clasificar → actuar → verificar para que el modelo no abandone tareas. Desactivado por defecto; en modelos grandes solo infla el prompt.",
+    "cancelExecution": "Cancelar ejecución"
+  },
+  "toolLabels": {
+    "web_search": "Buscó en la web",
+    "web_fetch": "Leyó una página web",
+    "load_skill": "Cargó una skill",
+    "ask": "Te preguntó algo",
+    "read_file": "Leyó un archivo",
+    "list_dir": "Listó una carpeta",
+    "grep": "Buscó un patrón en los archivos",
+    "ast_grep": "Buscó en la estructura del código",
+    "run_command": "Ejecutó un comando",
+    "check_background_output": "Revisó un proceso en segundo plano",
+    "stop_background": "Detuvo un proceso en segundo plano",
+    "list_background": "Listó procesos en segundo plano",
+    "write_file": "Creó/sobrescribió un archivo",
+    "edit_file": "Editó un archivo",
+    "ast_edit": "Reescribió estructura de código",
+    "task": "Delegó a un sub-agente",
+    "verify_completion": "Verificó la finalización de la tarea",
+    "todo_list": "Actualizó la lista de tareas",
+    "computer_use_screenshot": "Capturó la pantalla",
+    "computer_use_click": "Hizo clic en la pantalla",
+    "computer_use_type_text": "Escribió texto en la pantalla",
+    "computer_use_press_key": "Presionó una tecla",
+    "computer_use_list_windows": "Listó ventanas abiertas",
+    "computer_use_scroll": "Desplazó la pantalla",
+    "computer_use_authorize": "Autorizó aplicación",
+    "computer_use_browser_execute": "Ejecutó en el navegador (CDP)",
+    "computer_use_get_window_state": "Leyó árbol de accesibilidad",
+    "computer_use_click_element": "Hizo clic en elemento (AX)",
+    "create_excel": "Creó hoja de cálculo Excel",
+    "mcpTool": "Llamó a herramienta MCP: {tool}",
+    "genericTool": "Ejecutó {name}"
+  },
+  "skillEditor": {
+    "newSkill": "Nueva skill",
+    "skillHeader": "Skill: {name}",
+    "whatIsASkill": "<strong>Qué es una skill:</strong> un archivo <code>SKILL.md</code> con instrucciones que el agente carga bajo demanda (vía <code>load_skill</code>) cuando detecta que son relevantes para el pedido actual — una forma de enseñarle al agente un proceso o convención específica sin tener que reescribirla en cada conversación.",
+    "whenToCreateOne": "<strong>Cuándo vale la pena crear una:</strong> cuando te encuentras explicando lo mismo al agente en distintas conversaciones (un proceso de tu equipo, un formato de salida específico, los pasos correctos para revisar un PR, etc.). La <code>description</code> es lo que el agente lee para decidir si la skill es relevante — deja bien claro CUÁNDO usarla.",
+    "namePlaceholder": "nombre-de-la-skill",
+    "descriptionPlaceholder": "Cuándo usarla (una línea)",
+    "fillNameAndDescription": "Completa el nombre y el \"cuándo usarla\" antes de guardar."
+  },
+  "extraReadPaths": {
+    "tooltip": "Carpetas extra de lectura (fuera del proyecto)",
+    "title": "Carpetas extra de lectura",
+    "hint": "El agente puede leer (no editar) archivos de estas carpetas, además de la carpeta del proyecto.",
+    "noneConfigured": "No hay carpetas extra configuradas.",
+    "addFolder": "Agregar carpeta"
+  },
+  "llamaForkRow": {
+    "models": "Modelos",
+    "start": "Iniciar",
+    "stop": "Detener"
+  },
+  "modelBrowser": {
+    "searchPlaceholder": "Buscar modelo...",
+    "onlyFavorites": "Solo favoritos",
+    "modelCount": "{count} modelo(s)",
+    "loadingModels": "Cargando modelos...",
+    "noModelsFound": "No se encontraron modelos.",
+    "markFavorite": "Marcar como favorito",
+    "acceptsImage": "Acepta imágenes",
+    "ctx": "Ctx",
+    "size": "Tamaño",
+    "price": "Precio $/1M (in/out)"
+  },
+  "settings": {
+    "title": "Configuración",
+    "language": "Idioma",
+    "languageHint": "Cambia el idioma de toda la interfaz — mensajes, etiquetas, títulos y skills.",
+    "activeProvider": "Proveedor activo",
+    "activeProviderHint": "Elige de dónde obtiene Cerne Code la inferencia para las nuevas sesiones.",
+    "apiKeyVaultHint": "Clave de API guardada en el almacén de credenciales del sistema (nunca en texto plano).",
+    "keyConfigured": "Clave configurada.",
+    "noKeySaved": "Todavía no hay ninguna clave guardada.",
+    "modelsOpenRouterTitle": "Modelos — OpenRouter",
+    "viewModels": "Ver modelos",
+    "llamaCppLocal": "llama.cpp local",
+    "llamaCppHint": "Forks configurados en <code>providers.toml</code> — cada uno apunta al <code>llama-server.exe</code> y al <code>models.ini</code> de una build específica de llama.cpp en tu máquina. Ningún fork viene preconfigurado (Cerne Code se distribuye sin asumir dónde instalaste el tuyo).",
+    "noForksYet": "Todavía no hay ningún fork configurado.",
+    "labelOptional": "etiqueta (opcional)",
+    "port": "puerto",
+    "addFork": "Agregar fork",
+    "customProviders": "Proveedores personalizados",
+    "customProvidersHint": "Cualquier endpoint compatible con la API de chat completions de OpenAI — Claude (vía <code>https://api.anthropic.com/v1/</code>), Grok/xAI (<code>https://api.x.ai/v1</code>), ChatGPT/OpenAI (<code>https://api.openai.com/v1</code>), Qwen/DashScope, Kimi/Moonshot, o cualquier otro. Aparece en el selector de proveedor de las sesiones con la etiqueta que le des.",
+    "visionEnabledConnection": "Imágenes habilitadas en esta conexión",
+    "modelsForTitle": "Modelos — {name}",
+    "edit": "Editar",
+    "remove": "Quitar",
+    "noCustomProvidersYet": "Todavía no hay ningún proveedor personalizado.",
+    "idCannotChange": "El id identifica al proveedor, no se puede cambiar editando",
+    "newApiKeyPlaceholder": "nueva clave de API (deja en blanco para mantener la actual)",
+    "apiKeyPlaceholder": "clave de API",
+    "visionCheckboxLabel": "Los modelos de esta conexión aceptan imágenes (confirmación manual — no se puede confirmar automáticamente en un endpoint genérico compatible con OpenAI)",
+    "contextLengthPlaceholder": "tamaño de contexto en tokens (opcional — la mayoría de los endpoints personalizados no informa esto)",
+    "testing": "Probando...",
+    "testConnection": "Probar conexión",
+    "add": "Agregar",
+    "connectedModelsFound": "¡Conectado! {count} modelo(s) encontrado(s){list}.",
+    "skills": "Skills",
+    "skillsHint": "Carpetas con <code>SKILL.md</code> que el agente descubre solo y carga bajo demanda (<code>load_skill</code>). Las skills de proyecto (<code>&lt;proyecto&gt;/.cerne/skills/</code>) solo aparecen aquí desde dentro de la sesión — esta lista muestra las globales.",
+    "noSkillsYet": "Todavía no hay ninguna skill además del README.",
+    "createSkill": "Crear skill",
+    "openSkillsFolder": "Abrir carpeta de skills",
+    "mcpServers": "Servidores MCP",
+    "mcpHintBefore": "Herramientas externas vía Model Context Protocol — cada servidor se ejecuta como subproceso (stdio) y sus herramientas aparecen para el agente como",
+    "mcpHintAfter": ". Configuración guardada en",
+    "mcpHintAfter2": ", en el formato objeto",
+    "mcpHintAfter3": "por nombre que la mayoría de los servidores MCP ya documenta para pegar directo.",
+    "disable": "Deshabilitar",
+    "enable": "Habilitar",
+    "noMcpServersYet": "Todavía no hay ningún servidor MCP configurado.",
+    "nameCannotChange": "El nombre identifica al servidor, no se puede cambiar editando — elimínalo y créalo de nuevo si necesitas renombrarlo",
+    "envVarsPlaceholder": "variables de entorno, una por línea (ej: GITHUB_TOKEN=ghp_...)",
+    "connectedToolsFound": "¡Conectado! {count} herramienta(s) encontrada(s){list}.",
+    "webSearch": "Búsqueda web",
+    "webSearchHint": "Por defecto (<strong>Automático</strong>) la herramienta <code>web_search</code> usa DuckDuckGo directamente — sin instalar nada, sin clave de API. Si prefieres resultados de una API paga (Brave, Tavily) o ya tienes tu propia instancia de SearXNG, puedes cambiarlo aquí.",
+    "apiKey": "Clave de API",
+    "keyAlreadyConfigured": "clave ya configurada — deja en blanco para mantenerla",
+    "removeKey": "Quitar clave",
+    "searxngUrl": "URL de SearXNG",
+    "connectedResultsFound": "¡Conectado! {count} resultado(s) encontrado(s) en una búsqueda de prueba.",
+    "localEndpoints": "Endpoints locales",
+    "llamaCppRouter": "llama.cpp (router)",
+    "executableFilter": "Ejecutable",
+    "iniConfigFilter": "Config (.ini)",
+    "searchAuto": "Automático (DuckDuckGo, sin clave)",
+    "searchSearxng": "SearXNG (instancia propia)"
+  },
+  "providers": {
+    "openrouter": "OpenRouter",
+    "llama_cpp": "llama.cpp local",
+    "ollama": "Ollama",
+    "lm_studio": "LM Studio",
+    "custom": "Personalizado"
+  },
+  "providerPicker": {
+    "pickModel": "Elegir modelo",
+    "connection": "Conexión",
+    "loading": "Cargando...",
+    "model": "Modelo",
+    "removeFavorite": "Quitar de favoritos",
+    "markFavorite": "Marcar como favorito (aparece primero en el desplegable)",
+    "supportsImages": "El modelo admite imágenes",
+    "noImageSupport": "El modelo NO admite imágenes",
+    "testImageSupport": "Probar si el modelo admite imágenes"
+  },
+  "newSession": {
+    "defaultTitle": "Nueva sesión",
+    "header": "Nueva sesión",
+    "titleLabel": "Título",
+    "titlePlaceholder": "Ej: refactorizar API de sesiones",
+    "projectFolderLabel": "Carpeta del proyecto (opcional — sin ella el agente solo tiene búsqueda web y MCP, sin lectura/edición de archivos ni ejecución de comandos)",
+    "pickFolder": "Elegir carpeta...",
+    "providerAndModelLabel": "Proveedor y modelo",
+    "cancel": "Cancelar",
+    "createSession": "Crear sesión"
+  },
+  "diffReview": {
+    "reject": "Rechazar",
+    "accept": "Aceptar",
+    "applied": "Aplicado"
+  },
+  "permissionCard": {
+    "title": "Modo Manual: aprobar",
+    "approve": "Aprobar",
+    "deny": "Rechazar"
+  },
+  "askCard": {
+    "freeTextPlaceholder": "O responde con texto libre...",
+    "answer": "Responder"
+  },
+  "statusDot": {
+    "checking": "Comprobando...",
+    "serverUp": "Servidor en ejecución",
+    "serverDown": "Servidor detenido"
+  },
+  "contextGauge": {
+    "tooltipBase": "{used} de {total} tokens ({percent}%) — estimación (caracteres/4)",
+    "tooltipEstimated": "Contexto del modelo desconocido, usando valor predeterminado. Haz clic para corregirlo manualmente.",
+    "tooltipClickToFix": "Haz clic para corregirlo manualmente.",
+    "invalidTokens": "Ingresa una cantidad de tokens válida",
+    "tokensPlaceholder": "tokens (ej: 131072)",
+    "usageTooltip": "Tokens en esta sesión — Entrada: {input} | Salida: {output} | Solicitudes: {requests}"
+  },
+  "todoCard": {
+    "title": "Lista de tareas"
+  },
+  "taskList": {
+    "title": "Tareas de esta sesión",
+    "cancel": "Cancelar"
+  },
+  "taskStep": {
+    "showLess": "mostrar menos",
+    "showMoreLines": "mostrar {count} líneas más"
+  },
+  "chat": {
+    "emptyState": "Crea una nueva sesión para empezar.",
+    "startingServer": "Iniciando servidor local...",
+    "thinking": "Pensando...",
+    "awaitingModel": "Esperando respuesta del modelo...",
+    "tokens": "{count} tokens",
+    "computerUseWarningTitle": "Automatización de pantalla activa",
+    "computerUseWarningBody": "Cada captura de pantalla consume ~1500 tokens de visión. Una sesión con 20 acciones puede usar ~30K tokens extra.",
+    "gotIt": "Entendido",
+    "jumpToBottom": "Ir al final"
+  },
+  "help": {
+    "title": "Ayuda",
+    "searchPlaceholder": "Buscar prompts...",
+    "hint": "Al hacer clic en <strong>Usar</strong>, el prompt se pegará en tu chat — edítalo libremente antes de enviarlo.",
+    "scopeCode": "⌨️ código",
+    "scopeChat": "💬 chat",
+    "scopeBoth": "🔀 ambos",
+    "viewFull": "Ver prompt completo",
+    "use": "Usar",
+    "noPromptsFound": "No se encontraron prompts.",
+    "toolCatalog": "Catálogo de herramientas"
+  },
+  "readyPrompts": {
+    "search-summarize": {
+      "title": "Investigar y resumir un tema",
+      "toolsLabel": "🔍 Búsqueda web · 🌐 Lee página",
+      "preview": "Busca un tema en la web y resume los puntos principales encontrados.",
+      "full": "Busca en la web sobre [TEMA] y haz un resumen con los puntos principales encontrados. Cita las fuentes."
+    },
+    "read-large-file": {
+      "title": "Leer un archivo grande por partes",
+      "toolsLabel": "📁 Lee archivo",
+      "preview": "Lee un archivo grande en partes usando offset/limit, sin desbordar el contexto.",
+      "full": "Lee el archivo [RUTA] por partes: empieza con read_file(path=\"[RUTA]\", offset=0, limit=200) y avanza de 200 en 200 líneas. Resume el contenido de cada sección."
+    },
+    "create-file": {
+      "title": "Crear un archivo nuevo",
+      "toolsLabel": "✏️ Escribe archivo",
+      "preview": "Crea un archivo nuevo con el contenido especificado en el proyecto.",
+      "full": "Crea un archivo en [RUTA] con el siguiente contenido:\n\n[DESCRIBE EL CONTENIDO]"
+    },
+    "edit-file": {
+      "title": "Editar un fragmento de un archivo",
+      "toolsLabel": "✏️ Edita archivo",
+      "preview": "Modifica un fragmento específico de un archivo existente.",
+      "full": "En el archivo [RUTA], ubica el fragmento [FRAGMENTO ANTIGUO] y reemplázalo por [FRAGMENTO NUEVO]."
+    },
+    "run-command": {
+      "title": "Ejecutar un comando en la terminal",
+      "toolsLabel": "⚡ Ejecuta comando",
+      "preview": "Ejecuta un comando de shell y muestra el resultado.",
+      "full": "Ejecuta el comando: [COMANDO]\n\nExplica el resultado."
+    },
+    "computer-use": {
+      "title": "Automatizar una tarea en pantalla",
+      "toolsLabel": "🖥️ Usa la computadora",
+      "preview": "Automatiza clics y escritura en pantalla para realizar una tarea repetitiva.",
+      "full": "Usa computer_use para: [DESCRIBE LA TAREA EN PANTALLA].\n\nToma una captura de pantalla primero para ver el estado actual, luego ejecuta los pasos necesarios."
+    },
+    "create-excel": {
+      "title": "Generar una hoja de cálculo Excel",
+      "toolsLabel": "📊 Crea Excel",
+      "preview": "Crea un archivo .xlsx con pestañas, encabezados formateados y datos.",
+      "full": "Crea una hoja de cálculo Excel en [RUTA.xlsx] con las siguientes columnas: [COLUMNAS].\nIncluye los datos: [DATOS].\nFormatea los encabezados en negrita y activa el autofiltro."
+    },
+    "create-word": {
+      "title": "Generar un documento Word",
+      "toolsLabel": "📝 Crea Word",
+      "preview": "Crea un archivo .docx con títulos, párrafos, tablas y listas.",
+      "full": "Crea un documento Word en [RUTA.docx] con:\n- Un título: [TÍTULO]\n- Párrafos con el contenido: [CONTENIDO]\n- Una tabla con columnas [COLUMNAS] y datos [DATOS]"
+    },
+    "create-pdf": {
+      "title": "Generar un informe PDF",
+      "toolsLabel": "📄 Crea PDF",
+      "preview": "Crea un documento PDF con títulos, párrafos y tablas.",
+      "full": "Crea un PDF en [RUTA.pdf] con el título \"[TÍTULO]\".\nIncluye las secciones: [SECCIONES].\nAgrega una tabla con [COLUMNAS] y [DATOS]."
+    },
+    "refactor-code": {
+      "title": "Refactorizar código con AST",
+      "toolsLabel": "🔧 Busca AST · ✏️ Edita AST",
+      "preview": "Encuentra y reemplaza patrones de código usando análisis sintáctico (AST).",
+      "full": "Usa ast_grep para encontrar todas las ocurrencias de [PATRÓN] en el proyecto.\nLuego usa ast_edit para reemplazarlas por [NUEVO PATRÓN]."
+    },
+    "subagent-task": {
+      "title": "Delegar una tarea en paralelo",
+      "toolsLabel": "🤖 Sub-agente",
+      "preview": "Crea un sub-agente para resolver una tarea independiente en paralelo.",
+      "full": "Usa la herramienta task para crear un sub-agente que: [DESCRIBE LA TAREA].\nEl sub-agente debe trabajar de forma independiente e informar el resultado."
+    },
+    "plan-todo": {
+      "title": "Planificar una tarea compleja",
+      "toolsLabel": "📋 Lista de tareas",
+      "preview": "Crea un plan visual con pasos para una tarea compleja.",
+      "full": "Planifica la siguiente tarea usando todo_list: [DESCRIBE LA TAREA COMPLEJA].\nDivídela en pasos claros y ejecuta cada uno."
+    },
+    "grep-search": {
+      "title": "Buscar un término en el proyecto",
+      "toolsLabel": "🔎 Busca texto",
+      "preview": "Busca un término o regex en todos los archivos del proyecto.",
+      "full": "Busca \"[TÉRMINO]\" en todos los archivos del proyecto usando grep.\nLista los archivos y líneas donde aparece."
+    },
+    "fetch-page": {
+      "title": "Extraer contenido de una URL",
+      "toolsLabel": "🌐 Lee página",
+      "preview": "Obtiene el contenido de una página web y extrae la información relevante.",
+      "full": "Accede a [URL] y extrae la información principal de la página. Resume el contenido."
+    }
+  }
+}

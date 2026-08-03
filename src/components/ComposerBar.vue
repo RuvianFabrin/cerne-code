@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import { open } from "@tauri-apps/plugin-dialog";
 import Select from "primevue/select";
 import { api } from "../api";
@@ -11,24 +12,26 @@ import ExtraReadPaths from "./ExtraReadPaths.vue";
 import { useLlamaHealth } from "../composables/useLlamaHealth";
 import type { ExecutionMode, ProviderKind } from "../api";
 
-const EXECUTION_MODE_OPTIONS: { value: ExecutionMode; label: string }[] = [
-  { value: "yolo", label: "⚡ YOLO" },
-  { value: "auto", label: "Automático" },
-  { value: "manual", label: "Manual" },
-];
+const { t } = useI18n();
 
-const REASONING_EFFORT_OPTIONS: {
+const EXECUTION_MODE_OPTIONS = computed<{ value: ExecutionMode; label: string }[]>(() => [
+  { value: "yolo", label: "⚡ YOLO" },
+  { value: "auto", label: t("composer.modeAuto") },
+  { value: "manual", label: t("composer.modeManual") },
+]);
+
+const REASONING_EFFORT_OPTIONS = computed<{
   value: "off" | "auto" | "low" | "medium" | "high";
   label: string;
-}[] = [
+}[]>(() => [
   // Desligado é o default pra modelos locais: "Auto" deixaria o Qwen3/GLM
   // pensar por conta própria e ficar lento à toa.
-  { value: "off", label: "💤 Desligado" },
-  { value: "auto", label: "🧠 Auto" },
-  { value: "low", label: "🧠 Baixo" },
-  { value: "medium", label: "🧠 Médio" },
-  { value: "high", label: "🧠 Alto" },
-];
+  { value: "off", label: `💤 ${t("composer.reasoningOff")}` },
+  { value: "auto", label: `🧠 ${t("composer.reasoningAuto")}` },
+  { value: "low", label: `🧠 ${t("composer.reasoningLow")}` },
+  { value: "medium", label: `🧠 ${t("composer.reasoningMedium")}` },
+  { value: "high", label: `🧠 ${t("composer.reasoningHigh")}` },
+]);
 
 function onExecutionModeChange(mode: ExecutionMode) {
   sessionStore.updateExecutionMode(mode);
@@ -79,49 +82,50 @@ function isImagePath(path: string) {
 // Extensões cobertas por `attachments::extract_text` no backend (pdf/docx/
 // xlsx/md/código/txt) + imagem, agora que a checagem de vision por provider
 // existe (ver `checkVisionSupport`) — áudio/vídeo continuam fora.
-const ATTACHMENT_FILTERS = [
-  {
-    name: "Documentos e código",
-    extensions: [
-      "pdf",
-      "docx",
-      "xlsx",
-      "xlsm",
-      "xls",
-      "ods",
-      "md",
-      "txt",
-      "csv",
-      "json",
-      "yaml",
-      "yml",
-      "toml",
-      "rs",
-      "ts",
-      "tsx",
-      "js",
-      "jsx",
-      "vue",
-      "py",
-      "go",
-      "java",
-      "c",
-      "cpp",
-      "h",
-      "hpp",
-      "cs",
-      "rb",
-      "php",
-      "swift",
-      "kt",
-      "sh",
-      "sql",
-      "html",
-      "css",
-    ],
-  },
-  { name: "Imagens", extensions: IMAGE_EXTENSIONS },
+const DOCUMENT_EXTENSIONS = [
+  "pdf",
+  "docx",
+  "xlsx",
+  "xlsm",
+  "xls",
+  "ods",
+  "md",
+  "txt",
+  "csv",
+  "json",
+  "yaml",
+  "yml",
+  "toml",
+  "rs",
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "vue",
+  "py",
+  "go",
+  "java",
+  "c",
+  "cpp",
+  "h",
+  "hpp",
+  "cs",
+  "rb",
+  "php",
+  "swift",
+  "kt",
+  "sh",
+  "sql",
+  "html",
+  "css",
 ];
+
+function attachmentFilters() {
+  return [
+    { name: t("composer.documentsAndCode"), extensions: DOCUMENT_EXTENSIONS },
+    { name: t("composer.images"), extensions: IMAGE_EXTENSIONS },
+  ];
+}
 
 async function refreshVisionSupport() {
   if (!sessionStore.currentId) {
@@ -151,7 +155,7 @@ function extractImage(id: string, path: string) {
   if (!visionSupported.value) {
     updateAttachment(id, {
       status: "error",
-      error: "O provider/modelo desta sessão não tem suporte a visão configurado — a imagem não vai ser enviada.",
+      error: t("composer.visionUnsupported"),
     });
     return;
   }
@@ -169,7 +173,7 @@ function extractDocument(id: string, path: string) {
 }
 
 async function addAttachments() {
-  const selected = await open({ directory: false, multiple: true, filters: ATTACHMENT_FILTERS });
+  const selected = await open({ directory: false, multiple: true, filters: attachmentFilters() });
   if (!selected) return;
   const paths = Array.isArray(selected) ? selected : [selected];
   for (const path of paths) {
@@ -209,7 +213,7 @@ function onPaste(e: ClipboardEvent) {
     }
     const reader = new FileReader();
     reader.onload = () => updateAttachment(id, { status: "ready", dataUrl: reader.result as string });
-    reader.onerror = () => updateAttachment(id, { status: "error", error: "Falha ao ler a imagem colada" });
+    reader.onerror = () => updateAttachment(id, { status: "error", error: t("composer.pasteImageFailed") });
     reader.readAsDataURL(file);
   }
 }
@@ -388,29 +392,29 @@ watch(
         <span class="msi" v-else-if="a.status === 'error'">error</span>
         <img v-else-if="a.kind === 'image' && a.dataUrl" :src="a.dataUrl" class="attachment-thumb" alt="" />
         <span class="msi" v-else>description</span>
-        <span class="attachment-name">{{ savingAttachments && a.kind === 'document' && !a.savedMdPath ? 'Otimizando...' : a.saved ? 'Pronto!' : a.name }}</span>
-        <button class="attachment-remove" v-tooltip.top="'Remover'" @click="removeAttachment(a.id)" :disabled="savingAttachments">
+        <span class="attachment-name">{{ savingAttachments && a.kind === 'document' && !a.savedMdPath ? $t("composer.optimizing") : a.saved ? $t("composer.ready") : a.name }}</span>
+        <button class="attachment-remove" v-tooltip.top="$t('composer.remove')" @click="removeAttachment(a.id)" :disabled="savingAttachments">
           <span class="msi">close</span>
         </button>
       </div>
     </div>
     <div v-if="savingAttachments" class="saving-hint">
       <span class="msi spin">progress_activity</span>
-      Aguarde, otimizando arquivo para economizar tokens...
+      {{ $t("composer.optimizingHint") }}
     </div>
     <textarea
       ref="textareaRef"
       v-model="text"
       class="composer-input"
       rows="1"
-      placeholder="Peça pro Cerne Code ler, editar ou rodar algo no seu projeto..."
+      :placeholder="$t('composer.placeholder')"
       @input="grow"
       @keydown="onKeydown"
       @paste="onPaste"
     />
     <div class="composer-footer">
       <div class="footer-left">
-        <button class="attach-btn" v-tooltip.top="'Anexar arquivo'" @click="addAttachments">
+        <button class="attach-btn" v-tooltip.top="$t('composer.attachFile')" @click="addAttachments">
           <span class="msi">add</span>
         </button>
         <Select
@@ -422,7 +426,7 @@ watch(
           optionValue="value"
           class="execution-mode-select"
           size="small"
-          v-tooltip.top="'YOLO: edita direto, sem sandbox. Automático: sandbox + você aceita/rejeita. Manual: aprova cada ação.'"
+          v-tooltip.top="$t('composer.executionModeTooltip')"
         />
         <Select
           v-if="sessionStore.currentSession"
@@ -433,13 +437,13 @@ watch(
           optionValue="value"
           class="execution-mode-select"
           size="small"
-          v-tooltip.top="'Raciocínio do modelo. 💤 Desligado = sem thinking (mais rápido, default nos locais). Auto = o modelo decide.'"
+          v-tooltip.top="$t('composer.reasoningTooltip')"
         />
         <button
           v-if="sessionStore.currentSession"
           class="fable-btn"
           :class="{ 'fable-on': sessionStore.currentSession.fable_method }"
-          v-tooltip.top="'Método Fable (p/ modelos pequenos/médios): liga um loop classificar → agir → verificar pra o modelo não abandonar tarefas. Desligado por padrão; em modelos grandes só infla o prompt.'"
+          v-tooltip.top="$t('composer.fableTooltip')"
           @click="
             sessionStore.updateFableMethod(!sessionStore.currentSession.fable_method)
           "
@@ -457,7 +461,7 @@ watch(
         >
           <span class="msi">arrow_upward</span>
         </button>
-        <button v-else class="send-btn stop-btn" v-tooltip.top="'Cancelar execução'" @click="sessionStore.cancelTurn()">
+        <button v-else class="send-btn stop-btn" v-tooltip.top="$t('composer.cancelExecution')" @click="sessionStore.cancelTurn()">
           <span class="msi">stop</span>
         </button>
       </div>

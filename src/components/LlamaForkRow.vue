@@ -41,10 +41,10 @@ async function remove() {
       <span class="fork-path">{{ fork.server_exe }}</span>
     </div>
     <span v-if="actionError" class="fork-error">{{ actionError }}</span>
-    <button class="btn-secondary" @click="emit('browse')">Modelos</button>
-    <button class="btn-secondary" @click="start">Iniciar</button>
-    <button class="btn-secondary" @click="stop">Parar</button>
-    <button class="btn-secondary" @click="remove">Remover</button>
+    <button class="btn-secondary" @click="emit('browse')">{{ $t("llamaForkRow.models") }}</button>
+    <button class="btn-secondary" @click="start">{{ $t("llamaForkRow.start") }}</button>
+    <button class="btn-secondary" @click="stop">{{ $t("llamaForkRow.stop") }}</button>
+    <button class="btn-secondary" @click="remove">{{ $t("settings.remove") }}</button>
   </div>
 </template>
 

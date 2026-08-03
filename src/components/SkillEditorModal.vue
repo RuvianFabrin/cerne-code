@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
 import Dialog from "primevue/dialog";
 import { api, type SkillLanguage, type SkillMeta } from "../api";
 
+const { t } = useI18n();
 const props = defineProps<{ visible: boolean; skill: SkillMeta | null }>();
 const emit = defineEmits<{ "update:visible": [value: boolean]; saved: [] }>();
 
@@ -19,8 +21,8 @@ const loading = ref(false);
 const error = ref("");
 
 function buildPreview() {
-  content.value = `---\nname: ${name.value.trim() || "nome-da-skill"}\ndescription: ${
-    description.value.trim() || "Quando usar (uma linha)"
+  content.value = `---\nname: ${name.value.trim() || t("skillEditor.namePlaceholder")}\ndescription: ${
+    description.value.trim() || t("skillEditor.descriptionPlaceholder")
   }\n---\n${bodyTemplate.value}`;
 }
 
@@ -71,7 +73,7 @@ async function save() {
   try {
     if (isNew.value) {
       if (!name.value.trim() || !description.value.trim()) {
-        error.value = "Preencha o nome e o \"quando usar\" antes de salvar.";
+        error.value = t("skillEditor.fillNameAndDescription");
         return;
       }
       const dir = await api.createSkill(name.value.trim(), description.value.trim(), language.value);
@@ -95,39 +97,29 @@ function cancel() {
   <Dialog
     :visible="props.visible"
     @update:visible="(v) => emit('update:visible', v)"
-    :header="isNew ? 'Nova skill' : `Skill: ${skill?.name}`"
+    :header="isNew ? $t('skillEditor.newSkill') : $t('skillEditor.skillHeader', { name: skill?.name })"
     modal
     :style="{ width: '640px' }"
   >
     <div class="skill-help">
-      <p>
-        <strong>O que é uma skill:</strong> um arquivo <code>SKILL.md</code> com instruções que o
-        agente carrega sob demanda (via <code>load_skill</code>) quando percebe que são relevantes
-        pro pedido atual — é uma forma de ensinar o agente a seguir um passo a passo ou convenção
-        específica, sem precisar reescrever isso toda vez na conversa.
-      </p>
-      <p>
-        <strong>Quando vale criar uma:</strong> quando você se pega explicando a mesma coisa pro
-        agente em conversas diferentes (um processo do seu time, um formato de saída específico,
-        os passos certos pra revisar um PR, etc.). A <code>description</code> é o que o agente lê
-        pra decidir se a skill é relevante — capriche nela dizendo claramente QUANDO usar.
-      </p>
+      <p v-html="$t('skillEditor.whatIsASkill')"></p>
+      <p v-html="$t('skillEditor.whenToCreateOne')"></p>
     </div>
     <div v-if="isNew" class="skill-new-fields">
-      <input v-model="name" class="text-input" placeholder="nome-da-skill" />
-      <input v-model="description" class="text-input" placeholder="Quando usar (uma linha)" />
+      <input v-model="name" class="text-input" :placeholder="$t('skillEditor.namePlaceholder')" />
+      <input v-model="description" class="text-input" :placeholder="$t('skillEditor.descriptionPlaceholder')" />
       <select v-model="language" class="text-input skill-lang-select">
         <option value="pt-br">Português</option>
         <option value="en">English</option>
       </select>
     </div>
     <p v-else-if="skill" class="skill-desc-line">{{ skill.description }}</p>
-    <p v-if="loading" class="hint">Carregando...</p>
+    <p v-if="loading" class="hint">{{ $t("providerPicker.loading") }}</p>
     <textarea v-else v-model="content" @input="bodyEdited = true" class="skill-modal-textarea" rows="14" />
     <p v-if="error" class="error-text">{{ error }}</p>
     <template #footer>
-      <button class="btn-secondary" @click="cancel">Cancelar</button>
-      <button class="btn-primary" :disabled="loading" @click="save">Salvar</button>
+      <button class="btn-secondary" @click="cancel">{{ $t("newSession.cancel") }}</button>
+      <button class="btn-primary" :disabled="loading" @click="save">{{ $t("sidebar.save") }}</button>
     </template>
   </Dialog>
 </template>

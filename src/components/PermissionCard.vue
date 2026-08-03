@@ -25,13 +25,13 @@ function respond(approved: boolean) {
     <div class="permission-header">
       <span class="msi">shield</span>
       <span class="permission-title">
-        Modo Manual: aprovar <code>{{ sessionStore.pendingPermission.tool }}</code>?
+        {{ $t("permissionCard.title") }} <code>{{ sessionStore.pendingPermission.tool }}</code>?
       </span>
     </div>
     <pre v-if="formattedArgs" class="permission-args">{{ formattedArgs }}</pre>
     <div class="permission-actions">
-      <button class="btn-approve" @click="respond(true)">Aprovar</button>
-      <button class="btn-deny" @click="respond(false)">Recusar</button>
+      <button class="btn-approve" @click="respond(true)">{{ $t("permissionCard.approve") }}</button>
+      <button class="btn-deny" @click="respond(false)">{{ $t("permissionCard.deny") }}</button>
     </div>
   </div>
 </template>

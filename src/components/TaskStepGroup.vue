@@ -168,8 +168,8 @@ function diffLines(detail: string | null | undefined): { kind: DiffLineKind; tex
           <button v-if="linesInfo(t.command).hasMore" class="cmd-more" @click.stop="toggleIn(t.id)">
             {{
               expandedIn.has(t.id)
-                ? "mostrar menos"
-                : `mostrar mais ${linesInfo(t.command).lines.length - PREVIEW_LINES} linhas`
+                ? $t("taskStep.showLess")
+                : $t("taskStep.showMoreLines", { count: linesInfo(t.command).lines.length - PREVIEW_LINES })
             }}
           </button>
         </div>
@@ -179,8 +179,8 @@ function diffLines(detail: string | null | undefined): { kind: DiffLineKind; tex
           <button v-if="linesInfo(t.detail).hasMore" class="cmd-more" @click.stop="toggleOut(t.id)">
             {{
               expandedOut.has(t.id)
-                ? "mostrar menos"
-                : `mostrar mais ${linesInfo(t.detail).lines.length - PREVIEW_LINES} linhas`
+                ? $t("taskStep.showLess")
+                : $t("taskStep.showMoreLines", { count: linesInfo(t.detail).lines.length - PREVIEW_LINES })
             }}
           </button>
         </div>

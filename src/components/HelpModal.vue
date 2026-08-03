@@ -1,20 +1,37 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
+import { useI18n } from "vue-i18n";
 import Dialog from "primevue/dialog";
 import MarkdownContent from "./MarkdownContent.vue";
-import helpContent from "../content/help.md?raw";
+import helpContentPtBR from "../content/help.pt-BR.md?raw";
+import helpContentEn from "../content/help.en.md?raw";
+import helpContentZh from "../content/help.zh.md?raw";
+import helpContentEs from "../content/help.es.md?raw";
 import { READY_PROMPTS, type ReadyPrompt } from "../content/prompts";
 import { useSessionStore } from "../stores/session";
+
+const HELP_CONTENT: Record<string, string> = {
+  "pt-BR": helpContentPtBR,
+  en: helpContentEn,
+  zh: helpContentZh,
+  es: helpContentEs,
+};
 
 const props = defineProps<{ visible: boolean }>();
 const emit = defineEmits<{ "update:visible": [value: boolean] }>();
 
+const { t, locale } = useI18n();
+const helpContent = computed(() => HELP_CONTENT[locale.value] ?? helpContentPtBR);
 const sessionStore = useSessionStore();
 const search = ref("");
 const expandedId = ref<string | null>(null);
 const showCatalog = ref(false);
 
 const hasProject = computed(() => !!sessionStore.currentSession?.project_root);
+
+function promptText(p: ReadyPrompt, field: "title" | "toolsLabel" | "preview" | "full"): string {
+  return t(`readyPrompts.${p.id}.${field}`);
+}
 
 const filtered = computed(() => {
   const q = search.value.toLowerCase().trim();
@@ -23,10 +40,10 @@ const filtered = computed(() => {
     if (p.scope === "chat" && hasProject.value) return false;
     if (!q) return true;
     return (
-      p.title.toLowerCase().includes(q) ||
-      p.preview.toLowerCase().includes(q) ||
-      p.toolsLabel.toLowerCase().includes(q) ||
-      p.full.toLowerCase().includes(q)
+      promptText(p, "title").toLowerCase().includes(q) ||
+      promptText(p, "preview").toLowerCase().includes(q) ||
+      promptText(p, "toolsLabel").toLowerCase().includes(q) ||
+      promptText(p, "full").toLowerCase().includes(q)
     );
   });
 });
@@ -36,7 +53,7 @@ function toggleExpand(id: string) {
 }
 
 function usePrompt(prompt: ReadyPrompt) {
-  sessionStore.setDraft(prompt.full);
+  sessionStore.setDraft(promptText(prompt, "full"));
   emit("update:visible", false);
 }
 </script>
@@ -45,43 +62,41 @@ function usePrompt(prompt: ReadyPrompt) {
   <Dialog
     :visible="props.visible"
     @update:visible="(v) => emit('update:visible', v)"
-    header="Ajuda"
+    :header="$t('help.title')"
     modal
     :style="{ width: '720px' }"
   >
     <div class="help-body">
       <div class="help-search">
         <span class="msi">search</span>
-        <input v-model="search" placeholder="Buscar prompts..." />
+        <input v-model="search" :placeholder="$t('help.searchPlaceholder')" />
       </div>
 
-      <p class="help-hint">
-        Ao clicar em <strong>Usar</strong>, o prompt será colado no seu chat — edite à vontade antes de enviar.
-      </p>
+      <p class="help-hint" v-html="$t('help.hint')"></p>
 
       <div class="prompt-list">
         <div v-for="p in filtered" :key="p.id" class="prompt-card">
           <div class="prompt-header">
-            <span class="prompt-title">{{ p.title }}</span>
-            <span class="prompt-scope">{{ p.scope === "code" ? "⌨️ code" : p.scope === "chat" ? "💬 chat" : "🔀 ambos" }}</span>
+            <span class="prompt-title">{{ promptText(p, "title") }}</span>
+            <span class="prompt-scope">{{ p.scope === "code" ? $t("help.scopeCode") : p.scope === "chat" ? $t("help.scopeChat") : $t("help.scopeBoth") }}</span>
           </div>
-          <div class="prompt-tools">{{ p.toolsLabel }}</div>
-          <p class="prompt-preview">{{ p.preview }}</p>
-          <div v-if="expandedId === p.id" class="prompt-full">{{ p.full }}</div>
+          <div class="prompt-tools">{{ promptText(p, "toolsLabel") }}</div>
+          <p class="prompt-preview">{{ promptText(p, "preview") }}</p>
+          <div v-if="expandedId === p.id" class="prompt-full">{{ promptText(p, "full") }}</div>
           <div class="prompt-actions">
-            <button class="prompt-eye" v-tooltip.top="'Ver prompt completo'" @click="toggleExpand(p.id)">
+            <button class="prompt-eye" v-tooltip.top="$t('help.viewFull')" @click="toggleExpand(p.id)">
               <span class="msi">{{ expandedId === p.id ? "visibility_off" : "visibility" }}</span>
             </button>
-            <button class="prompt-use" @click="usePrompt(p)">Usar</button>
+            <button class="prompt-use" @click="usePrompt(p)">{{ $t("help.use") }}</button>
           </div>
         </div>
-        <p v-if="filtered.length === 0" class="prompt-empty">Nenhum prompt encontrado.</p>
+        <p v-if="filtered.length === 0" class="prompt-empty">{{ $t("help.noPromptsFound") }}</p>
       </div>
 
       <div class="catalog-section">
         <button class="catalog-toggle" @click="showCatalog = !showCatalog">
           <span class="msi">{{ showCatalog ? "expand_less" : "expand_more" }}</span>
-          Catálogo de ferramentas
+          {{ $t("help.toolCatalog") }}
         </button>
         <div v-if="showCatalog" class="catalog-body">
           <MarkdownContent :content="helpContent" />
