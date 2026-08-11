@@ -15,13 +15,21 @@ async function addFolder() {
   const selected = await open({ directory: true, multiple: false });
   if (typeof selected !== "string") return;
   const current = sessionStore.currentSession?.extra_read_paths ?? [];
-  if (current.includes(selected)) return;
-  await sessionStore.updateExtraReadPaths([...current, selected]);
+  if (current.some((e) => e.path === selected)) return;
+  await sessionStore.updateExtraReadPaths([...current, { path: selected, mode: "read" }]);
 }
 
 async function removeFolder(path: string) {
   const current = sessionStore.currentSession?.extra_read_paths ?? [];
-  await sessionStore.updateExtraReadPaths(current.filter((p) => p !== path));
+  await sessionStore.updateExtraReadPaths(current.filter((e) => e.path !== path));
+}
+
+async function toggleMode(path: string) {
+  const current = sessionStore.currentSession?.extra_read_paths ?? [];
+  const updated = current.map((e) =>
+    e.path === path ? { ...e, mode: (e.mode === "read_write" ? "read" : "read_write") as "read" | "read_write" } : e,
+  );
+  await sessionStore.updateExtraReadPaths(updated);
 }
 
 function folderName(path: string) {
@@ -50,10 +58,18 @@ function folderName(path: string) {
       </div>
 
       <ul v-if="sessionStore.currentSession?.extra_read_paths.length" class="path-list">
-        <li v-for="path in sessionStore.currentSession.extra_read_paths" :key="path" class="path-row" v-tooltip.top="path">
+        <li v-for="entry in sessionStore.currentSession.extra_read_paths" :key="entry.path" class="path-row" v-tooltip.top="entry.path">
           <span class="msi path-icon">folder</span>
-          <span class="path-name">{{ folderName(path) }}</span>
-          <button class="remove-btn" v-tooltip.top="$t('settings.remove')" @click="removeFolder(path)">
+          <span class="path-name">{{ folderName(entry.path) }}</span>
+          <button
+            class="mode-toggle-btn"
+            :class="{ 'mode-rw': entry.mode === 'read_write' }"
+            v-tooltip.top="entry.mode === 'read_write' ? $t('extraReadPaths.modeReadWrite') : $t('extraReadPaths.modeRead')"
+            @click="toggleMode(entry.path)"
+          >
+            <span class="msi">{{ entry.mode === "read_write" ? "edit" : "visibility" }}</span>
+          </button>
+          <button class="remove-btn" v-tooltip.top="$t('settings.remove')" @click="removeFolder(entry.path)">
             <span class="msi">close</span>
           </button>
         </li>
@@ -109,7 +125,7 @@ function folderName(path: string) {
 }
 
 .extra-paths-panel {
-  width: 280px;
+  width: 300px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -169,6 +185,34 @@ function folderName(path: string) {
   font-size: 12px;
   font-weight: 500;
   color: #3f3f46;
+}
+
+.mode-toggle-btn {
+  border: 1px solid #d4d4d8;
+  background: #ffffff;
+  color: #a1a1aa;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 4px;
+  width: 22px;
+  height: 22px;
+}
+
+.mode-toggle-btn:hover {
+  border-color: #a1a1aa;
+}
+
+.mode-toggle-btn.mode-rw {
+  background: #dbeafe;
+  border-color: #3b82f6;
+  color: #2563eb;
+}
+
+.mode-toggle-btn .msi {
+  font-size: 13px;
 }
 
 .remove-btn {

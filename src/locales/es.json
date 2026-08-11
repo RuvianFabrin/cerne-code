@@ -9,9 +9,25 @@
     "save": "Guardar",
     "rename": "Renombrar",
     "delete": "Eliminar",
+    "deleteConfirmTitle": "¿Eliminar sesión?",
+    "deleteConfirmBody": "¿Seguro que quieres eliminar \"{title}\"? El historial de esta conversación se borrará y no se puede deshacer.",
+    "resizeTooltip": "Arrastra para redimensionar",
     "empty": "Todavía no hay sesiones.",
     "help": "Ayuda",
-    "settings": "Configuración"
+    "settings": "Configuración",
+    "about": "Acerca de"
+  },
+  "about": {
+    "title": "Acerca de Cerne Code",
+    "description": "Agente de código local construido con Rust (Tauri) y Vue.js. Gracias a todos los creadores de las herramientas open-source que hacen posible este proyecto.",
+    "creditsTitle": "Herramientas y referencias utilizadas"
+  },
+  "disclaimer": {
+    "title": "Aviso de Responsabilidad",
+    "text": "<strong>Cerne Code</strong> utiliza inteligencia artificial para ejecutar acciones en tu computadora — leer, editar y crear archivos, ejecutar comandos e interactuar con aplicaciones.<br><br><strong>Cerne Code no se responsabiliza por daños, pérdida de datos o consecuencias resultantes de las acciones ejecutadas por la IA.</strong> Usa bajo tu propio riesgo.",
+    "subtext": "Recomendamos mantener copias de seguridad de tus archivos importantes y revisar cada acción antes de aprobarla (modo Manual).",
+    "wait": "Espera",
+    "accept": "Entiendo y acepto"
   },
   "composer": {
     "modeAuto": "Automático",
@@ -31,6 +47,7 @@
     "optimizingHint": "Espere, optimizando archivo para ahorrar tokens...",
     "placeholder": "Pídele a Cerne Code que lea, edite o ejecute algo en tu proyecto...",
     "attachFile": "Adjuntar archivo",
+    "addFolder": "Agregar carpeta",
     "executionModeTooltip": "YOLO: edita directo, sin sandbox. Automático: sandbox + tú aceptas/rechazas. Manual: aprueba cada acción.",
     "reasoningTooltip": "Razonamiento del modelo. 💤 Desactivado = sin thinking (más rápido, predeterminado en modelos locales). Auto = el modelo decide.",
     "fableTooltip": "Método Fable (para modelos pequeños/medianos): activa un ciclo clasificar → actuar → verificar para que el modelo no abandone tareas. Desactivado por defecto; en modelos grandes solo infla el prompt.",
@@ -80,11 +97,13 @@
     "fillNameAndDescription": "Completa el nombre y el \"cuándo usarla\" antes de guardar."
   },
   "extraReadPaths": {
-    "tooltip": "Carpetas extra de lectura (fuera del proyecto)",
-    "title": "Carpetas extra de lectura",
-    "hint": "El agente puede leer (no editar) archivos de estas carpetas, además de la carpeta del proyecto.",
+    "tooltip": "Carpetas extra (fuera del proyecto)",
+    "title": "Carpetas extra",
+    "hint": "Haz clic en el icono 👁️/✏️ para alternar entre solo lectura y lectura+escritura.",
     "noneConfigured": "No hay carpetas extra configuradas.",
-    "addFolder": "Agregar carpeta"
+    "addFolder": "Agregar carpeta",
+    "modeRead": "Solo lectura — haz clic para permitir escritura",
+    "modeReadWrite": "Lectura + escritura — haz clic para volver a solo lectura"
   },
   "llamaForkRow": {
     "models": "Modelos",
@@ -99,6 +118,9 @@
     "noModelsFound": "No se encontraron modelos.",
     "markFavorite": "Marcar como favorito",
     "acceptsImage": "Acepta imágenes",
+    "supportsTools": "Soporta herramientas",
+    "acceptsAudio": "Acepta audio",
+    "visionFamilyHint": "{family} suele tener una variante con visión — falta configurar el mmproj en este preset para habilitarla",
     "ctx": "Ctx",
     "size": "Tamaño",
     "price": "Precio $/1M (in/out)"
@@ -109,9 +131,9 @@
     "languageHint": "Cambia el idioma de toda la interfaz — mensajes, etiquetas, títulos y skills.",
     "activeProvider": "Proveedor activo",
     "activeProviderHint": "Elige de dónde obtiene Cerne Code la inferencia para las nuevas sesiones.",
+    "activeProviderBadge": "Activo",
     "apiKeyVaultHint": "Clave de API guardada en el almacén de credenciales del sistema (nunca en texto plano).",
-    "keyConfigured": "Clave configurada.",
-    "noKeySaved": "Todavía no hay ninguna clave guardada.",
+    "changeKey": "Cambiar clave",
     "modelsOpenRouterTitle": "Modelos — OpenRouter",
     "viewModels": "Ver modelos",
     "llamaCppLocal": "llama.cpp local",
@@ -164,7 +186,35 @@
     "executableFilter": "Ejecutable",
     "iniConfigFilter": "Config (.ini)",
     "searchAuto": "Automático (DuckDuckGo, sin clave)",
-    "searchSearxng": "SearXNG (instancia propia)"
+    "searchSearxng": "SearXNG (instancia propia)",
+    "aboutTitle": "Acerca de",
+    "aboutIntro": "Cerne Code está construido sobre herramientas de código abierto increíbles. Muchas gracias a los creadores y mantenedores de cada una de ellas. 🙏",
+    "aboutTools": [
+      "Tauri + Rust — estructura de la aplicación de escritorio",
+      "Vue — interfaz de usuario",
+      "PrimeVue — componentes visuales",
+      "Pinia — gestión de estado",
+      "vue-i18n — traducciones (pt-BR, en, es, zh)",
+      "Vite — build y servidor de desarrollo",
+      "markdown-it + highlight.js + DOMPurify — renderizado del chat",
+      "Material Symbols (Google) — iconos",
+      "tokio + reqwest — runtime asíncrono y llamadas HTTP",
+      "rmcp — Model Context Protocol (MCP)",
+      "ast-grep — búsqueda y edición estructural de código",
+      "calamine + rust_xlsxwriter — hojas de cálculo Excel",
+      "pdf-extract + printpdf — lectura y creación de PDF",
+      "docx-rust — documentos Word",
+      "enigo + xcap + uiautomation — automatización de pantalla (computer_use)",
+      "keyring — claves y secretos guardados de forma segura por el sistema",
+      "similar — diffs de las ediciones de archivos"
+    ]
+  },
+  "disclaimer": {
+    "title": "Aviso importante",
+    "text": "Cerne Code realiza acciones reales en tu computadora mediante inteligencia artificial: se pueden crear, editar o eliminar archivos y ejecutar comandos. <strong>Cerne Code no se responsabiliza por las acciones ejecutadas por la IA. Úsalo bajo tu propia responsabilidad.</strong>",
+    "subtext": "En el modo Manual (predeterminado), cada acción pide tu aprobación antes de ejecutarse. Revisa cada solicitud con atención.",
+    "wait": "Espera",
+    "accept": "He leído y estoy de acuerdo"
   },
   "providers": {
     "openrouter": "OpenRouter",
@@ -189,8 +239,10 @@
     "header": "Nueva sesión",
     "titleLabel": "Título",
     "titlePlaceholder": "Ej: refactorizar API de sesiones",
-    "projectFolderLabel": "Carpeta del proyecto (opcional — sin ella el agente solo tiene búsqueda web y MCP, sin lectura/edición de archivos ni ejecución de comandos)",
+    "projectFolderLabel": "Carpeta del proyecto",
+    "projectFolderHint": "Opcional — sin carpeta, la sesión abre como chat simple. Puedes agregar carpetas después desde el composer.",
     "pickFolder": "Elegir carpeta...",
+    "clearFolder": "Quitar carpeta",
     "providerAndModelLabel": "Proveedor y modelo",
     "cancel": "Cancelar",
     "createSession": "Crear sesión"

@@ -72,9 +72,13 @@ async function create() {
     </div>
     <div class="field">
       <label>{{ $t("newSession.projectFolderLabel") }}</label>
+      <p class="field-hint">{{ $t("newSession.projectFolderHint") }}</p>
       <button class="folder-btn" @click="pickFolder">
         <span class="msi">folder_open</span>
         <span class="folder-path">{{ projectRoot ?? $t("newSession.pickFolder") }}</span>
+      </button>
+      <button v-if="projectRoot" class="folder-clear-btn" @click="projectRoot = null">
+        <span class="msi">close</span> {{ $t("newSession.clearFolder") }}
       </button>
     </div>
     <div class="field">
@@ -140,10 +144,36 @@ label {
   text-align: left;
 }
 
+.field-hint {
+  font-size: 11px;
+  color: #71717a;
+  margin: 0;
+}
+
 .folder-path {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.folder-clear-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  color: #71717a;
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 0;
+}
+
+.folder-clear-btn:hover {
+  color: #dc2626;
+}
+
+.folder-clear-btn .msi {
+  font-size: 14px;
 }
 
 .btn-primary {

@@ -66,3 +66,53 @@ pub fn get_openrouter_key() -> Option<String> {
 pub fn has_openrouter_key() -> bool {
     get_openrouter_key().is_some()
 }
+
+/// Prévia mascarada da chave salva (início + fim, meio escondido) — a UI usa
+/// isso pra confirmar visualmente "essa é a chave que eu colei" sem expor o
+/// valor inteiro de volta pro frontend, já que o cofre de credenciais existe
+/// justamente pra não guardar a chave em texto puro fora dele.
+pub fn openrouter_key_preview() -> Option<String> {
+    get_openrouter_key().map(|k| mask_key(&k))
+}
+
+pub fn clear_openrouter_key() -> Result<()> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Mostra os 6 primeiros e os 4 últimos caracteres, com "…" no meio — dá pra
+/// reconhecer a chave (prefixo do provider + sufixo distintivo) sem revelar
+/// o suficiente pra alguém copiar e usar.
+fn mask_key(key: &str) -> String {
+    let chars: Vec<char> = key.chars().collect();
+    if chars.len() <= 12 {
+        return "•".repeat(chars.len().max(4));
+    }
+    let prefix: String = chars[..6].iter().collect();
+    let suffix: String = chars[chars.len() - 4..].iter().collect();
+    format!("{prefix}…{suffix}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mask_key_shows_prefix_and_suffix_for_long_keys() {
+        assert_eq!(
+            mask_key("sk-or-v1-abcdef1234567890"),
+            "sk-or-…7890"
+        );
+    }
+
+    #[test]
+    fn mask_key_fully_hides_short_keys() {
+        // Chave curta demais pra sobrar meio escondido de verdade - esconde
+        // tudo em vez de vazar quase o valor inteiro.
+        assert_eq!(mask_key("short-key"), "•••••••••");
+    }
+}

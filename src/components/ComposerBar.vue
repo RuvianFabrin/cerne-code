@@ -10,9 +10,36 @@ import ContextGauge from "./ContextGauge.vue";
 import StatusDot from "./StatusDot.vue";
 import ExtraReadPaths from "./ExtraReadPaths.vue";
 import { useLlamaHealth } from "../composables/useLlamaHealth";
-import type { ExecutionMode, ProviderKind } from "../api";
+import type { ExecutionMode, McpServerConfig, ProviderKind } from "../api";
 
 const { t } = useI18n();
+
+const mcpServers = ref<McpServerConfig[]>([]);
+async function loadMcpServers() {
+  try {
+    mcpServers.value = (await api.listMcpServers()).filter((s) => s.enabled);
+  } catch {
+    mcpServers.value = [];
+  }
+}
+loadMcpServers();
+
+const enabledMcpNames = computed(() => {
+  const session = sessionStore.currentSession;
+  if (!session?.enabled_mcp_servers) return mcpServers.value.map((s) => s.name);
+  return session.enabled_mcp_servers;
+});
+
+function toggleMcpServer(name: string) {
+  const current = new Set(enabledMcpNames.value);
+  if (current.has(name)) {
+    current.delete(name);
+  } else {
+    current.add(name);
+  }
+  const allEnabled = mcpServers.value.every((s) => current.has(s.name));
+  sessionStore.updateMcpServers(allEnabled ? null : [...current]);
+}
 
 const EXECUTION_MODE_OPTIONS = computed<{ value: ExecutionMode; label: string }[]>(() => [
   { value: "yolo", label: "⚡ YOLO" },
@@ -38,7 +65,7 @@ function onExecutionModeChange(mode: ExecutionMode) {
 }
 
 const reasoningEffort = computed(
-  () => sessionStore.currentSession?.reasoning_effort ?? "auto",
+  () => sessionStore.currentSession?.reasoning_effort ?? "off",
 );
 
 function onReasoningEffortChange(value: "off" | "auto" | "low" | "medium" | "high") {
@@ -193,9 +220,27 @@ async function addAttachments() {
  * navegador via `FileReader`, sem precisar do comando Tauri de leitura de
  * disco. É o fluxo que a maioria das pessoas realmente usa pra anexar
  * screenshot, então tem que funcionar sem passar pelo seletor de arquivo. */
-function onPaste(e: ClipboardEvent) {
+async function onPaste(e: ClipboardEvent) {
   const items = e.clipboardData?.items;
   if (!items) return;
+
+  // Detectar se o texto colado é um caminho de pasta válido
+  const plainText = e.clipboardData?.getData("text/plain")?.trim();
+  if (plainText && looksLikeFolderPath(plainText)) {
+    const isDir = await api.checkPathIsDirectory(plainText).catch(() => false);
+    if (isDir) {
+      e.preventDefault();
+      const current = sessionStore.currentSession?.extra_read_paths ?? [];
+      if (current.some((entry) => entry.path === plainText)) return;
+      // Perguntar ao usuário o modo de acesso
+      const mode = window.confirm(
+        `"${plainText}"\n\nEsta pasta será adicionada com permissão de escrita (leitura + escrita).\n\nOK = Leitura + Escrita\nCancelar = Só Leitura`,
+      ) ? "read_write" as const : "read" as const;
+      await sessionStore.updateExtraReadPaths([...current, { path: plainText, mode }]);
+      return;
+    }
+  }
+
   for (const item of items) {
     if (!item.type.startsWith("image/")) continue;
     const file = item.getAsFile();
@@ -216,6 +261,15 @@ function onPaste(e: ClipboardEvent) {
     reader.onerror = () => updateAttachment(id, { status: "error", error: t("composer.pasteImageFailed") });
     reader.readAsDataURL(file);
   }
+}
+
+function looksLikeFolderPath(text: string): boolean {
+  // Caminho Windows: C:\..., D:\..., \\server\share
+  // Caminho Unix: /home/..., /usr/...
+  if (/^[A-Za-z]:[\\/]/.test(text) || /^\\\\/.test(text) || /^\//.test(text)) {
+    return !text.includes("\n") && text.length < 500;
+  }
+  return false;
 }
 
 function removeAttachment(id: string) {
@@ -377,7 +431,7 @@ watch(
         @update:custom-provider-id="onCustomProviderIdChange"
         @update:model="onModelChange"
       />
-      <ExtraReadPaths v-if="sessionStore.currentSession?.project_root" />
+      <ExtraReadPaths v-if="sessionStore.currentSession" />
     </div>
     <div v-if="attachments.length" class="attachments-row">
       <div
@@ -450,6 +504,19 @@ watch(
         >
           <span class="msi">route</span>
         </button>
+        <div v-if="mcpServers.length > 0" class="mcp-toggle-group">
+          <button
+            v-for="srv in mcpServers"
+            :key="srv.name"
+            class="mcp-toggle-btn"
+            :class="{ 'mcp-on': enabledMcpNames.includes(srv.name) }"
+            v-tooltip.top="`${srv.name}: ${srv.command} ${srv.args.join(' ')}`"
+            @click="toggleMcpServer(srv.name)"
+          >
+            <span class="msi">extension</span>
+            <span class="mcp-label">{{ srv.name }}</span>
+          </button>
+        </div>
       </div>
       <div class="footer-right">
         <ContextGauge />
@@ -726,5 +793,47 @@ watch(
 .attach-btn .msi,
 .fable-btn .msi {
   font-size: 18px;
+}
+
+.mcp-toggle-group {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.mcp-toggle-btn {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  border: 1px solid #e4e4e7;
+  background: #f4f4f5;
+  color: #a1a1aa;
+  border-radius: 6px;
+  padding: 2px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.mcp-toggle-btn:hover {
+  border-color: #d4d4d8;
+}
+
+.mcp-toggle-btn.mcp-on {
+  background: #ede9fe;
+  border-color: #8b5cf6;
+  color: #6d28d9;
+}
+
+.mcp-toggle-btn .msi {
+  font-size: 14px;
+}
+
+.mcp-label {
+  max-width: 80px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

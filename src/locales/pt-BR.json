@@ -9,9 +9,25 @@
     "save": "Salvar",
     "rename": "Renomear",
     "delete": "Excluir",
+    "deleteConfirmTitle": "Excluir sessão?",
+    "deleteConfirmBody": "Tem certeza que quer excluir \"{title}\"? O histórico dessa conversa será apagado e não pode ser desfeito.",
+    "resizeTooltip": "Arraste para redimensionar",
     "empty": "Nenhuma sessão ainda.",
     "help": "Ajuda",
-    "settings": "Configurações"
+    "settings": "Configurações",
+    "about": "Sobre"
+  },
+  "about": {
+    "title": "Sobre o Cerne Code",
+    "description": "Agente de código local construído com Rust (Tauri) e Vue.js. Obrigado a todos os criadores das ferramentas open-source que tornam este projeto possível.",
+    "creditsTitle": "Ferramentas e referências utilizadas"
+  },
+  "disclaimer": {
+    "title": "Aviso de Responsabilidade",
+    "text": "O <strong>Cerne Code</strong> utiliza inteligência artificial para executar ações no seu computador — ler, editar e criar arquivos, rodar comandos e interagir com aplicações.<br><br><strong>O Cerne Code não se responsabiliza por quaisquer danos, perdas de dados ou consequências resultantes das ações executadas pela IA.</strong> Use por sua conta e risco.",
+    "subtext": "Recomendamos manter backups dos seus arquivos importantes e revisar cada ação antes de aprová-la (modo Manual).",
+    "wait": "Aguarde",
+    "accept": "Entendi e aceito"
   },
   "composer": {
     "modeAuto": "Automático",
@@ -31,6 +47,7 @@
     "optimizingHint": "Aguarde, otimizando arquivo para economizar tokens...",
     "placeholder": "Peça pro Cerne Code ler, editar ou rodar algo no seu projeto...",
     "attachFile": "Anexar arquivo",
+    "addFolder": "Adicionar pasta",
     "executionModeTooltip": "YOLO: edita direto, sem sandbox. Automático: sandbox + você aceita/rejeita. Manual: aprova cada ação.",
     "reasoningTooltip": "Raciocínio do modelo. 💤 Desligado = sem thinking (mais rápido, default nos locais). Auto = o modelo decide.",
     "fableTooltip": "Método Fable (p/ modelos pequenos/médios): liga um loop classificar → agir → verificar pra o modelo não abandonar tarefas. Desligado por padrão; em modelos grandes só infla o prompt.",
@@ -80,11 +97,13 @@
     "fillNameAndDescription": "Preencha o nome e o \"quando usar\" antes de salvar."
   },
   "extraReadPaths": {
-    "tooltip": "Pastas extras de leitura (fora do projeto)",
-    "title": "Pastas extras de leitura",
-    "hint": "O agente pode ler (não editar) arquivos dessas pastas, além da pasta do projeto.",
+    "tooltip": "Pastas extras (fora do projeto)",
+    "title": "Pastas extras",
+    "hint": "Clique no ícone 👁️/✏️ para alternar entre só leitura e leitura+escrita.",
     "noneConfigured": "Nenhuma pasta extra configurada.",
-    "addFolder": "Adicionar pasta"
+    "addFolder": "Adicionar pasta",
+    "modeRead": "Só leitura — clique para permitir escrita",
+    "modeReadWrite": "Leitura + escrita — clique para voltar a só leitura"
   },
   "llamaForkRow": {
     "models": "Modelos",
@@ -99,6 +118,9 @@
     "noModelsFound": "Nenhum modelo encontrado.",
     "markFavorite": "Marcar como favorito",
     "acceptsImage": "Aceita imagem",
+    "supportsTools": "Suporta ferramentas (tools)",
+    "acceptsAudio": "Aceita áudio",
+    "visionFamilyHint": "{family} costuma ter variante com visão — falta configurar o mmproj neste preset pra habilitar",
     "ctx": "Ctx",
     "size": "Tamanho",
     "price": "Preço $/1M (in/out)"
@@ -109,9 +131,9 @@
     "languageHint": "Muda o idioma de toda a interface — mensagens, rótulos, títulos e skills.",
     "activeProvider": "Provider ativo",
     "activeProviderHint": "Escolha de onde o Cerne Code busca inferência para novas sessões.",
+    "activeProviderBadge": "Ativo",
     "apiKeyVaultHint": "Chave de API salva no cofre de credenciais do sistema (nunca em texto puro).",
-    "keyConfigured": "Chave configurada.",
-    "noKeySaved": "Nenhuma chave salva ainda.",
+    "changeKey": "Trocar chave",
     "modelsOpenRouterTitle": "Modelos — OpenRouter",
     "viewModels": "Ver modelos",
     "llamaCppLocal": "llama.cpp local",
@@ -164,7 +186,35 @@
     "executableFilter": "Executável",
     "iniConfigFilter": "Config (.ini)",
     "searchAuto": "Automático (DuckDuckGo, sem chave)",
-    "searchSearxng": "SearXNG (instância própria)"
+    "searchSearxng": "SearXNG (instância própria)",
+    "aboutTitle": "Sobre",
+    "aboutIntro": "O Cerne Code é construído sobre ferramentas de código aberto incríveis. Nosso muito obrigado aos criadores e mantenedores de cada uma delas. 🙏",
+    "aboutTools": [
+      "Tauri + Rust — estrutura do aplicativo desktop",
+      "Vue — interface do usuário",
+      "PrimeVue — componentes visuais",
+      "Pinia — gerenciamento de estado",
+      "vue-i18n — traduções (pt-BR, en, es, zh)",
+      "Vite — build e servidor de desenvolvimento",
+      "markdown-it + highlight.js + DOMPurify — renderização do chat",
+      "Material Symbols (Google) — ícones",
+      "tokio + reqwest — runtime assíncrono e chamadas HTTP",
+      "rmcp — Model Context Protocol (MCP)",
+      "ast-grep — busca e edição estrutural de código",
+      "calamine + rust_xlsxwriter — planilhas Excel",
+      "pdf-extract + printpdf — leitura e criação de PDF",
+      "docx-rust — documentos Word",
+      "enigo + xcap + uiautomation — automação de tela (computer_use)",
+      "keyring — chaves e segredos guardados com segurança pelo sistema",
+      "similar — diffs das edições de arquivos"
+    ]
+  },
+  "disclaimer": {
+    "title": "Aviso importante",
+    "text": "O Cerne Code executa ações reais no seu computador por meio de inteligência artificial — arquivos podem ser criados, editados ou excluídos, e comandos podem ser executados. <strong>O Cerne Code não se responsabiliza pelas ações executadas pela IA. Use por sua conta e risco.</strong>",
+    "subtext": "No modo Manual (padrão), toda ação pede sua aprovação antes de ser executada. Revise cada pedido com atenção.",
+    "wait": "Aguarde",
+    "accept": "Li e estou ciente"
   },
   "providers": {
     "openrouter": "OpenRouter",
@@ -189,8 +239,10 @@
     "header": "Nova sessão",
     "titleLabel": "Título",
     "titlePlaceholder": "Ex: refatorar API de sessões",
-    "projectFolderLabel": "Pasta do projeto (opcional — sem ela o agente só tem busca na web e MCP, sem leitura/edição de arquivos nem execução de comandos)",
+    "projectFolderLabel": "Pasta do projeto",
+    "projectFolderHint": "Opcional — sem pasta, a sessão abre como chat simples. Você pode adicionar pastas depois pelo composer.",
     "pickFolder": "Escolher pasta...",
+    "clearFolder": "Remover pasta",
     "providerAndModelLabel": "Provider e modelo",
     "cancel": "Cancelar",
     "createSession": "Criar sessão"

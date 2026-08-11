@@ -150,11 +150,15 @@ pub async fn run(
             // codigo pra pouco ganho - o verificador reusa os do app, mas
             // seu toolset ja exclui as ferramentas de controle de background
             // (list_background/etc nao estao no allowlist).
+            let folder_entries: Vec<crate::models::FolderEntry> = extra_read_paths
+                .iter()
+                .map(|p| crate::models::FolderEntry { path: p.clone(), mode: crate::models::FolderMode::Read })
+                .collect();
             let result = tools::execute_tool(
                 &call.function.name,
                 &args,
                 Some(project_root),
-                extra_read_paths,
+                &folder_entries,
                 &state.background_jobs,
                 &state.mcp_clients,
                 &state.app_data_dir,

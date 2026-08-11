@@ -9,9 +9,25 @@
     "save": "保存",
     "rename": "重命名",
     "delete": "删除",
+    "deleteConfirmTitle": "删除会话？",
+    "deleteConfirmBody": "确定要删除“{title}”吗？此对话的记录将被清除，且无法撤销。",
+    "resizeTooltip": "拖动可调整宽度",
     "empty": "还没有会话。",
     "help": "帮助",
-    "settings": "设置"
+    "settings": "设置",
+    "about": "关于"
+  },
+  "about": {
+    "title": "关于 Cerne Code",
+    "description": "使用 Rust (Tauri) 和 Vue.js 构建的本地代码智能体。感谢所有使本项目成为可能的开源工具创建者。",
+    "creditsTitle": "使用的工具和参考"
+  },
+  "disclaimer": {
+    "title": "免责声明",
+    "text": "<strong>Cerne Code</strong> 使用人工智能在您的计算机上执行操作——读取、编辑和创建文件、运行命令以及与应用交互。<br><br><strong>Cerne Code 不对 AI 执行的操作所造成的任何损害、数据丢失或后果承担责任。</strong> 使用风险自负。",
+    "subtext": "我们建议备份重要文件，并在批准每个操作之前进行审查（手动模式）。",
+    "wait": "等待",
+    "accept": "我理解并接受"
   },
   "composer": {
     "modeAuto": "自动",
@@ -31,6 +47,7 @@
     "optimizingHint": "请稍候，正在优化文件以节省 token...",
     "placeholder": "让 Cerne Code 读取、编辑或运行你项目中的内容...",
     "attachFile": "添加附件",
+    "addFolder": "添加文件夹",
     "executionModeTooltip": "YOLO：直接编辑，无沙盒。自动：沙盒 + 你来接受/拒绝。手动：每个操作都需批准。",
     "reasoningTooltip": "模型推理。💤 关闭 = 无思考过程（更快，本地模型默认）。自动 = 由模型决定。",
     "fableTooltip": "Fable 方法（适用于中小模型）：开启分类→执行→验证循环，防止模型放弃任务。默认关闭；在大模型上只会让提示词变得臃肿。",
@@ -80,11 +97,13 @@
     "fillNameAndDescription": "保存前请填写名称和\"何时使用\"。"
   },
   "extraReadPaths": {
-    "tooltip": "额外的读取文件夹（项目之外）",
-    "title": "额外的读取文件夹",
-    "hint": "除了项目文件夹外，智能体还可以读取（不能编辑）这些文件夹中的文件。",
+    "tooltip": "额外文件夹（项目之外）",
+    "title": "额外文件夹",
+    "hint": "点击 👁️/✏️ 图标在只读和读写之间切换。",
     "noneConfigured": "尚未配置额外文件夹。",
-    "addFolder": "添加文件夹"
+    "addFolder": "添加文件夹",
+    "modeRead": "只读 — 点击允许写入",
+    "modeReadWrite": "读写 — 点击切换回只读"
   },
   "llamaForkRow": {
     "models": "模型",
@@ -99,6 +118,9 @@
     "noModelsFound": "未找到模型。",
     "markFavorite": "标记为收藏",
     "acceptsImage": "支持图片",
+    "supportsTools": "支持工具调用",
+    "acceptsAudio": "支持音频",
+    "visionFamilyHint": "{family} 系列通常有支持视觉的版本 —— 此预设缺少 mmproj 配置，需要设置后才能启用",
     "ctx": "上下文",
     "size": "大小",
     "price": "价格 $/1M（输入/输出）"
@@ -109,9 +131,9 @@
     "languageHint": "更改整个界面的语言——消息、标签、标题和技能。",
     "activeProvider": "当前提供方",
     "activeProviderHint": "选择新会话从哪里获取推理服务。",
+    "activeProviderBadge": "当前使用",
     "apiKeyVaultHint": "API 密钥保存在系统的凭据保管库中（绝不以明文形式存储）。",
-    "keyConfigured": "密钥已配置。",
-    "noKeySaved": "尚未保存任何密钥。",
+    "changeKey": "更换密钥",
     "modelsOpenRouterTitle": "模型 — OpenRouter",
     "viewModels": "查看模型",
     "llamaCppLocal": "本地 llama.cpp",
@@ -164,7 +186,35 @@
     "executableFilter": "可执行文件",
     "iniConfigFilter": "配置文件 (.ini)",
     "searchAuto": "自动（DuckDuckGo，无需密钥）",
-    "searchSearxng": "SearXNG（自建实例）"
+    "searchSearxng": "SearXNG（自建实例）",
+    "aboutTitle": "关于",
+    "aboutIntro": "Cerne Code 建立在出色的开源工具之上。衷心感谢每一个工具的创建者和维护者。🙏",
+    "aboutTools": [
+      "Tauri + Rust — 桌面应用框架",
+      "Vue — 用户界面",
+      "PrimeVue — 界面组件",
+      "Pinia — 状态管理",
+      "vue-i18n — 多语言翻译（pt-BR、en、es、zh）",
+      "Vite — 构建与开发服务器",
+      "markdown-it + highlight.js + DOMPurify — 聊天渲染",
+      "Material Symbols（Google）— 图标",
+      "tokio + reqwest — 异步运行时与 HTTP 请求",
+      "rmcp — Model Context Protocol（MCP）",
+      "ast-grep — 代码结构化搜索与编辑",
+      "calamine + rust_xlsxwriter — Excel 表格",
+      "pdf-extract + printpdf — PDF 读取与创建",
+      "docx-rust — Word 文档",
+      "enigo + xcap + uiautomation — 屏幕自动化（computer_use）",
+      "keyring — 由系统安全保存密钥与机密",
+      "similar — 文件编辑差异对比"
+    ]
+  },
+  "disclaimer": {
+    "title": "重要提示",
+    "text": "Cerne Code 通过人工智能在您的电脑上执行真实操作——文件可能被创建、修改或删除，命令可能被执行。<strong>Cerne Code 不对 AI 执行的操作承担责任，请自行承担使用风险。</strong>",
+    "subtext": "在手动模式（默认）下，每个操作都会在执行前请求您的批准。请仔细审查每个请求。",
+    "wait": "请稍候",
+    "accept": "我已阅读并知晓"
   },
   "providers": {
     "openrouter": "OpenRouter",
@@ -189,8 +239,10 @@
     "header": "新建会话",
     "titleLabel": "标题",
     "titlePlaceholder": "例如：重构会话 API",
-    "projectFolderLabel": "项目文件夹（可选——没有它，智能体只能使用网页搜索和 MCP，无法读取/编辑文件或执行命令）",
+    "projectFolderLabel": "项目文件夹",
+    "projectFolderHint": "可选——没有文件夹时，会话以简单聊天模式打开。您可以稍后从 composer 添加文件夹。",
     "pickFolder": "选择文件夹...",
+    "clearFolder": "移除文件夹",
     "providerAndModelLabel": "提供方和模型",
     "cancel": "取消",
     "createSession": "创建会话"

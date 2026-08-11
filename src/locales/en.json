@@ -9,9 +9,25 @@
     "save": "Save",
     "rename": "Rename",
     "delete": "Delete",
+    "deleteConfirmTitle": "Delete session?",
+    "deleteConfirmBody": "Are you sure you want to delete \"{title}\"? This chat's history will be erased and cannot be undone.",
+    "resizeTooltip": "Drag to resize",
     "empty": "No sessions yet.",
     "help": "Help",
-    "settings": "Settings"
+    "settings": "Settings",
+    "about": "About"
+  },
+  "about": {
+    "title": "About Cerne Code",
+    "description": "Local coding agent built with Rust (Tauri) and Vue.js. Thanks to all the creators of the open-source tools that make this project possible.",
+    "creditsTitle": "Tools and references used"
+  },
+  "disclaimer": {
+    "title": "Disclaimer",
+    "text": "<strong>Cerne Code</strong> uses artificial intelligence to perform actions on your computer — reading, editing and creating files, running commands and interacting with applications.<br><br><strong>Cerne Code is not responsible for any damages, data loss or consequences resulting from actions executed by the AI.</strong> Use at your own risk.",
+    "subtext": "We recommend keeping backups of your important files and reviewing each action before approving it (Manual mode).",
+    "wait": "Wait",
+    "accept": "I understand and accept"
   },
   "composer": {
     "modeAuto": "Automatic",
@@ -31,6 +47,7 @@
     "optimizingHint": "Please wait, optimizing file to save tokens...",
     "placeholder": "Ask Cerne Code to read, edit or run something in your project...",
     "attachFile": "Attach file",
+    "addFolder": "Add folder",
     "executionModeTooltip": "YOLO: edits directly, no sandbox. Automatic: sandbox + you accept/reject. Manual: approve every action.",
     "reasoningTooltip": "Model reasoning. 💤 Off = no thinking (faster, default for local models). Auto = the model decides.",
     "fableTooltip": "Fable method (for small/medium models): turns on a classify → act → verify loop so the model doesn't abandon tasks. Off by default; on large models it just bloats the prompt.",
@@ -80,11 +97,13 @@
     "fillNameAndDescription": "Fill in the name and \"when to use it\" before saving."
   },
   "extraReadPaths": {
-    "tooltip": "Extra read folders (outside the project)",
-    "title": "Extra read folders",
-    "hint": "The agent can read (not edit) files from these folders, in addition to the project folder.",
+    "tooltip": "Extra folders (outside the project)",
+    "title": "Extra folders",
+    "hint": "Click the 👁️/✏️ icon to toggle between read-only and read+write.",
     "noneConfigured": "No extra folders configured.",
-    "addFolder": "Add folder"
+    "addFolder": "Add folder",
+    "modeRead": "Read only — click to allow writing",
+    "modeReadWrite": "Read + write — click to switch back to read only"
   },
   "llamaForkRow": {
     "models": "Models",
@@ -99,6 +118,9 @@
     "noModelsFound": "No models found.",
     "markFavorite": "Mark as favorite",
     "acceptsImage": "Accepts images",
+    "supportsTools": "Supports tools",
+    "acceptsAudio": "Accepts audio",
+    "visionFamilyHint": "{family} usually has a vision variant — this preset is missing an mmproj to enable it",
     "ctx": "Ctx",
     "size": "Size",
     "price": "Price $/1M (in/out)"
@@ -109,9 +131,9 @@
     "languageHint": "Changes the language of the entire interface — messages, labels, titles and skills.",
     "activeProvider": "Active provider",
     "activeProviderHint": "Choose where Cerne Code sources inference from for new sessions.",
+    "activeProviderBadge": "Active",
     "apiKeyVaultHint": "API key saved in the system's credential vault (never in plain text).",
-    "keyConfigured": "Key configured.",
-    "noKeySaved": "No key saved yet.",
+    "changeKey": "Change key",
     "modelsOpenRouterTitle": "Models — OpenRouter",
     "viewModels": "View models",
     "llamaCppLocal": "llama.cpp local",
@@ -164,7 +186,35 @@
     "executableFilter": "Executable",
     "iniConfigFilter": "Config (.ini)",
     "searchAuto": "Automatic (DuckDuckGo, no key)",
-    "searchSearxng": "SearXNG (self-hosted instance)"
+    "searchSearxng": "SearXNG (self-hosted instance)",
+    "aboutTitle": "About",
+    "aboutIntro": "Cerne Code is built on top of amazing open-source tools. Many thanks to the creators and maintainers of each one of them. 🙏",
+    "aboutTools": [
+      "Tauri + Rust — desktop app framework",
+      "Vue — user interface",
+      "PrimeVue — UI components",
+      "Pinia — state management",
+      "vue-i18n — translations (pt-BR, en, es, zh)",
+      "Vite — build and dev server",
+      "markdown-it + highlight.js + DOMPurify — chat rendering",
+      "Material Symbols (Google) — icons",
+      "tokio + reqwest — async runtime and HTTP calls",
+      "rmcp — Model Context Protocol (MCP)",
+      "ast-grep — structural code search and editing",
+      "calamine + rust_xlsxwriter — Excel spreadsheets",
+      "pdf-extract + printpdf — PDF reading and creation",
+      "docx-rust — Word documents",
+      "enigo + xcap + uiautomation — screen automation (computer_use)",
+      "keyring — keys and secrets stored securely by the OS",
+      "similar — diffs for file edits"
+    ]
+  },
+  "disclaimer": {
+    "title": "Important notice",
+    "text": "Cerne Code performs real actions on your computer through artificial intelligence — files may be created, edited or deleted, and commands may be executed. <strong>Cerne Code is not responsible for actions performed by the AI. Use at your own risk.</strong>",
+    "subtext": "In Manual mode (default), every action asks for your approval before running. Review each request carefully.",
+    "wait": "Please wait",
+    "accept": "I have read and understand"
   },
   "providers": {
     "openrouter": "OpenRouter",
@@ -189,8 +239,10 @@
     "header": "New session",
     "titleLabel": "Title",
     "titlePlaceholder": "E.g.: refactor sessions API",
-    "projectFolderLabel": "Project folder (optional — without it the agent only has web search and MCP, no file reading/editing or running commands)",
+    "projectFolderLabel": "Project folder",
+    "projectFolderHint": "Optional — without a folder, the session opens as a simple chat. You can add folders later from the composer.",
     "pickFolder": "Pick a folder...",
+    "clearFolder": "Remove folder",
     "providerAndModelLabel": "Provider and model",
     "cancel": "Cancel",
     "createSession": "Create session"

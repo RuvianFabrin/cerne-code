@@ -22,7 +22,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
-use tokio::process::{Child, Command};
+use tokio::process::Child;
 
 /// Quantas linhas de output (stdout+stderr combinados) manter por job — mais
 /// que isso e descartado do inicio, tipo um `tail -f` com buffer limitado,
@@ -45,13 +45,12 @@ impl BackgroundJobs {
     /// o id (UUID) pra consultar/parar depois. Nao espera o processo
     /// terminar — retorna assim que o SO confirma que o processo nasceu.
     pub fn start(&self, project_root: &Path, command: &str) -> Result<String> {
-        let mut child = Command::new("cmd")
-            .arg("/C")
-            .arg(command)
-            .current_dir(project_root)
+        let mut cmd = super::shell::build_shell_command(command);
+        cmd.current_dir(project_root)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        let mut child = cmd
             .spawn()
             .map_err(|e| anyhow!("nao foi possivel iniciar o comando em segundo plano: {e}"))?;
 
@@ -213,20 +212,32 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    /// Poll até o output conter `needle` (ou estourar ~6s). Sleep fixo era
+    /// flaky quando a suíte inteira roda em paralelo e o cmd demora a subir.
+    async fn wait_for(jobs: &BackgroundJobs, id: &str, needle: &str) -> String {
+        for _ in 0..60 {
+            if let Ok(out) = jobs.read_output(id) {
+                if out.contains(needle) {
+                    return out;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        jobs.read_output(id).unwrap_or_else(|e| format!("<job sumiu: {e}>"))
+    }
+
     #[tokio::test]
     async fn start_read_and_stop_a_background_command() {
         let jobs = BackgroundJobs::default();
         let dir = std::env::temp_dir();
         let id = jobs.start(&dir, "echo hello-from-background").unwrap();
 
-        // Da tempo do processo rodar e o reader assincrono capturar a linha.
-        tokio::time::sleep(Duration::from_millis(300)).await;
-
-        let output = jobs.read_output(&id).unwrap();
+        let output = wait_for(&jobs, &id, "hello-from-background").await;
         assert!(
             output.contains("hello-from-background"),
             "esperava ver o output, recebeu: {output}"
         );
+        let output = wait_for(&jobs, &id, "encerrado").await;
         assert!(
             output.contains("encerrado"),
             "echo termina rapido, deveria ja estar encerrado: {output}"
@@ -246,9 +257,8 @@ mod tests {
         // ping localhost e um jeito portavel de ter um processo Windows que
         // fica rodando por alguns segundos, pra testar "parar enquanto ainda roda".
         let id = jobs.start(&dir, "ping -n 20 127.0.0.1").unwrap();
-        tokio::time::sleep(Duration::from_millis(200)).await;
 
-        let output = jobs.read_output(&id).unwrap();
+        let output = wait_for(&jobs, &id, "status: rodando").await;
         assert!(
             output.contains("status: rodando"),
             "deveria ainda estar rodando: {output}"
@@ -275,24 +285,36 @@ mod tests {
         let jobs = BackgroundJobs::default();
         let dir = std::env::temp_dir();
         let id = jobs.start(&dir, "ping -n 30 127.0.0.1").unwrap();
-        tokio::time::sleep(Duration::from_millis(500)).await;
 
         let cmd_pid = jobs
             .cmd_pid(&id)
             .expect("job deveria ter pid enquanto roda");
-        let ping_pid = child_pid_of(cmd_pid)
-            .await
-            .expect("cmd.exe deveria ter spawnado PING.EXE como processo filho com PID proprio");
+        let mut ping_pid: Option<u32> = None;
+        for _ in 0..60 {
+            if let Some(pid) = child_pid_of(cmd_pid).await {
+                ping_pid = Some(pid);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let ping_pid =
+            ping_pid.expect("cmd.exe deveria ter spawnado PING.EXE como processo filho com PID proprio");
         assert!(
             pid_exists(ping_pid).await,
             "PING.EXE (pid {ping_pid}) deveria estar rodando antes do stop"
         );
 
         jobs.stop(&id).await.unwrap();
-        tokio::time::sleep(Duration::from_millis(400)).await;
-
+        let mut gone = false;
+        for _ in 0..60 {
+            if !pid_exists(ping_pid).await {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         assert!(
-            !pid_exists(ping_pid).await,
+            gone,
             "PING.EXE (pid {ping_pid}) deveria ter morrido junto com o cmd.exe - bug do processo orfao voltou se isso falhar"
         );
     }

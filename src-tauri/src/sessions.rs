@@ -54,11 +54,11 @@ pub fn create_session(
         custom_provider_id,
         extra_read_paths: Vec::new(),
         execution_mode: ExecutionMode::default(),
-        // Locais já nascem com o reasoning desligado (senão Qwen3/GLM pensam
-        // por default e ficam lentos); OpenRouter/Custom ficam em Auto. Ver
-        // `ProviderKind::default_reasoning_effort` (mesma regra das chamadas
-        // utilitárias).
-        reasoning_effort: provider.default_reasoning_effort(),
+        // Pensamento sempre desligado por padrão — o usuário liga manualmente
+        // no composer quando precisar. Antes, providers cloud ficavam em Auto
+        // e modelos locais em Off; agora é uniforme: Off pra todos.
+        reasoning_effort: Some(ReasoningEffort::Off),
+        enabled_mcp_servers: None,
         fable_method: false,
         total_prompt_tokens: 0,
         total_completion_tokens: 0,
@@ -160,7 +160,7 @@ pub fn update_context_length(
 pub fn update_extra_read_paths(
     app_data_dir: &PathBuf,
     id: &str,
-    extra_read_paths: Vec<String>,
+    extra_read_paths: Vec<crate::models::FolderEntry>,
 ) -> Result<Session> {
     let mut session = get_session(app_data_dir, id)?;
     session.extra_read_paths = extra_read_paths;
@@ -190,6 +190,21 @@ pub fn update_reasoning_effort(
 pub fn update_fable_method(app_data_dir: &PathBuf, id: &str, enabled: bool) -> Result<Session> {
     let mut session = get_session(app_data_dir, id)?;
     session.fable_method = enabled;
+    let dir = session_dir(app_data_dir, id);
+    std::fs::write(
+        dir.join("session.json"),
+        serde_json::to_string_pretty(&session)?,
+    )?;
+    Ok(session)
+}
+
+pub fn update_enabled_mcp_servers(
+    app_data_dir: &PathBuf,
+    id: &str,
+    enabled_names: Option<Vec<String>>,
+) -> Result<Session> {
+    let mut session = get_session(app_data_dir, id)?;
+    session.enabled_mcp_servers = enabled_names;
     let dir = session_dir(app_data_dir, id);
     std::fs::write(
         dir.join("session.json"),
@@ -293,9 +308,8 @@ mod tests {
     }
 
     #[test]
-    fn new_sessions_default_to_auto_execution_mode() {
-        // Nao muda o comportamento de quem ja usa o Cerne - so quem trocar
-        // explicitamente pelo seletor no composer entra no modo Manual.
+    fn new_sessions_default_to_manual_execution_mode() {
+        // Default agora é Manual — toda ferramenta pede aprovação antes de rodar.
         let dir = scratch_dir();
         let session = create_session(
             &dir,
@@ -308,7 +322,7 @@ mod tests {
             None,
         )
         .unwrap();
-        assert_eq!(session.execution_mode, ExecutionMode::Auto);
+        assert_eq!(session.execution_mode, ExecutionMode::Manual);
     }
 
     #[test]
@@ -362,14 +376,15 @@ mod tests {
     }
 
     #[test]
-    fn new_local_sessions_default_to_reasoning_off_but_cloud_stays_auto() {
-        // Locais nascem com reasoning desligado (senão Qwen3/GLM pensam por
-        // default e ficam lentos); OpenRouter/Custom ficam em Auto (None).
+    fn all_new_sessions_default_to_reasoning_off() {
+        // Pensamento sempre desligado por padrão para todos os providers.
         let dir = scratch_dir();
         for kind in [
             ProviderKind::LlamaCpp,
             ProviderKind::Ollama,
             ProviderKind::LmStudio,
+            ProviderKind::Openrouter,
+            ProviderKind::Custom,
         ] {
             let s = create_session(
                 &dir,
@@ -385,24 +400,7 @@ mod tests {
             assert_eq!(
                 s.reasoning_effort,
                 Some(ReasoningEffort::Off),
-                "provider local {kind:?} deveria default Off"
-            );
-        }
-        for kind in [ProviderKind::Openrouter, ProviderKind::Custom] {
-            let s = create_session(
-                &dir,
-                "s".to_string(),
-                kind,
-                "m".to_string(),
-                None,
-                None,
-                None,
-                None,
-            )
-            .unwrap();
-            assert_eq!(
-                s.reasoning_effort, None,
-                "provider {kind:?} deveria default Auto (None)"
+                "provider {kind:?} deveria default Off"
             );
         }
         std::fs::remove_dir_all(&dir).ok();

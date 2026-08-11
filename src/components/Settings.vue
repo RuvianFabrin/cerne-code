@@ -12,6 +12,17 @@ import SkillEditorModal from "./SkillEditorModal.vue";
 const { t, locale } = useI18n();
 const providerStore = useProviderStore();
 const openrouterKeyInput = ref("");
+const editingOpenrouterKey = ref(false);
+
+function startEditOpenrouterKey() {
+  openrouterKeyInput.value = "";
+  editingOpenrouterKey.value = true;
+}
+
+async function clearOpenrouterKey() {
+  await providerStore.clearOpenrouterKey();
+  editingOpenrouterKey.value = false;
+}
 
 function onLocaleChange(value: string) {
   setLocale(value as LocaleCode);
@@ -355,6 +366,7 @@ async function saveKey() {
   if (!openrouterKeyInput.value.trim()) return;
   await providerStore.saveOpenrouterKey(openrouterKeyInput.value.trim());
   openrouterKeyInput.value = "";
+  editingOpenrouterKey.value = false;
 }
 
 </script>
@@ -384,19 +396,31 @@ async function saveKey() {
             @click="providerStore.setActiveProvider(kind as any)"
           >
             {{ providerLabel(kind) }}
+            <span v-if="providerStore.config?.active_provider === kind" class="active-badge">
+              <span class="msi">check_circle</span>
+              {{ $t("settings.activeProviderBadge") }}
+            </span>
           </button>
         </div>
       </section>
 
       <section>
         <h2>OpenRouter</h2>
-        <p class="hint">
-          {{ $t("settings.apiKeyVaultHint") }}
-          <strong>{{ providerStore.hasOpenrouterKey ? $t("settings.keyConfigured") : $t("settings.noKeySaved") }}</strong>
-        </p>
-        <div class="key-row">
+        <p class="hint">{{ $t("settings.apiKeyVaultHint") }}</p>
+        <div v-if="providerStore.hasOpenrouterKey && !editingOpenrouterKey" class="key-status-row">
+          <span class="key-status-chip">
+            <span class="msi">check_circle</span>
+            <span class="key-preview">{{ providerStore.openrouterKeyPreview }}</span>
+          </span>
+          <button class="btn-secondary" @click="startEditOpenrouterKey">{{ $t("settings.changeKey") }}</button>
+          <button class="btn-secondary" @click="clearOpenrouterKey">{{ $t("settings.removeKey") }}</button>
+        </div>
+        <div v-else class="key-row">
           <input v-model="openrouterKeyInput" type="password" placeholder="sk-or-..." class="text-input" />
           <button class="btn-primary" @click="saveKey">{{ $t("sidebar.save") }}</button>
+          <button v-if="providerStore.hasOpenrouterKey" class="btn-secondary" @click="editingOpenrouterKey = false">
+            {{ $t("newSession.cancel") }}
+          </button>
         </div>
         <button class="btn-secondary browse-models-btn" @click="openModelBrowser('openrouter', $t('settings.modelsOpenRouterTitle'))">
           <span class="msi">search</span>
@@ -652,6 +676,16 @@ async function saveKey() {
           <input v-model="providerStore.config.llama_cpp_base_url" class="text-input" @change="providerStore.saveConfig" />
         </div>
       </section>
+
+      <section>
+        <h2>{{ $t("settings.aboutTitle") }}</h2>
+        <p class="hint">{{ $t("settings.aboutIntro") }}</p>
+        <ul class="about-tools">
+          <li v-for="(tool, i) in $tm('settings.aboutTools')" :key="i" class="about-tool">
+            {{ $rt(tool) }}
+          </li>
+        </ul>
+      </section>
     </div>
 
     <ModelBrowserDialog
@@ -739,17 +773,62 @@ section {
   font-weight: 600;
   color: #3f3f46;
   text-align: left;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .provider-card.active {
-  border-color: #18181b;
-  background: #fafafa;
+  border-color: #16a34a;
+  background: #f0fdf4;
   color: #18181b;
+}
+
+.active-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #16a34a;
+  white-space: nowrap;
+}
+
+.active-badge .msi {
+  font-size: 15px;
 }
 
 .key-row {
   display: flex;
   gap: 8px;
+}
+
+.key-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.key-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: #f0fdf4;
+  color: #15803d;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.key-status-chip .msi {
+  font-size: 16px;
+}
+
+.key-preview {
+  font-family: ui-monospace, monospace;
+  font-weight: 500;
 }
 
 .text-input {
@@ -963,5 +1042,23 @@ label {
   font-size: 12px;
   font-weight: 600;
   color: #52525b;
+}
+
+.about-tools {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.about-tool {
+  font-size: 13px;
+  color: #3f3f46;
+  padding: 8px 12px;
+  border: var(--cerne-border);
+  border-radius: 8px;
+  background: #fafafa;
 }
 </style>

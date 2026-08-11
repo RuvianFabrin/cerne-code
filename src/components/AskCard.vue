@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref } from "vue";
 import { useSessionStore } from "../stores/session";
+import MarkdownContent from "./MarkdownContent.vue";
 
 const sessionStore = useSessionStore();
 const freeText = ref("");
@@ -20,7 +21,7 @@ function submitFreeText() {
   <div v-if="sessionStore.pendingQuestion" class="ask-card">
     <div class="ask-header">
       <span class="msi">help</span>
-      <span class="ask-question">{{ sessionStore.pendingQuestion.question }}</span>
+      <MarkdownContent :content="sessionStore.pendingQuestion.question" class="ask-question-md" />
     </div>
     <div v-if="sessionStore.pendingQuestion.options.length > 0" class="ask-options">
       <button v-for="option in sessionStore.pendingQuestion.options" :key="option" class="ask-option" @click="answer(option)">
@@ -61,10 +62,46 @@ function submitFreeText() {
   color: #b45309;
 }
 
-.ask-question {
+.ask-question-md {
+  flex: 1;
+  min-width: 0;
+}
+
+.ask-question-md :deep(.markdown-body) {
   font-size: 13px;
   font-weight: 600;
   color: #18181b;
+  line-height: 1.5;
+}
+
+.ask-question-md :deep(.markdown-body p) {
+  margin: 0;
+}
+
+.ask-question-md :deep(.markdown-body p + p) {
+  margin-top: 4px;
+}
+
+.ask-question-md :deep(.markdown-body code) {
+  font-size: 12px;
+  background: rgba(0, 0, 0, 0.06);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.ask-question-md :deep(.markdown-body pre) {
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+
+.ask-question-md :deep(.markdown-body ul),
+.ask-question-md :deep(.markdown-body ol) {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
+
+.ask-question-md :deep(.markdown-body li) {
+  margin: 2px 0;
 }
 
 .ask-options {

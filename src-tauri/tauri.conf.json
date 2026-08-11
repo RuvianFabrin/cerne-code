@@ -34,9 +34,18 @@
       "icons/icon.ico"
     ],
     "windows": {
-      "nsis": {
-        "installMode": "perMachine"
-      }
-    }
+          "nsis": {
+            "installMode": "perMachine",
+            "languages": [
+              "PortugueseBR",
+              "English",
+              "Spanish",
+              "SpanishInternational",
+              "SimpChinese",
+              "TradChinese"
+            ],
+            "displayLanguageSelector": true
+          }
+        }
   }
 }

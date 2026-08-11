@@ -26,6 +26,9 @@ export interface ModelInfo {
   price_prompt?: number | null;
   price_completion?: number | null;
   supports_vision?: boolean | null;
+  vision_hint?: string | null;
+  supports_tools?: boolean | null;
+  supports_audio?: boolean | null;
 }
 
 export interface ContextUsage {
@@ -59,9 +62,10 @@ export interface Session {
   context_length: number | null;
   llama_fork: string | null;
   custom_provider_id: string | null;
-  extra_read_paths: string[];
+  extra_read_paths: Array<{ path: string; mode: "read" | "read_write" }>;
   execution_mode: ExecutionMode;
   reasoning_effort: "off" | "low" | "medium" | "high" | null;
+  enabled_mcp_servers: string[] | null;
   fable_method: boolean;
 }
 
@@ -158,6 +162,10 @@ export const api = {
   setConfig: (new_config: AppConfig) => invoke<void>("set_config", { newConfig: new_config }),
   setOpenrouterKey: (key: string) => invoke<void>("set_openrouter_key", { key }),
   hasOpenrouterKey: () => invoke<boolean>("has_openrouter_key"),
+  openrouterKeyPreview: () => invoke<string | null>("openrouter_key_preview"),
+  clearOpenrouterKey: () => invoke<void>("clear_openrouter_key"),
+  getDisclaimerAccepted: () => invoke<boolean>("get_disclaimer_accepted"),
+  setDisclaimerAccepted: (accepted: boolean) => invoke<void>("set_disclaimer_accepted", { accepted }),
   listProviderModels: (kind: ProviderKind, customProviderId?: string | null) =>
     invoke<ModelInfo[]>("list_provider_models", { kind, customProviderId }),
   getModelFavorites: (providerKey: string) => invoke<string[]>("get_model_favorites", { providerKey }),
@@ -208,7 +216,7 @@ export const api = {
   updateSessionTitle: (id: string, title: string) => invoke<Session>("update_session_title", { id, title }),
   updateSessionExecutionMode: (id: string, executionMode: ExecutionMode) =>
     invoke<Session>("update_session_execution_mode", { id, executionMode }),
-  updateSessionReadPaths: (id: string, extraReadPaths: string[]) =>
+  updateSessionReadPaths: (id: string, extraReadPaths: Array<{ path: string; mode: "read" | "read_write" }>) =>
     invoke<Session>("update_session_read_paths", { id, extraReadPaths }),
   updateSessionContextLength: (id: string, contextLength: number | null) =>
     invoke<Session>("update_session_context_length", { id, contextLength }),
@@ -216,6 +224,9 @@ export const api = {
     invoke<Session>("update_session_reasoning_effort", { id, effort }),
   updateSessionFableMethod: (id: string, enabled: boolean) =>
     invoke<Session>("update_session_fable_method", { id, enabled }),
+  updateSessionMcpServers: (id: string, enabledNames: string[] | null) =>
+    invoke<Session>("update_session_mcp_servers", { id, enabledNames }),
+  checkPathIsDirectory: (path: string) => invoke<boolean>("check_path_is_directory", { path }),
   extractAttachmentText: (path: string) => invoke<string>("extract_attachment_text", { path }),
   checkVisionSupport: (sessionId: string) => invoke<boolean>("check_vision_support", { sessionId }),
   testVision: (kind: string, customProviderId: string | null, model: string) =>
@@ -322,4 +333,10 @@ export function onContextCompacted(cb: (sessionId: string, summarizedMessages: n
 
 export function onTurnStats(cb: (stats: TurnStats) => void): Promise<UnlistenFn> {
   return listen<TurnStats>("agent:turn_stats", (e) => cb(e.payload));
+}
+
+export function onSessionRenamed(cb: (sessionId: string, title: string) => void): Promise<UnlistenFn> {
+  return listen<{ session_id: string; title: string }>("agent:session_renamed", (e) =>
+    cb(e.payload.session_id, e.payload.title),
+  );
 }

@@ -85,6 +85,12 @@ pub fn list_presets(models_ini_path: &str) -> Result<Vec<ModelInfo>> {
                 .flatten()
                 .or(global_ctx)
                 .map(|v| v as u32);
+            let has_vision = preset_supports_vision(models_ini_path, &s);
+            let vision_hint = if has_vision {
+                None
+            } else {
+                vision_family_hint(&parser, &s)
+            };
             ModelInfo {
                 id: s.clone(),
                 label: s,
@@ -95,7 +101,10 @@ pub fn list_presets(models_ini_path: &str) -> Result<Vec<ModelInfo>> {
                 parameter_size: None,
                 price_prompt: None,
                 price_completion: None,
-                supports_vision: None,
+                supports_vision: Some(has_vision),
+                vision_hint,
+                supports_tools: None,
+                supports_audio: None,
             }
         })
         .collect();
@@ -141,6 +150,55 @@ pub fn preset_supports_vision(models_ini_path: &str, preset: &str) -> bool {
         (k.contains("mmproj") || k.contains("clip"))
             && v.as_deref().map(|p| !p.trim().is_empty()).unwrap_or(false)
     })
+}
+
+/// Famílias de modelo conhecidas por terem uma variante multimodal (visão)
+/// oficial, junto com o nome amigável usado no hint. Cobre os casos reais
+/// vistos em `models.ini` (gemma3/gemma4) e as famílias mais comuns fora
+/// dele — não é uma lista exaustiva, é best-effort: um preset de família
+/// desconhecida simplesmente não recebe hint nenhum (fica `None`, igual a
+/// hoje), em vez de arriscar um falso positivo.
+const VISION_CAPABLE_FAMILIES: &[(&str, &str)] = &[
+    ("gemma3", "Gemma 3"),
+    ("gemma-3", "Gemma 3"),
+    ("gemma4", "Gemma 4"),
+    ("gemma-4", "Gemma 4"),
+    ("qwen2-vl", "Qwen2-VL"),
+    ("qwen2.5-vl", "Qwen2.5-VL"),
+    ("qwen-vl", "Qwen-VL"),
+    ("qwenvl", "Qwen-VL"),
+    ("llava", "LLaVA"),
+    ("bakllava", "LLaVA"),
+    ("moondream", "Moondream"),
+    ("pixtral", "Pixtral"),
+    ("internvl", "InternVL"),
+    ("minicpm-v", "MiniCPM-V"),
+    ("phi-3-vision", "Phi-3 Vision"),
+    ("phi3v", "Phi-3 Vision"),
+    ("idefics", "Idefics"),
+    ("cogvlm", "CogVLM"),
+    ("yi-vl", "Yi-VL"),
+    ("deepseek-vl", "DeepSeek-VL"),
+];
+
+/// Quando um preset NÃO tem `mmproj` configurado (`preset_supports_vision`
+/// deu `false`), checa se o nome do preset ou o caminho do `model` bate com
+/// uma família conhecida por ter variante multimodal — se bater, devolve o
+/// nome da família (ex: "Gemma 4") pra UI montar a frase de aviso já
+/// traduzida ("arquitetura suporta visão, mas falta apontar o mmproj nesse
+/// preset"), em vez de simplesmente dizer "sem visão", que seria enganoso
+/// pra quem só esqueceu de configurar o mmproj (o cenário exato que motivou
+/// a pergunta: "as vezes o modelo tem visão mas sem mmproj, como fica nesses
+/// casos?"). Devolve só o nome da família (não uma frase pronta) pra não
+/// hardcodar português numa app com 4 idiomas — quem monta a frase final é o
+/// frontend, via i18n.
+fn vision_family_hint(parser: &configparser::ini::Ini, preset: &str) -> Option<String> {
+    let model_path = parser.get(preset, "model").unwrap_or_default();
+    let haystack = format!("{preset} {model_path}").to_lowercase();
+    VISION_CAPABLE_FAMILIES
+        .iter()
+        .find(|(needle, _)| haystack.contains(needle))
+        .map(|(_, label)| label.to_string())
 }
 
 fn load_ini(models_ini_path: &str) -> Result<configparser::ini::Ini> {
@@ -267,6 +325,65 @@ mod tests {
             "C:\\caminho\\que\\nao\\existe.ini",
             "qwen3"
         ));
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn list_presets_marks_supports_vision_true_when_mmproj_is_set() {
+        let path = write_ini(
+            "[gemma4-e4b-qat-mtp]\nmodel = C:\\models\\gemma4.gguf\nmmproj = C:\\models\\mmproj.gguf\nctx-size = 8192\n",
+        );
+        let presets = list_presets(path.to_str().unwrap()).unwrap();
+        let preset = presets
+            .iter()
+            .find(|p| p.id == "gemma4-e4b-qat-mtp")
+            .unwrap();
+        assert_eq!(preset.supports_vision, Some(true));
+        assert_eq!(preset.vision_hint, None);
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn list_presets_hints_vision_family_when_mmproj_is_missing() {
+        // Cenario exato relatado: preset de familia com visao (gemma4) mas
+        // sem mmproj configurado — supports_vision fica false, mas o hint
+        // avisa que a familia tem variante multimodal, em vez de simplesmente
+        // dizer "sem visao" (o que seria enganoso pra quem so esqueceu o
+        // mmproj).
+        let path = write_ini("[gemma4-26b-qat-mtp]\nmodel = C:\\models\\gemma4.gguf\nctx-size = 8192\n");
+        let presets = list_presets(path.to_str().unwrap()).unwrap();
+        let preset = presets
+            .iter()
+            .find(|p| p.id == "gemma4-26b-qat-mtp")
+            .unwrap();
+        assert_eq!(preset.supports_vision, Some(false));
+        assert!(preset.vision_hint.as_deref().unwrap().contains("Gemma 4"));
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn list_presets_no_hint_for_non_vision_family() {
+        // qwen3.5/qwen3.6 texto puro nao tem variante -VL conhecida na lista
+        // (so qwen2-vl/qwen2.5-vl/qwen-vl tem) — nao deveria alucinar um
+        // hint de visao pra ele.
+        let path = write_ini("[qwen3.5-9b-mtp]\nmodel = C:\\models\\qwen3.5.gguf\nctx-size = 8192\n");
+        let presets = list_presets(path.to_str().unwrap()).unwrap();
+        let preset = presets.iter().find(|p| p.id == "qwen3.5-9b-mtp").unwrap();
+        assert_eq!(preset.supports_vision, Some(false));
+        assert_eq!(preset.vision_hint, None);
+        fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn vision_family_hint_matches_on_model_path_too() {
+        // A familia pode estar so no caminho do arquivo do modelo, nao no
+        // nome do preset (ex: usuario nomeou o preset so de "vl-test").
+        let path = write_ini(
+            "[vl-test]\nmodel = C:\\models\\qwen2-vl-7b-instruct.gguf\nctx-size = 4096\n",
+        );
+        let parser = load_ini(path.to_str().unwrap()).unwrap();
+        let hint = vision_family_hint(&parser, "vl-test");
+        assert!(hint.unwrap().contains("Qwen2-VL"));
         fs::remove_file(&path).ok();
     }
 

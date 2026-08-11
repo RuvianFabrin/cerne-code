@@ -69,6 +69,16 @@ fn has_openrouter_key() -> bool {
     config::has_openrouter_key()
 }
 
+#[tauri::command]
+fn openrouter_key_preview() -> Option<String> {
+    config::openrouter_key_preview()
+}
+
+#[tauri::command]
+fn clear_openrouter_key() -> Result<(), String> {
+    config::clear_openrouter_key().map_err(|e| e.to_string())
+}
+
 /// Monta a config de conexão pra `kind` — pra `Custom`, busca o provider
 /// configurado pelo usuário (id/label/base_url em `custom_providers.json`,
 /// chave no keyring do SO) em vez de ler campos fixos do `AppConfig`, já que
@@ -490,10 +500,17 @@ fn update_session_title(
 fn update_session_read_paths(
     state: State<AppState>,
     id: String,
-    extra_read_paths: Vec<String>,
+    extra_read_paths: Vec<crate::models::FolderEntry>,
 ) -> Result<Session, String> {
     sessions::update_extra_read_paths(&state.app_data_dir, &id, extra_read_paths)
         .map_err(|e| e.to_string())
+}
+
+/// Verifica se um caminho é um diretório existente. Usado pelo composer para
+/// detectar quando o usuário cola um caminho de pasta e oferecer adicioná-la.
+#[tauri::command]
+fn check_path_is_directory(path: String) -> bool {
+    std::path::Path::new(&path).is_dir()
 }
 
 /// Extrai o texto de um arquivo anexado no composer (pdf/docx/xlsx/md/código/
@@ -946,6 +963,16 @@ fn update_session_fable_method(
 }
 
 #[tauri::command]
+fn update_session_mcp_servers(
+    state: State<AppState>,
+    id: String,
+    enabled_names: Option<Vec<String>>,
+) -> Result<Session, String> {
+    sessions::update_enabled_mcp_servers(&state.app_data_dir, &id, enabled_names)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_skills(
     state: State<AppState>,
     project_root: Option<String>,
@@ -1080,6 +1107,20 @@ async fn test_mcp_server(server: mcp::McpServerConfig) -> Result<Vec<String>, St
         .map_err(|e| e.to_string())
 }
 
+/// Verifica se o usuário já aceitou o disclaimer de responsabilidade.
+#[tauri::command]
+fn get_disclaimer_accepted(state: State<AppState>) -> bool {
+    let path = state.app_data_dir.join("disclaimer_accepted");
+    path.exists()
+}
+
+/// Marca o disclaimer como aceito (cria arquivo marcador).
+#[tauri::command]
+fn set_disclaimer_accepted(state: State<AppState>, _accepted: bool) -> Result<(), String> {
+    let path = state.app_data_dir.join("disclaimer_accepted");
+    std::fs::write(&path, "accepted").map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1108,6 +1149,10 @@ pub fn run() {
             set_config,
             set_openrouter_key,
             has_openrouter_key,
+            openrouter_key_preview,
+            clear_openrouter_key,
+            get_disclaimer_accepted,
+            set_disclaimer_accepted,
             list_provider_models,
             get_model_favorites,
             set_model_favorites,
@@ -1132,7 +1177,9 @@ pub fn run() {
             update_session_context_length,
             update_session_reasoning_effort,
             update_session_fable_method,
+            update_session_mcp_servers,
             update_session_read_paths,
+            check_path_is_directory,
             extract_attachment_text,
             check_vision_support,
             test_vision,

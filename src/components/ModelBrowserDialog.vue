@@ -147,8 +147,21 @@ function priceLabel(m: ModelInfo): string {
           <div class="model-cell">
             <span class="model-name">
               {{ displayName(data) }}
-              <span v-if="data.supports_vision" class="vision-badge" v-tooltip.top="$t('modelBrowser.acceptsImage')">
+              <span v-if="data.supports_vision" class="cap-badge vision" v-tooltip.top="$t('modelBrowser.acceptsImage')">
                 <span class="msi">image</span>
+              </span>
+              <span
+                v-else-if="data.vision_hint"
+                class="cap-badge vision-hint"
+                v-tooltip.top="$t('modelBrowser.visionFamilyHint', { family: data.vision_hint })"
+              >
+                <span class="msi">image</span>
+              </span>
+              <span v-if="data.supports_tools" class="cap-badge tools" v-tooltip.top="$t('modelBrowser.supportsTools')">
+                <span class="msi">build</span>
+              </span>
+              <span v-if="data.supports_audio" class="cap-badge audio" v-tooltip.top="$t('modelBrowser.acceptsAudio')">
+                <span class="msi">mic</span>
               </span>
             </span>
             <span v-if="data.name && data.name !== data.id" class="model-id">{{ data.id }}</span>
@@ -265,13 +278,25 @@ function priceLabel(m: ModelInfo): string {
   gap: 5px;
 }
 
-.vision-badge {
+.cap-badge {
   display: inline-flex;
   align-items: center;
   color: #2563eb;
 }
 
-.vision-badge .msi {
+.cap-badge.vision-hint {
+  color: #d97706;
+}
+
+.cap-badge.tools {
+  color: #16a34a;
+}
+
+.cap-badge.audio {
+  color: #9333ea;
+}
+
+.cap-badge .msi {
   font-size: 14px;
 }
 

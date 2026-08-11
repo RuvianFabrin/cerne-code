@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, ref } from "vue";
+import { useI18n } from "vue-i18n";
+import Dialog from "primevue/dialog";
 import { useSessionStore } from "../stores/session";
 
 const props = defineProps<{ view: "chat" | "settings" }>();
@@ -7,14 +9,67 @@ const emit = defineEmits<{
   "update:view": [value: "chat" | "settings"];
   "new-session": [];
   "open-help": [];
+  "open-about": [];
 }>();
 
+const { t } = useI18n();
 const sessionStore = useSessionStore();
 const search = ref("");
 const collapsed = ref(false);
 const editingId = ref<string | null>(null);
 const editingTitle = ref("");
 const renameInputRef = ref<HTMLInputElement | null>(null);
+
+// Largura da sidebar é arrastável (handle na borda direita) e persiste entre
+// reinícios — sem isso, todo mundo fica preso na largura fixa original,
+// ruim pra quem tem título de sessão longo ou tela pequena.
+const MIN_SIDEBAR_WIDTH = 200;
+const MAX_SIDEBAR_WIDTH = 480;
+const DEFAULT_SIDEBAR_WIDTH = 272;
+const SIDEBAR_WIDTH_KEY = "cerne-sidebar-width";
+
+function loadStoredWidth(): number {
+  const stored = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
+  if (Number.isFinite(stored) && stored >= MIN_SIDEBAR_WIDTH && stored <= MAX_SIDEBAR_WIDTH) return stored;
+  return DEFAULT_SIDEBAR_WIDTH;
+}
+
+const sidebarWidth = ref(loadStoredWidth());
+const resizing = ref(false);
+
+function startResize(e: MouseEvent) {
+  e.preventDefault();
+  resizing.value = true;
+  const startX = e.clientX;
+  const startWidth = sidebarWidth.value;
+
+  function onMove(moveEvent: MouseEvent) {
+    const next = startWidth + (moveEvent.clientX - startX);
+    sidebarWidth.value = Math.min(MAX_SIDEBAR_WIDTH, Math.max(MIN_SIDEBAR_WIDTH, next));
+  }
+  function onUp() {
+    resizing.value = false;
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(sidebarWidth.value));
+    window.removeEventListener("mousemove", onMove);
+    window.removeEventListener("mouseup", onUp);
+  }
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+}
+
+// Excluir sessão é destrutivo e irreversível (apaga o histórico do chat
+// inteiro) — confirma antes, em vez de excluir no primeiro clique.
+const deleteTarget = ref<{ id: string; title: string } | null>(null);
+
+function requestDelete(id: string, title: string) {
+  deleteTarget.value = { id, title };
+}
+
+async function confirmDelete() {
+  if (!deleteTarget.value) return;
+  await sessionStore.deleteSession(deleteTarget.value.id);
+  deleteTarget.value = null;
+}
 
 const filtered = computed(() =>
   sessionStore.sessions.filter((s) => s.title.toLowerCase().includes(search.value.toLowerCase())),
@@ -42,14 +97,14 @@ async function confirmRename() {
 function cancelRename() {
   editingId.value = null;
 }
-
-async function remove(id: string) {
-  await sessionStore.deleteSession(id);
-}
 </script>
 
 <template>
-  <aside class="sidebar" :class="{ collapsed }">
+  <aside
+    class="sidebar"
+    :class="{ collapsed, resizing }"
+    :style="collapsed ? {} : { width: sidebarWidth + 'px' }"
+  >
     <div class="top-row">
       <button class="icon-btn" @click="collapsed = !collapsed" v-tooltip.right="$t('sidebar.collapse')">
         <span class="msi">dock_to_right</span>
@@ -79,9 +134,9 @@ async function remove(id: string) {
         >
           <span
             class="msi session-icon"
-            :class="{ 'code-icon': s.project_root }"
-            v-tooltip.right="s.project_root ? $t('sidebar.codeTooltip', { path: s.project_root }) : $t('sidebar.chatTooltip')"
-          >{{ s.project_root ? "terminal" : "chat_bubble" }}</span>
+            :class="{ 'code-icon': s.project_root || s.extra_read_paths?.length }"
+            v-tooltip.right="(s.project_root || s.extra_read_paths?.length) ? $t('sidebar.codeTooltip', { path: s.project_root || s.extra_read_paths?.[0]?.path || '' }) : $t('sidebar.chatTooltip')"
+          >{{ (s.project_root || s.extra_read_paths?.length) ? "terminal" : "chat_bubble" }}</span>
           <input
             v-if="editingId === s.id"
             ref="renameInputRef"
@@ -102,7 +157,7 @@ async function remove(id: string) {
             <button class="session-action-btn" v-tooltip.top="$t('sidebar.rename')" @click.stop="startRename(s.id, s.title)">
               <span class="msi">edit</span>
             </button>
-            <button class="session-action-btn" v-tooltip.top="$t('sidebar.delete')" @click.stop="remove(s.id)">
+            <button class="session-action-btn" v-tooltip.top="$t('sidebar.delete')" @click.stop="requestDelete(s.id, s.title)">
               <span class="msi">delete</span>
             </button>
           </div>
@@ -125,12 +180,38 @@ async function remove(id: string) {
         <span class="msi">settings</span>
         <span v-if="!collapsed">{{ $t("sidebar.settings") }}</span>
       </button>
+      <button class="icon-btn" @click="emit('open-about')" v-tooltip.right="$t('sidebar.about')">
+        <span class="msi">info</span>
+        <span v-if="!collapsed">{{ $t("sidebar.about") }}</span>
+      </button>
     </div>
+
+    <div
+      v-if="!collapsed"
+      class="resize-handle"
+      v-tooltip.right="$t('sidebar.resizeTooltip')"
+      @mousedown="startResize"
+    ></div>
   </aside>
+
+  <Dialog
+    :visible="!!deleteTarget"
+    @update:visible="(v) => { if (!v) deleteTarget = null; }"
+    modal
+    :header="t('sidebar.deleteConfirmTitle')"
+    :style="{ width: 'min(420px, 92vw)' }"
+  >
+    <p class="delete-confirm-text">{{ t("sidebar.deleteConfirmBody", { title: deleteTarget?.title ?? "" }) }}</p>
+    <template #footer>
+      <button class="btn-secondary" @click="deleteTarget = null">{{ t("newSession.cancel") }}</button>
+      <button class="btn-danger" @click="confirmDelete">{{ t("sidebar.delete") }}</button>
+    </template>
+  </Dialog>
 </template>
 
 <style scoped>
 .sidebar {
+  position: relative;
   width: var(--cerne-sidebar-width);
   border-right: var(--cerne-border);
   display: flex;
@@ -139,6 +220,11 @@ async function remove(id: string) {
   gap: 4px;
   flex-shrink: 0;
   transition: width 0.15s ease;
+}
+
+.sidebar.resizing {
+  transition: none;
+  user-select: none;
 }
 
 .sidebar.collapsed {
@@ -345,5 +431,53 @@ async function remove(id: string) {
 .bottom-row {
   border-top: var(--cerne-border);
   padding-top: 6px;
+}
+
+.resize-handle {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 5;
+}
+
+.resize-handle:hover,
+.sidebar.resizing .resize-handle {
+  background: var(--cerne-accent, #6366f1);
+  opacity: 0.4;
+}
+
+.delete-confirm-text {
+  font-size: 13px;
+  color: #3f3f46;
+  line-height: 1.5;
+}
+
+.btn-secondary {
+  border: var(--cerne-border);
+  background: #ffffff;
+  color: #52525b;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-danger {
+  border: none;
+  background: #dc2626;
+  color: #ffffff;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.btn-danger:hover {
+  background: #b91c1c;
 }
 </style>

@@ -158,18 +158,25 @@ type McpClient = RunningService<RoleClient, ()>;
 /// mesmo com o `npx` funcionando normal no terminal. **Achado testando ao
 /// vivo**: exatamente esse erro ao conectar num servidor MCP real via
 /// `npx -y @modelcontextprotocol/server-everything`. Mesmo motivo pelo qual
-/// `run_command`/`background.rs` ja envolvem tudo em `cmd /C` no Windows —
-/// aplicado aqui tambem, so no Windows (em outros SOs o comando roda direto).
-#[cfg(windows)]
+/// Constrói o comando do servidor MCP usando o shell detectado pelo sistema.
+/// No Windows, usa PowerShell (pwsh > powershell > cmd) com CREATE_NO_WINDOW.
+/// Em outros SOs, roda o comando direto (MCP servers são executáveis).
 fn build_command(command: &str) -> Command {
-    let mut cmd = Command::new("cmd");
-    cmd.arg("/C").arg(command);
-    cmd
-}
-
-#[cfg(not(windows))]
-fn build_command(command: &str) -> Command {
-    Command::new(command)
+    #[cfg(windows)]
+    {
+        let shell = crate::agent::shell::detect_shell();
+        let mut cmd = Command::new(&shell.executable);
+        for arg in &shell.args_prefix {
+            cmd.arg(arg);
+        }
+        cmd.arg(command);
+        crate::agent::shell::apply_creation_flags(&mut cmd);
+        cmd
+    }
+    #[cfg(not(windows))]
+    {
+        Command::new(command)
+    }
 }
 
 /// Conexoes ja estabelecidas com servidores MCP, mantidas vivas entre

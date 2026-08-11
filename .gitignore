@@ -18,6 +18,7 @@ src-tauri/target/
 # Editor directories and files
 .vscode/*
 .claude/*
+.qwen/*
 !.vscode/extensions.json
 .idea
 .DS_Store
@@ -26,3 +27,19 @@ src-tauri/target/
 *.njsproj
 *.sln
 *.sw?
+
+# Test files
+teste.py
+teste_escrita.txt
+lista de testes.md
+comandos para rodar o projeto.txt
+falta_ajustar.md
+
+# Setup / temp
+_setup/
+
+# Planos / notes (keep only the official ones)
+PLANOS/agent_loop_propostas.md
+
+# PPTX presentations (not source code)
+*.pptx

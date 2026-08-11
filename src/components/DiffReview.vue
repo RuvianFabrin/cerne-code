@@ -8,6 +8,21 @@ const sessionStore = useSessionStore();
 
 const lines = computed(() => props.edit.diff.split("\n"));
 
+// Caminho completo sempre visível (sem ellipsis no meio) — o usuário pode ter
+// várias pastas com arquivos de mesmo nome, então o diretório fica visível e
+// só o nome do arquivo ganha destaque.
+const dirPart = computed(() => {
+  const p = props.edit.target_path;
+  const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  return idx >= 0 ? p.slice(0, idx + 1) : "";
+});
+
+const filePart = computed(() => {
+  const p = props.edit.target_path;
+  const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  return idx >= 0 ? p.slice(idx + 1) : p;
+});
+
 function lineClass(line: string) {
   if (line.startsWith("+") && !line.startsWith("+++")) return "added";
   if (line.startsWith("-") && !line.startsWith("---")) return "removed";
@@ -20,7 +35,9 @@ function lineClass(line: string) {
   <div class="diff-card">
     <div class="diff-header">
       <span class="msi">{{ edit.is_new_file ? "note_add" : "difference" }}</span>
-      <span class="diff-path">{{ edit.target_path }}</span>
+      <span class="diff-path" :title="edit.target_path">
+        <span class="diff-dir">{{ dirPart }}</span><span class="diff-file">{{ filePart }}</span>
+      </span>
       <div v-if="!edit.already_applied" class="diff-actions">
         <button class="reject" @click="sessionStore.rejectEdit(edit.id)">{{ $t("diffReview.reject") }}</button>
         <button class="accept" @click="sessionStore.acceptEdit(edit.id)">{{ $t("diffReview.accept") }}</button>
@@ -56,13 +73,21 @@ function lineClass(line: string) {
 
 .diff-path {
   font-size: 12px;
-  font-weight: 600;
   font-family: ui-monospace, monospace;
-  color: #18181b;
   flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.5;
+}
+
+.diff-dir {
+  color: #71717a;
+  font-weight: 500;
+}
+
+.diff-file {
+  color: #18181b;
+  font-weight: 700;
 }
 
 .diff-actions {

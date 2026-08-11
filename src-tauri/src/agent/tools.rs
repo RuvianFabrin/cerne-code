@@ -9,7 +9,6 @@ use grep::searcher::{BinaryDetection, SearcherBuilder};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use tokio::process::Command;
 
 /// Available in every session, project folder or not.
 pub fn always_tool_specs() -> Vec<ToolSpec> {
@@ -92,7 +91,7 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Caminho relativo a raiz do projeto, ou caminho absoluto de qualquer pasta do sistema" },
+                    "path": { "type": "string", "description": "Caminho ABSOLUTO (preferido) de qualquer pasta do sistema; caminho relativo resolve na raiz do projeto" },
                     "offset": { "type": "integer", "description": "Linha inicial (0-based). Omita pra comecar do inicio." },
                     "limit": { "type": "integer", "description": "Maximo de linhas a retornar. Omita pra ler ate o fim (ou ate o teto de seguranca)." }
                 },
@@ -104,7 +103,7 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
             "Lista arquivos e subpastas de um diretorio. Caminho relativo e resolvido dentro do projeto; caminho absoluto funciona para qualquer pasta do sistema.",
             json!({
                 "type": "object",
-                "properties": { "path": { "type": "string", "description": "Caminho relativo a raiz do projeto (vazio = raiz), ou caminho absoluto de qualquer pasta" } },
+                "properties": { "path": { "type": "string", "description": "Caminho ABSOLUTO (preferido) de qualquer pasta; vazio = raiz do projeto" } },
                 "required": []
             }),
         ),
@@ -115,7 +114,7 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
                 "type": "object",
                 "properties": {
                     "pattern": { "type": "string" },
-                    "path": { "type": "string", "description": "Subpasta relativa ao projeto, ou caminho absoluto de qualquer pasta (opcional)" }
+                    "path": { "type": "string", "description": "Caminho ABSOLUTO (preferido) ou subpasta relativa ao projeto (opcional)" }
                 },
                 "required": ["pattern"]
             }),
@@ -165,7 +164,7 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string" },
+                    "path": { "type": "string", "description": "Caminho ABSOLUTO (preferido) do arquivo; caminho relativo resolve na raiz do projeto" },
                     "content": { "type": "string" }
                 },
                 "required": ["path", "content"]
@@ -177,7 +176,7 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string" },
+                    "path": { "type": "string", "description": "Caminho ABSOLUTO (preferido) do arquivo; caminho relativo resolve na raiz do projeto" },
                     "old_str": { "type": "string" },
                     "new_str": { "type": "string" }
                 },
@@ -203,7 +202,7 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string" },
+                    "path": { "type": "string", "description": "Caminho ABSOLUTO (preferido) do arquivo; caminho relativo resolve na raiz do projeto" },
                     "pattern": { "type": "string" },
                     "rewrite": { "type": "string" },
                     "language": { "type": "string", "description": "bash, c, cpp, csharp, css, dart, elixir, go, haskell, hcl, html, java, javascript, json, kotlin, lua, markdown, nix, php, python, ruby, rust, scala, solidity, swift, typescript, tsx ou yaml" }
@@ -241,7 +240,7 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Caminho relativo do arquivo .xlsx a criar" },
+                    "path": { "type": "string", "description": "Caminho ABSOLUTO (preferido) do arquivo .xlsx a criar" },
                     "sheets": {
                         "type": "array",
                         "items": {
@@ -267,7 +266,7 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Caminho relativo do arquivo .docx a criar" },
+                    "path": { "type": "string", "description": "Caminho ABSOLUTO (preferido) do arquivo .docx a criar" },
                     "elements": {
                         "type": "array",
                         "items": {
@@ -294,7 +293,7 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
             json!({
                 "type": "object",
                 "properties": {
-                    "path": { "type": "string", "description": "Caminho relativo do arquivo .pdf a criar" },
+                    "path": { "type": "string", "description": "Caminho ABSOLUTO (preferido) do arquivo .pdf a criar" },
                     "title": { "type": "string", "description": "Titulo do documento (opcional)" },
                     "elements": {
                         "type": "array",
@@ -339,8 +338,16 @@ fn resolve_path(
     project_root: &Path,
     rel: &str,
     execution_mode: &crate::models::ExecutionMode,
+    writable_extra_roots: &[String],
 ) -> Result<PathBuf> {
     let allow_external = *execution_mode != crate::models::ExecutionMode::Manual;
+    // Pastas extras com modo ReadWrite também são permitidas para escrita,
+    // mesmo em modo Manual (o usuário já autorizou explicitamente ao adicionar).
+    if !writable_extra_roots.is_empty() {
+        if let Ok(result) = resolve_within(project_root, writable_extra_roots, rel, true) {
+            return Ok(result);
+        }
+    }
     resolve_within(project_root, &[], rel, allow_external)
 }
 
@@ -754,7 +761,7 @@ pub async fn execute_tool(
     name: &str,
     args: &Value,
     project_root: Option<&Path>,
-    extra_read_paths: &[String],
+    extra_folders: &[crate::models::FolderEntry],
     background_jobs: &super::background::BackgroundJobs,
     mcp_clients: &crate::mcp::McpClients,
     app_data_dir: &Path,
@@ -785,9 +792,11 @@ pub async fn execute_tool(
             let project_root = project_root.ok_or_else(|| {
                 anyhow!("esta ferramenta precisa de uma pasta de projeto associada a sessao")
             })?;
-            let mut extended_paths = extra_read_paths.to_vec();
-            extended_paths.push(app_data_dir.to_string_lossy().to_string());
-            execute_project_tool(name, args, project_root, &extended_paths, background_jobs, execution_mode).await
+            let read_paths = crate::models::FolderEntry::paths(extra_folders);
+            let writable_paths = crate::models::FolderEntry::writable_paths(extra_folders);
+            let mut extended_read = read_paths;
+            extended_read.push(app_data_dir.to_string_lossy().to_string());
+            execute_project_tool(name, args, project_root, &extended_read, &writable_paths, background_jobs, execution_mode).await
         }
     }
 }
@@ -797,6 +806,7 @@ async fn execute_project_tool(
     args: &Value,
     project_root: &Path,
     extra_read_paths: &[String],
+    writable_extra_roots: &[String],
     background_jobs: &super::background::BackgroundJobs,
     execution_mode: &crate::models::ExecutionMode,
 ) -> Result<ToolOutcome> {
@@ -866,14 +876,12 @@ async fn execute_project_tool(
                 )));
             }
             const RUN_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-            let child = Command::new("cmd")
-                .arg("/C")
-                .arg(command)
-                .current_dir(project_root)
+            let mut cmd = super::shell::build_shell_command(command);
+            cmd.current_dir(project_root)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
-                .kill_on_drop(true)
-                .spawn()?;
+                .kill_on_drop(true);
+            let child = cmd.spawn()?;
             let result = match tokio::time::timeout(RUN_COMMAND_TIMEOUT, child.wait_with_output()).await
             {
                 Ok(output) => {
@@ -926,7 +934,7 @@ async fn execute_project_tool(
             let rel = args["path"]
                 .as_str()
                 .ok_or_else(|| anyhow!("path obrigatorio"))?;
-            let target = resolve_path(project_root, rel, execution_mode)?;
+            let target = resolve_path(project_root, rel, execution_mode, writable_extra_roots)?;
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -986,7 +994,7 @@ async fn execute_project_tool(
             let rel = args["path"]
                 .as_str()
                 .ok_or_else(|| anyhow!("path obrigatorio"))?;
-            let target = resolve_path(project_root, rel, execution_mode)?;
+            let target = resolve_path(project_root, rel, execution_mode, writable_extra_roots)?;
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -1053,7 +1061,7 @@ async fn execute_project_tool(
             let rel = args["path"]
                 .as_str()
                 .ok_or_else(|| anyhow!("path obrigatorio"))?;
-            let target = resolve_path(project_root, rel, execution_mode)?;
+            let target = resolve_path(project_root, rel, execution_mode, writable_extra_roots)?;
             if let Some(parent) = target.parent() {
                 std::fs::create_dir_all(parent)?;
             }
@@ -1146,7 +1154,7 @@ async fn execute_project_tool(
             let content = args["content"]
                 .as_str()
                 .ok_or_else(|| anyhow!("content obrigatorio"))?;
-            let target = resolve_path(project_root, rel, execution_mode)?;
+            let target = resolve_path(project_root, rel, execution_mode, writable_extra_roots)?;
             if *execution_mode == crate::models::ExecutionMode::Yolo {
                 let (diff, is_new_file) = sandbox::write_direct(&target, content)?;
                 Ok(ToolOutcome {
@@ -1186,7 +1194,7 @@ async fn execute_project_tool(
             let new_str = args["new_str"]
                 .as_str()
                 .ok_or_else(|| anyhow!("new_str obrigatorio"))?;
-            let target = resolve_path(project_root, rel, execution_mode)?;
+            let target = resolve_path(project_root, rel, execution_mode, writable_extra_roots)?;
             let original = sandbox::read_current_content(project_root, &target)?;
             let occurrences = original.matches(old_str).count();
             let new_content = match occurrences {
@@ -1278,7 +1286,7 @@ async fn execute_project_tool(
             let lang = args["language"]
                 .as_str()
                 .ok_or_else(|| anyhow!("language obrigatorio"))?;
-            let target = resolve_path(project_root, rel, execution_mode)?;
+            let target = resolve_path(project_root, rel, execution_mode, writable_extra_roots)?;
             let original = sandbox::read_current_content(project_root, &target)?;
             let new_content = match ast_tools::rewrite_file(&original, pattern, rewrite, lang) {
                 Ok(c) => c,
@@ -1500,14 +1508,7 @@ mod tests {
             "old_str": "let title = \"hello\";",
             "new_str": "let title = \"bye\";",
         });
-        let outcome = execute_project_tool(
-            "edit_file",
-            &args,
-            &dir,
-            &[],
-            &crate::agent::background::BackgroundJobs::default(),
-            &crate::models::ExecutionMode::Auto,
-        )
+        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto)
         .await
         .unwrap();
         assert!(
@@ -1534,14 +1535,7 @@ mod tests {
             "old_str": "let result = compute_totals(a, b);", // typo: "totals" em vez de "total"
             "new_str": "let result = compute_total(a, b) * 2;",
         });
-        let outcome = execute_project_tool(
-            "edit_file",
-            &args,
-            &dir,
-            &[],
-            &crate::agent::background::BackgroundJobs::default(),
-            &crate::models::ExecutionMode::Auto,
-        )
+        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto)
         .await
         .unwrap();
         assert!(
@@ -1564,14 +1558,7 @@ mod tests {
             "old_str": "let totally_unrelated_thing_not_in_file = 42;",
             "new_str": "x",
         });
-        let outcome = execute_project_tool(
-            "edit_file",
-            &args,
-            &dir,
-            &[],
-            &crate::agent::background::BackgroundJobs::default(),
-            &crate::models::ExecutionMode::Auto,
-        )
+        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto)
         .await
         .unwrap();
         assert!(outcome.pending_edit.is_none());
@@ -1588,14 +1575,7 @@ mod tests {
             "old_str": "    let x = 1;",
             "new_str": "    let x = 2;",
         });
-        let outcome = execute_project_tool(
-            "edit_file",
-            &args,
-            &dir,
-            &[],
-            &crate::agent::background::BackgroundJobs::default(),
-            &crate::models::ExecutionMode::Auto,
-        )
+        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto)
         .await
         .unwrap();
         assert!(
@@ -1622,14 +1602,7 @@ mod tests {
             "old_str": "let totally_missing = 1;",
             "new_str": "let x = 2;",
         });
-        let outcome = execute_project_tool(
-            "edit_file",
-            &args,
-            &dir,
-            &[],
-            &crate::agent::background::BackgroundJobs::default(),
-            &crate::models::ExecutionMode::Auto,
-        )
+        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto)
         .await
         .unwrap();
         assert!(
@@ -1657,14 +1630,7 @@ mod tests {
             "old_str": "café",
             "new_str": "cha",
         });
-        let outcome = execute_project_tool(
-            "edit_file",
-            &args,
-            &dir,
-            &[],
-            &crate::agent::background::BackgroundJobs::default(),
-            &crate::models::ExecutionMode::Auto,
-        )
+        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto)
         .await
         .unwrap();
         assert!(
@@ -1696,14 +1662,7 @@ mod tests {
             "old_str": "caf",
             "new_str": "bar",
         });
-        let outcome = execute_project_tool(
-            "edit_file",
-            &args,
-            &dir,
-            &[],
-            &crate::agent::background::BackgroundJobs::default(),
-            &crate::models::ExecutionMode::Auto,
-        )
+        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto)
         .await
         .unwrap();
         assert!(
@@ -1728,7 +1687,7 @@ mod tests {
         let background_jobs = crate::agent::background::BackgroundJobs::default();
 
         let start_args = json!({ "command": "echo from-tool-dispatch", "background": true });
-        let outcome = execute_project_tool("run_command", &start_args, &dir, &[], &background_jobs, &crate::models::ExecutionMode::Auto)
+        let outcome = execute_project_tool("run_command", &start_args, &dir, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto)
             .await
             .unwrap();
         assert!(
@@ -1749,14 +1708,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         let check_args = json!({ "id": id });
-        let checked = execute_project_tool(
-            "check_background_output",
-            &check_args,
-            &dir,
-            &[],
-            &background_jobs,
-            &crate::models::ExecutionMode::Auto,
-        )
+        let checked = execute_project_tool("check_background_output", &check_args, &dir, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto)
         .await
         .unwrap();
         assert!(
@@ -1766,13 +1718,13 @@ mod tests {
         );
 
         let listed =
-            execute_project_tool("list_background", &json!({}), &dir, &[], &background_jobs, &crate::models::ExecutionMode::Auto)
+            execute_project_tool("list_background", &json!({}), &dir, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto)
                 .await
                 .unwrap();
         assert!(listed.observation.contains(&id));
 
         let stopped =
-            execute_project_tool("stop_background", &check_args, &dir, &[], &background_jobs, &crate::models::ExecutionMode::Auto)
+            execute_project_tool("stop_background", &check_args, &dir, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto)
                 .await
                 .unwrap();
         assert!(stopped.observation.contains("encerrado"));
@@ -1801,7 +1753,7 @@ mod tests {
             "old_str": "def add(a, b):\n    return a + b",
             "new_str": "def add(a, b):\n    \"\"\"Soma dois numeros.\"\"\"\n    return a + b",
         });
-        let outcome1 = execute_project_tool("edit_file", &first, &dir, &[], &background_jobs, &crate::models::ExecutionMode::Auto)
+        let outcome1 = execute_project_tool("edit_file", &first, &dir, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto)
             .await
             .unwrap();
         assert!(
@@ -1816,7 +1768,7 @@ mod tests {
             "old_str": "def subtract(a, b):\n    return a - b",
             "new_str": "def subtract(a, b):\n    \"\"\"Subtrai dois numeros.\"\"\"\n    return a - b",
         });
-        let outcome2 = execute_project_tool("edit_file", &second, &dir, &[], &background_jobs, &crate::models::ExecutionMode::Auto)
+        let outcome2 = execute_project_tool("edit_file", &second, &dir, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto)
             .await
             .unwrap();
         assert!(
@@ -1893,6 +1845,7 @@ mod tests {
             &args,
             &project,
             &[extra.to_string_lossy().to_string()],
+            &[],
             &background_jobs,
             &crate::models::ExecutionMode::Auto,
         )
@@ -1914,7 +1867,7 @@ mod tests {
         let outsider_path = outsider.join("secret.txt").to_string_lossy().to_string();
         let args = json!({ "path": outsider_path });
         let result =
-            execute_project_tool("read_file", &args, &project, &[], &background_jobs, &crate::models::ExecutionMode::Auto).await;
+            execute_project_tool("read_file", &args, &project, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto).await;
         assert!(
             result.is_ok(),
             "read_file deve aceitar qualquer caminho absoluto, recebeu erro: {:?}",
@@ -1941,6 +1894,7 @@ mod tests {
             &list_args,
             &project,
             &extra_roots,
+            &[],
             &background_jobs,
             &crate::models::ExecutionMode::Auto,
         )
@@ -1951,7 +1905,7 @@ mod tests {
 
         let grep_args = json!({ "pattern": "hello", "path": extra.to_string_lossy().to_string() });
         let grepped =
-            execute_project_tool("grep", &grep_args, &project, &extra_roots, &background_jobs, &crate::models::ExecutionMode::Auto)
+            execute_project_tool("grep", &grep_args, &project, &extra_roots, &[], &background_jobs, &crate::models::ExecutionMode::Auto)
                 .await
                 .unwrap();
         assert!(grepped.observation.contains("a.txt"));
@@ -1977,6 +1931,7 @@ mod tests {
             &args,
             &project,
             &extra_roots,
+            &[],
             &background_jobs,
             &crate::models::ExecutionMode::Manual,
         )
@@ -2006,14 +1961,7 @@ mod tests {
             let target = extra.join("novo.txt");
             let args =
                 json!({ "path": target.to_string_lossy().to_string(), "content": "conteudo externo" });
-            let result = execute_project_tool(
-                "write_file",
-                &args,
-                &project,
-                &[],
-                &background_jobs,
-                &mode,
-            )
+            let result = execute_project_tool("write_file", &args, &project, &[], &[], &background_jobs, &mode)
             .await
             .unwrap_or_else(|e| panic!("write_file deveria aceitar caminho externo em modo {mode:?}: {e}"));
 

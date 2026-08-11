@@ -378,7 +378,13 @@ pub async fn list_models(cfg: &ProviderConfig, api_key: Option<String>, app_data
                         parameter_size,
                         price_prompt: None,
                         price_completion: None,
+                        // /api/tags nao traz capabilities (so /api/show, por
+                        // modelo) — custo demais pra listar tudo de uma vez,
+                        // entao ficam "nao verificado" aqui.
                         supports_vision: None,
+                        vision_hint: None,
+                        supports_tools: None,
+                        supports_audio: None,
                     })
                 })
                 .collect();
@@ -419,9 +425,19 @@ pub async fn list_models(cfg: &ProviderConfig, api_key: Option<String>, app_data
                     let price_completion = m["pricing"]["completion"]
                         .as_str()
                         .and_then(|s| s.parse::<f64>().ok());
-                    let supports_vision = m["architecture"]["input_modalities"]
-                        .as_array()
+                    // Ambos vêm da OpenRouter (`architecture.input_modalities`,
+                    // `supported_parameters`); num endpoint OpenAI-compat
+                    // genérico (Custom/LM Studio) esses campos não existem no
+                    // JSON e tudo fica `None` — "não verificado", não "não
+                    // suporta".
+                    let input_modalities = m["architecture"]["input_modalities"].as_array();
+                    let supports_vision = input_modalities
                         .map(|arr| arr.iter().any(|v| v.as_str() == Some("image")));
+                    let supports_audio = input_modalities
+                        .map(|arr| arr.iter().any(|v| v.as_str() == Some("audio")));
+                    let supports_tools = m["supported_parameters"]
+                        .as_array()
+                        .map(|arr| arr.iter().any(|v| v.as_str() == Some("tools")));
                     Some(ModelInfo {
                         label: id.clone(),
                         id,
@@ -433,6 +449,9 @@ pub async fn list_models(cfg: &ProviderConfig, api_key: Option<String>, app_data
                         price_prompt,
                         price_completion,
                         supports_vision,
+                        vision_hint: None,
+                        supports_tools,
+                        supports_audio,
                     })
                 })
                 .collect();
@@ -502,7 +521,7 @@ pub async fn get_context_length(
 /// the resolved preset in the fork's `models.ini` references an `mmproj` file,
 /// not on anything queryable over HTTP — see
 /// `llama_cpp::preset_supports_vision`, called directly by the caller instead.
-pub async fn supports_vision(cfg: &ProviderConfig, api_key: Option<String>, model: &str, _app_data_dir: &std::path::Path) -> bool {
+pub async fn supports_vision(cfg: &ProviderConfig, api_key: Option<String>, model: &str, app_data_dir: &std::path::Path) -> bool {
     let client = reqwest::Client::new();
 
     match cfg.kind {
@@ -559,7 +578,26 @@ pub async fn supports_vision(cfg: &ProviderConfig, api_key: Option<String>, mode
                 .map(|m| m["type"].as_str() == Some("vlm"))
                 .unwrap_or(false)
         }
-        ProviderKind::LlamaCpp => false,
+        // Igual `check_vision_support` (lib.rs) faz pra gatear o anexo de
+        // imagem no composer - antes disso o loop do agente (has_vision, que
+        // libera computer_use_screenshot/click e decide se limpa as imagens
+        // da mensagem antes de mandar pro provider) sempre assumia `false`
+        // pra llama.cpp, mesmo com um preset com `mmproj` configurado -
+        // resultado pratico: anexar imagem numa sessao gemma4-e4b-qat-mtp
+        // (que TEM mmproj) tinha a imagem apagada da mensagem antes de
+        // sair, silenciosamente.
+        ProviderKind::LlamaCpp => {
+            let Some(fork_id) = &cfg.llama_fork else {
+                return false;
+            };
+            let Ok(forks) = llama_cpp::load_forks(&app_data_dir.to_path_buf()) else {
+                return false;
+            };
+            let Some(fork) = forks.into_iter().find(|f| &f.id == fork_id) else {
+                return false;
+            };
+            llama_cpp::preset_supports_vision(&fork.models_ini, model)
+        }
         // Provider customizado generico - `/models` no formato OpenAI padrao
         // nao tem um campo comum de modalidade (o `architecture.input_modalities`
         // usado acima e especifico do OpenRouter), entao nao ha como confirmar

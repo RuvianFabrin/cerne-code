@@ -92,9 +92,32 @@ pub struct ModelInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub price_completion: Option<f64>,
     /// Se o modelo aceita imagem — inferido das modalidades de entrada
-    /// (OpenRouter `architecture.input_modalities` contém "image").
+    /// (OpenRouter `architecture.input_modalities` contém "image") ou, pra
+    /// llama.cpp, de o preset ter `mmproj`/`clip` configurado (ver
+    /// `llama_cpp::preset_supports_vision`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub supports_vision: Option<bool>,
+    /// Só populado pra llama.cpp quando `supports_vision` é `false` mas o
+    /// nome/caminho do modelo bate com uma família conhecida por ter
+    /// variante multimodal (Gemma 3/4, Qwen-VL, LLaVA, etc.) — sinaliza "a
+    /// arquitetura base suporta visão, mas falta apontar o `mmproj` nesse
+    /// preset" em vez de "esse modelo não vê imagem de jeito nenhum" (ver
+    /// `llama_cpp::vision_family_hint`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vision_hint: Option<String>,
+    /// Se o modelo tem tool-calling confirmado — hoje só a OpenRouter expõe
+    /// isso de forma verificável (`supported_parameters` contém "tools").
+    /// Ollama/LM Studio/llama.cpp/Custom não têm um jeito confiável e barato
+    /// de checar isso pra toda a lista (tool-calling depende do template do
+    /// modelo + do backend, não é um metadado estático) — fica `None`
+    /// (mostrado como "não verificado" na UI) em vez de arriscar errado.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_tools: Option<bool>,
+    /// Se o modelo aceita áudio — mesma fonte da OpenRouter
+    /// (`architecture.input_modalities` contém "audio"). Nenhum outro
+    /// provider suportado hoje expõe áudio via chat completions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supports_audio: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -186,6 +209,83 @@ impl Default for AppConfig {
     }
 }
 
+/// Modo de acesso de uma pasta extra: só leitura ou leitura+escrita.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FolderMode {
+    Read,
+    ReadWrite,
+}
+
+impl Default for FolderMode {
+    fn default() -> Self {
+        FolderMode::Read
+    }
+}
+
+/// Uma pasta extra com seu modo de acesso.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FolderEntry {
+    pub path: String,
+    #[serde(default)]
+    pub mode: FolderMode,
+}
+
+impl FolderEntry {
+    /// Extrai só os caminhos como `Vec<String>` — compatível com funções que
+    /// ainda esperam `&[String]` (leitura).
+    pub fn paths(entries: &[FolderEntry]) -> Vec<String> {
+        entries.iter().map(|e| e.path.clone()).collect()
+    }
+
+    /// Retorna os caminhos que permitem escrita.
+    pub fn writable_paths(entries: &[FolderEntry]) -> Vec<String> {
+        entries.iter().filter(|e| e.mode == FolderMode::ReadWrite).map(|e| e.path.clone()).collect()
+    }
+}
+
+/// Deserializador compatível: aceita tanto o formato antigo (array de strings)
+/// quanto o novo (array de objetos `{path, mode}`). Strings viram `FolderEntry`
+/// com modo `Read` (padrão seguro).
+fn deserialize_folder_entries<'de, D>(deserializer: D) -> Result<Vec<FolderEntry>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        serde_json::Value::Array(arr) => {
+            let mut entries = Vec::with_capacity(arr.len());
+            for item in arr {
+                match item {
+                    serde_json::Value::String(s) => {
+                        entries.push(FolderEntry { path: s, mode: FolderMode::Read });
+                    }
+                    serde_json::Value::Object(map) => {
+                        let path = map.get("path")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let mode = map.get("mode")
+                            .and_then(|v| v.as_str())
+                            .map(|s| match s {
+                                "read_write" => FolderMode::ReadWrite,
+                                _ => FolderMode::Read,
+                            })
+                            .unwrap_or(FolderMode::Read);
+                        if !path.is_empty() {
+                            entries.push(FolderEntry { path, mode });
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(entries)
+        }
+        _ => Ok(Vec::new()),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -210,14 +310,14 @@ pub struct Session {
     /// do `llama_fork` pra `LlamaCpp`.
     #[serde(default)]
     pub custom_provider_id: Option<String>,
-    /// Pastas extras (fora de `project_root`) que as ferramentas de LEITURA
-    /// (`read_file`/`list_dir`/`grep`/`ast_grep`) podem acessar via caminho
-    /// absoluto — pra referenciar material relevante que nao mora dentro do
-    /// projeto (outro repo, documentacao, etc.) sem abrir o disco inteiro.
-    /// `write_file`/`edit_file`/`ast_edit` continuam restritos a
-    /// `project_root` de proposito (e onde a sandbox vive).
-    #[serde(default)]
-    pub extra_read_paths: Vec<String>,
+    /// Pastas extras (fora de `project_root`) que as ferramentas podem acessar
+    /// via caminho absoluto. Cada entrada tem um modo: `Read` (só leitura —
+    /// `read_file`/`list_dir`/`grep`/`ast_grep`) ou `ReadWrite` (leitura +
+    /// escrita — também permite `write_file`/`edit_file`/`ast_edit` nessa pasta).
+    /// Serializa como array de objetos `{"path": "...", "mode": "read"|"read_write"}`.
+    /// Compatível com o formato antigo (array de strings = tudo read-only).
+    #[serde(default, deserialize_with = "deserialize_folder_entries")]
+    pub extra_read_paths: Vec<FolderEntry>,
     /// "Manual" (todo tool call pausa o turno pedindo aprovação antes de
     /// rodar) ou "Auto" (roda livre — o usuário pode cancelar o turno inteiro
     /// a qualquer momento pela lista de tarefas na lateral). Default `Auto`
@@ -229,6 +329,12 @@ pub struct Session {
     /// ignoram silenciosamente). None = não enviar o campo (default do modelo).
     #[serde(default)]
     pub reasoning_effort: Option<ReasoningEffort>,
+    /// Servidores MCP habilitados nesta sessão (por nome). `None` = todos os
+    /// servidores globais habilitados são usados (comportamento padrão).
+    /// `Some(vec)` = só os servidores cujos nomes estão na lista são expostos
+    /// ao agente. Permite desativar MCPs individuais por sessão via composer.
+    #[serde(default)]
+    pub enabled_mcp_servers: Option<Vec<String>>,
     /// Método Fable (github.com/Sahir619/fable-method) injetado no system
     /// prompt quando ligado. É um loop de trabalho (classificar → agir →
     /// verificar) que ajuda modelos pequenos/médios a não abandonar tarefas;
@@ -249,8 +355,9 @@ pub struct Session {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionMode {
-    Manual,
+    /// Padrão: toda chamada de ferramenta para e pede aprovação antes de rodar.
     #[default]
+    Manual,
     Auto,
     /// Escreve direto no arquivo real (sem sandbox), sem pedir permissao.
     /// Para usuarios que confiam no agente e querem velocidade maxima.

@@ -43,6 +43,7 @@ export const useProviderStore = defineStore("provider", {
     forks: [] as LlamaForkConfig[],
     customProviders: [] as CustomProviderConfig[],
     hasOpenrouterKey: false,
+    openrouterKeyPreview: null as string | null,
     loading: false,
     error: "",
   }),
@@ -52,6 +53,7 @@ export const useProviderStore = defineStore("provider", {
       try {
         this.config = await api.getConfig();
         this.hasOpenrouterKey = await api.hasOpenrouterKey();
+        this.openrouterKeyPreview = await api.openrouterKeyPreview();
         this.forks = await api.listLlamaForks();
         this.customProviders = await api.listCustomProviders();
         await this.refreshModels(this.config.active_provider, undefined, this.config.active_custom_provider_id ?? undefined);
@@ -150,6 +152,12 @@ export const useProviderStore = defineStore("provider", {
     async saveOpenrouterKey(key: string) {
       await api.setOpenrouterKey(key);
       this.hasOpenrouterKey = true;
+      this.openrouterKeyPreview = await api.openrouterKeyPreview();
+    },
+    async clearOpenrouterKey() {
+      await api.clearOpenrouterKey();
+      this.hasOpenrouterKey = false;
+      this.openrouterKeyPreview = null;
     },
     async saveConfig() {
       if (!this.config) return;

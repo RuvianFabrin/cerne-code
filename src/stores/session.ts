@@ -14,6 +14,7 @@ import {
   onPermissionRequest,
   onToolCall,
   onTurnStats,
+  onSessionRenamed,
   type AskQuestion,
   type ChatMessage,
   type ContextUsage,
@@ -209,6 +210,14 @@ export const useSessionStore = defineStore("session", {
         this.turnStats = { ...this.turnStats, [stats.turn]: stats };
         this.thinkingStartedAt = null;
       });
+
+      await onSessionRenamed((sessionId, title) => {
+        const idx = this.sessions.findIndex((s) => s.id === sessionId);
+        if (idx !== -1) this.sessions[idx] = { ...this.sessions[idx], title };
+        if (this.currentSession?.id === sessionId) {
+          this.currentSession = { ...this.currentSession, title };
+        }
+      });
     },
 
     async loadSessions() {
@@ -238,6 +247,7 @@ export const useSessionStore = defineStore("session", {
       this.thinkingText = "";
       this.todoSnapshots = [];
       this.status = "idle";
+      this.error = "";
       this.lastCompactionNote = "";
       this.pendingQuestion = null;
       this.computerUseWarned = false;
@@ -285,9 +295,9 @@ export const useSessionStore = defineStore("session", {
     /** Pastas extras (fora do project_root) que read_file/list_dir/grep/ast_grep
      * desta sessão podem acessar via caminho absoluto. write_file/edit_file/
      * ast_edit continuam restritos ao project_root — a sandbox só espelha ele. */
-    async updateExtraReadPaths(paths: string[]) {
+    async updateExtraReadPaths(entries: Array<{ path: string; mode: "read" | "read_write" }>) {
       if (!this.currentId) return;
-      const updated = await api.updateSessionReadPaths(this.currentId, paths);
+      const updated = await api.updateSessionReadPaths(this.currentId, entries);
       this.currentSession = updated;
       const idx = this.sessions.findIndex((s) => s.id === updated.id);
       if (idx !== -1) this.sessions[idx] = updated;
@@ -378,6 +388,14 @@ export const useSessionStore = defineStore("session", {
     async updateFableMethod(enabled: boolean) {
       if (!this.currentId) return;
       const updated = await api.updateSessionFableMethod(this.currentId, enabled);
+      this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === updated.id);
+      if (idx !== -1) this.sessions[idx] = updated;
+    },
+
+    async updateMcpServers(enabledNames: string[] | null) {
+      if (!this.currentId) return;
+      const updated = await api.updateSessionMcpServers(this.currentId, enabledNames);
       this.currentSession = updated;
       const idx = this.sessions.findIndex((s) => s.id === updated.id);
       if (idx !== -1) this.sessions[idx] = updated;

@@ -1,6 +1,7 @@
 mod ast_tools;
 pub mod background;
 pub mod computer;
+pub mod shell;
 mod subagent;
 pub mod tools;
 mod verifier;
@@ -29,61 +30,7 @@ const MAX_AGENTIC_STEPS: usize = 50;
 /// mid-turn, e "parar e avisar" e mais seguro como default.
 const DOOM_LOOP_THRESHOLD: usize = 3;
 
-/// Máximo de nudges (auto-continue) por turno. Valor alto porque o verdadeiro
-/// freio é o doom loop detection + o botão stop do usuário. Este limite só
-/// existe como safety net contra um modelo que nunca chama ferramentas E
-/// nunca diz TAREFA_CONCLUIDA E nunca produz texto "final" (sem indicadores
-/// de continuação) — cenário extremamente improvável.
-const MAX_NUDGES: usize = 50;
 
-/// Frases que sinalizam que o modelo realmente terminou a tarefa. Se o texto
-/// final contiver alguma delas, o loop encerra sem nudge.
-const LOOP_BREAKERS: &[&str] = &[
-    "TAREFA_CONCLUIDA",
-    "Tarefa concluída",
-    "tarefa concluida",
-    "The task is done",
-];
-
-/// Prompt curto injetado como mensagem "user" quando o modelo para sem tool
-/// call mas a tarefa parece incompleta. Curto pra economizar tokens.
-const NUDGE_PROMPT: &str = "Continue. Use as ferramentas para completar a tarefa. \
-Se já terminou tudo, responda apenas: TAREFA_CONCLUIDA.";
-
-/// Heurística: detecta se o texto do modelo indica que ele ia continuar mas
-/// parou prematuramente (narrou o próximo passo em vez de executar).
-fn looks_incomplete(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    const INDICATORS: &[&str] = &[
-        "agora vou",
-        "agora preciso",
-        "próximo passo",
-        "proximo passo",
-        "em seguida",
-        "vou chamar",
-        "vou executar",
-        "vou ler",
-        "vou editar",
-        "vou criar",
-        "vamos",
-        "preciso chamar",
-        "preciso executar",
-        "preciso ler",
-        "next step",
-        "now i will",
-        "now i need",
-        "let me",
-        "i need to",
-        "i'll now",
-        "i will now",
-    ];
-    INDICATORS.iter().any(|i| lower.contains(i))
-}
-
-/// Confere se o texto contém um sinal explícito de conclusão.
-fn is_task_complete(text: &str) -> bool {
-    LOOP_BREAKERS.iter().any(|b| text.contains(*b))
-}
 
 /// Confere se as ultimas `DOOM_LOOP_THRESHOLD` chamadas de ferramenta
 /// executadas (nome + argumentos brutos, na ordem que rodaram) sao todas
@@ -215,7 +162,6 @@ exato antes. \
 \n\n## Regra de Loop\n\
 - Continue chamando ferramentas ate a tarefa estar 100% completa.\n\
 - NUNCA pare no meio para narrar o que falta. Execute.\n\
-- Quando REALMENTE terminar tudo, inclua \"TAREFA_CONCLUIDA\" na sua ultima mensagem.\n\
 - Se precisar de informacao do usuario, use a ferramenta ask.";
 
 const COMPACTION_SYSTEM_PROMPT: &str = "Voce resume trechos antigos de uma conversa entre um \
@@ -352,8 +298,16 @@ pub async fn run_turn(
     let mut session = sessions::get_session(&app_data_dir, &session_id)?;
     let mut messages = sessions::load_messages(&app_data_dir, &session_id)?;
 
-    if messages.is_empty() {
-        let project_path: Option<&Path> = session.project_root.as_deref().map(Path::new);
+    // Monta o system prompt com as informações atuais (pastas, skills, etc.)
+    // — refeito a cada turno, não só na primeira mensagem, pra refletir
+    // mudanças como adição de pastas extras durante a sessão.
+    {
+        let project_path: Option<&Path> = session.project_root.as_deref().map(Path::new)
+            .or_else(|| {
+                let first = session.extra_read_paths.first()?;
+                let p = Path::new(&first.path);
+                if p.is_dir() { Some(p) } else { None }
+            });
         let catalog = skills::list_skills(&app_data_dir, project_path).unwrap_or_default();
         let mut prompt = SYSTEM_PROMPT.to_string();
         if !catalog.is_empty() {
@@ -372,22 +326,45 @@ pub async fn run_turn(
         if let Some(ref root) = session.project_root {
             prompt.push_str(&format!(
                 "\n\nPasta do projeto desta sessao: {root}\n\
-                 Use caminhos relativos a essa pasta (resolvidos automaticamente) ou caminhos absolutos dentro dela."
+                 Use SEMPRE caminhos absolutos nas ferramentas de arquivo e diretorio \
+                 (ex: {root}\\arquivo.txt) — nunca caminhos relativos. Assim o usuario ve \
+                 exatamente em qual pasta cada arquivo sera lido ou criado."
             ));
         }
-        messages.push(ChatMessage {
-            role: "system".to_string(),
-            content: prompt,
-            tool_calls: None,
-            tool_call_id: None,
-            name: None,
-            images: Vec::new(),
-            display_content: None,
-        });
+        if !session.extra_read_paths.is_empty() {
+            prompt.push_str("\n\nPastas extras disponiveis nesta sessao:\n");
+            for entry in &session.extra_read_paths {
+                let mode = match entry.mode {
+                    crate::models::FolderMode::Read => "🔍 só leitura",
+                    crate::models::FolderMode::ReadWrite => "✏️ leitura e escrita",
+                };
+                prompt.push_str(&format!("  - {} ({})\n", entry.path, mode));
+            }
+            prompt.push_str("Use SEMPRE caminhos absolutos nas ferramentas de arquivo e diretorio.");
+        }
+        let shell_info = shell::detect_shell();
+        prompt.push_str(&format!(
+            "\n\nShell disponivel para run_command: {} — use a sintaxe desse shell nos comandos.",
+            shell_info.description
+        ));
+        if messages.is_empty() {
+            messages.push(ChatMessage {
+                role: "system".to_string(),
+                content: prompt,
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+                images: Vec::new(),
+                display_content: None,
+            });
+        } else {
+            // Atualiza a primeira mensagem (system) com o prompt mais recente
+            messages[0].content = prompt;
+        }
     }
     messages.push(ChatMessage {
         role: "user".to_string(),
-        content: user_text,
+        content: user_text.clone(),
         tool_calls: None,
         tool_call_id: None,
         name: None,
@@ -425,11 +402,80 @@ pub async fn run_turn(
         state,
         session.custom_provider_id.as_deref(),
     )?;
+
+    // Auto-nomeação: se é a primeira mensagem e o título ainda é o default,
+    // pede ao LLM um nome curto baseado no texto do usuário. Roda em paralelo
+    // (não bloqueia o loop principal) — o nome aparece na sidebar assim que
+    // o LLM responder, sem atrasar a resposta real.
+    let is_first_message = messages.iter().filter(|m| m.role == "user").count() == 1;
+    let is_default_title = session.title == "Nova sessão"
+        || session.title == "New session"
+        || session.title == "Nueva sesión"
+        || session.title == "新建会话"
+        || session.title == "新会话";
+    if is_first_message && is_default_title {
+        let app_clone = app.clone();
+        let session_id_clone = session_id.clone();
+        let cfg_clone = cfg.clone();
+        let api_key_clone = api_key.clone();
+        let model_clone = session.model.clone();
+        let user_text_clone = user_text.clone();
+        let app_data_dir_clone = app_data_dir.clone();
+        tokio::spawn(async move {
+            // take(500) conta CARACTERES, nao bytes — slicing por byte
+            // entraria em panico no meio de um acento/ideograma multibyte.
+            let snippet: String = user_text_clone.chars().take(500).collect();
+            let naming_prompt = format!(
+                "Dê um nome MUITO curto (máximo 5 palavras) para uma conversa que começa com esta mensagem do usuário. \
+                 Responda APENAS com o nome, sem aspas, sem explicação, sem pontuação final.\n\n\
+                 Mensagem: {snippet}"
+            );
+            let naming_messages = vec![ChatMessage {
+                role: "user".to_string(),
+                content: naming_prompt,
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+                images: Vec::new(),
+                display_content: None,
+            }];
+            if let Ok(result) = providers::chat_stream(
+                &app_clone,
+                &session_id_clone,
+                &cfg_clone,
+                api_key_clone,
+                &model_clone,
+                &naming_messages,
+                &[],
+                Some(crate::models::ReasoningEffort::Off),
+                None,
+            )
+            .await
+            {
+                let name = result.message.content.trim().trim_matches('"').trim_matches('\'');
+                if !name.is_empty() && name.len() < 80 {
+                    if let Ok(updated) = sessions::update_title(&app_data_dir_clone, &session_id_clone, name.to_string()) {
+                        let _ = app_clone.emit(
+                            "agent:session_renamed",
+                            serde_json::json!({
+                                "session_id": session_id_clone,
+                                "title": updated.title,
+                            }),
+                        );
+                    }
+                }
+            }
+        });
+    }
+
     let mut tool_specs = tools::always_tool_specs();
-    if session.project_root.is_some() {
+    if session.project_root.is_some() || !session.extra_read_paths.is_empty() {
         tool_specs.extend(tools::project_tool_specs());
     }
-    let mcp_servers = crate::mcp::load_servers(&app_data_dir).unwrap_or_default();
+    let mut mcp_servers = crate::mcp::load_servers(&app_data_dir).unwrap_or_default();
+    if let Some(ref enabled) = session.enabled_mcp_servers {
+        mcp_servers.retain(|s| enabled.contains(&s.name));
+    }
     tool_specs.extend(state.mcp_clients.tool_specs(&mcp_servers).await);
 
     let has_vision = providers::supports_vision(&cfg, api_key.clone(), &session.model, &app_data_dir).await;
@@ -463,8 +509,6 @@ pub async fn run_turn(
 
     let mut tasks = sessions::load_tasks(&app_data_dir, &session_id)?;
     let mut recent_calls: Vec<(String, String)> = Vec::new();
-    let mut nudge_count: usize = 0;
-    let mut force_tool_choice: bool = false;
     let mut tool_steps: usize = 0;
     let turn_start = std::time::Instant::now();
     let mut turn_prompt_tokens: u32 = 0;
@@ -513,7 +557,7 @@ pub async fn run_turn(
             &messages,
             &tool_specs,
             session.reasoning_effort,
-            if force_tool_choice { Some("required") } else { None },
+            None,
         )
         .await?;
 
@@ -540,32 +584,17 @@ pub async fn run_turn(
         sessions::save_messages(&app_data_dir, &session_id, &messages)?;
 
         if !has_tool_calls {
-            // Auto-continue (nudge): se o modelo parou sem tool call mas a
-            // tarefa parece incompleta, injeta um "continue" e volta pro loop.
-            let text = &assistant.content;
-            if is_task_complete(text) || !looks_incomplete(text) || nudge_count >= MAX_NUDGES {
-                break;
-            }
-            nudge_count += 1;
-            force_tool_choice = true;
-            messages.push(ChatMessage {
-                role: "user".to_string(),
-                content: NUDGE_PROMPT.to_string(),
-                tool_calls: None,
-                tool_call_id: None,
-                name: None,
-                images: Vec::new(),
-                display_content: Some("⏳ Continuando automaticamente...".to_string()),
-            });
-            sessions::save_messages(&app_data_dir, &session_id, &messages)?;
-            continue;
+            break;
         }
 
-        // Modelo chamou ferramentas — reseta o flag de nudge e conta o step.
-        force_tool_choice = false;
         tool_steps += 1;
 
-        let project_path: Option<&Path> = session.project_root.as_deref().map(Path::new);
+        let project_path: Option<&Path> = session.project_root.as_deref().map(Path::new)
+            .or_else(|| {
+                let first = session.extra_read_paths.first()?;
+                let p = Path::new(&first.path);
+                if p.is_dir() { Some(p) } else { None }
+            });
 
         for call in assistant.tool_calls.iter().flatten() {
             let args: serde_json::Value =
@@ -651,7 +680,7 @@ pub async fn run_turn(
                             api_key.clone(),
                             &session.model,
                             project_root,
-                            &session.extra_read_paths,
+                            &crate::models::FolderEntry::paths(&session.extra_read_paths),
                             description,
                             prompt,
                         )
@@ -720,7 +749,7 @@ pub async fn run_turn(
                         api_key.clone(),
                         &session.model,
                         project_root,
-                        &session.extra_read_paths,
+                        &crate::models::FolderEntry::paths(&session.extra_read_paths),
                         summary,
                         how,
                     )
