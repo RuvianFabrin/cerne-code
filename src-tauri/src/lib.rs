@@ -70,6 +70,12 @@ pub struct AppState {
     /// pra `check_agent_session` sugerir quanto esperar (G2). Não
     /// persistido, mesmo espírito de `agent_executions`.
     pub orchestrated_sessions: Mutex<HashMap<String, agent::OrchestratedSessionInfo>>,
+    /// Guard anti-loop pro auto-continue: quantas vezes seguidas uma sessão
+    /// já se retomou sozinha (comando em segundo plano ou sessão filha
+    /// orquestrada terminando) sem uma mensagem de verdade do usuário no
+    /// meio. Zerado em `send_message` (mensagem real do usuário). Ver
+    /// `agent::spawn_auto_continue_turn`.
+    pub auto_continue_counts: Mutex<HashMap<String, u32>>,
 }
 
 #[tauri::command]
@@ -1288,6 +1294,17 @@ async fn send_message(
     images: Vec<String>,
     display_text: Option<String>,
 ) -> Result<(), String> {
+    // Mensagem de verdade do usuário — zera o guard anti-loop do
+    // auto-continue (job em segundo plano / sessão filha reativando a
+    // sessão sozinha, ver `agent::spawn_auto_continue_turn`). Sem isso, um
+    // job em background terminando logo após você mandar uma mensagem
+    // manual contaria contra o mesmo limite de tentativas.
+    app.state::<AppState>()
+        .auto_continue_counts
+        .lock()
+        .unwrap()
+        .remove(&session_id);
+
     // Runs in a detached task: the frontend gets progress via chat:token /
     // agent:tool_call / agent:pending_edit / agent:done events, not the
     // return value of this command. Handle is tracked in `running_turns` so
@@ -1862,6 +1879,7 @@ pub fn run() {
                 running_turns: Mutex::new(HashMap::new()),
                 agent_executions: Mutex::new(HashMap::new()),
                 orchestrated_sessions: Mutex::new(HashMap::new()),
+                auto_continue_counts: Mutex::new(HashMap::new()),
             });
             Ok(())
         })

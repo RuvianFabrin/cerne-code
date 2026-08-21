@@ -102,13 +102,16 @@ const timeline = computed<TimelineItem[]>(() => {
       if (hasText) {
         items.push({ kind: "message", key: `m-${i}`, message: m });
       }
-    } else if (m.role === "system" && m.name === "background_job_done") {
-      // T14: nota de conclusão de job em segundo plano — role "system" pra
-      // não entrar na conversa como se o usuário/agente tivesse "dito"
-      // aquilo, mas com um marcador (`name`) pra diferenciar do system
-      // prompt real (que também é role "system", mas nunca deveria
-      // aparecer aqui — só essa mensagem específica é intencionalmente
-      // visível).
+    } else if (
+      m.role === "system" &&
+      (m.name === "background_job_done" || m.name === "auto_continue_stopped")
+    ) {
+      // T14: nota de conclusão de job em segundo plano, ou aviso do guard
+      // anti-loop do auto-continue — role "system" pra não entrar na
+      // conversa como se o usuário/agente tivesse "dito" aquilo, mas com um
+      // marcador (`name`) pra diferenciar do system prompt real (que também
+      // é role "system", mas nunca deveria aparecer aqui — só essas
+      // mensagens específicas são intencionalmente visíveis).
       items.push({ kind: "background-note", key: `bn-${i}`, message: m });
     }
   });

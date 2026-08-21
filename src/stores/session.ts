@@ -6,6 +6,7 @@ import {
   onAgentStatus,
   onPipelineStatus,
   onBackgroundDone,
+  onAutoContinueStopped,
   onSessionCreated,
   onAgentsSkillsPlan,
   onAskQuestion,
@@ -196,6 +197,15 @@ export const useSessionStore = defineStore("session", {
       // sessão e voltar (bug encontrado testando ao vivo, 2026-08-16).
       await onBackgroundDone((e) => {
         if (e.session_id !== this.currentId) return;
+        this.reloadCurrent();
+      });
+
+      // Guard anti-loop do auto-continue bateu o teto — o backend já
+      // injetou uma nota explicando isso no histórico, só falta recarregar
+      // pra ela aparecer sem trocar de sessão e voltar (mesmo motivo de
+      // `onBackgroundDone` acima).
+      await onAutoContinueStopped((sessionId) => {
+        if (sessionId !== this.currentId) return;
         this.reloadCurrent();
       });
 

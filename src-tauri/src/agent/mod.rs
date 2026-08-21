@@ -137,7 +137,139 @@ fn spawn_orchestrated_turn(
             );
         }
         state.running_turns.lock().unwrap().remove(&child_id);
+
+        // A sessao filha terminou o turno dela — se o pai parou de pollar
+        // via check_agent_session ANTES disso (seu proprio turno ja tinha
+        // encerrado), ele nunca ficaria sabendo (achado reportado ao vivo:
+        // sessao parada pra sempre esperando algo que ja tinha terminado).
+        // Reativa o pai sozinho, mesmo guard anti-loop de
+        // `spawn_auto_continue_turn` (nao reativa se o pai ja estiver
+        // ocupado com outra coisa nesse meio tempo).
+        if let Ok(child_session) = sessions::get_session(&state.app_data_dir, &child_id) {
+            if let Some(parent_id) = child_session.parent_session_id {
+                spawn_auto_continue_turn(
+                    app.clone(),
+                    parent_id,
+                    format!(
+                        "A sessao filha orquestrada \"{}\" (session_id: {child_id}) terminou o \
+                         turno dela. Use check_agent_session(\"{child_id}\") pra conferir o \
+                         resultado e continue a partir dai.",
+                        child_session.title
+                    ),
+                );
+            }
+        }
     })
+}
+
+/// Trava anti-loop do auto-continue: quantas vezes seguidas uma sessao pode
+/// se retomar sozinha (job em segundo plano ou sessao filha orquestrada
+/// terminando) sem uma mensagem de verdade do usuario no meio. Zerado em
+/// `send_message` (lib.rs), toda vez que o usuario manda algo de verdade —
+/// sem isso, um job em background que sempre dispara outro job em
+/// background poderia encadear auto-continuacoes pra sempre. 20 (nao um
+/// numero baixo tipo 3) porque o guard existe so pra pegar loop de verdade,
+/// nao pra limitar uma tarefa complexa legitima com varias etapas em
+/// sequencia (cada `task`/job em segundo plano contando como uma).
+const MAX_AUTO_CONTINUES: u32 = 20;
+
+/// Dispara um novo turno pra uma sessao como reacao a algo assincrono ter
+/// terminado (comando em segundo plano, sessao filha orquestrada) — sem
+/// isso a nota de conclusao so ficava salva no historico, inerte, ate o
+/// usuario mandar outra mensagem por conta propria (achado reportado ao
+/// vivo: "o LLM simplesmente nao faz mais nada" mesmo o comando demorado ja
+/// tendo terminado). So dispara se a sessao NAO tiver turno rodando agora
+/// (ex: usuario ja mandou mensagem nova enquanto o job rodava — nesse caso
+/// nao interfere) e se o guard `MAX_AUTO_CONTINUES` ainda tiver credito.
+///
+/// O guard de `running_turns` fica dentro do MESMO lock do check ate o
+/// insert do handle (sem soltar no meio), pra fechar a janela de corrida de
+/// dois jobs terminando quase juntos pra sessao mesma sessao.
+///
+/// Quando o teto do guard e atingido, NAO para em silencio (isso reproduziria
+/// o bug original que motivou essa funcao existir) — deixa uma nota visivel
+/// no chat explicando que parou de continuar sozinho e precisa de um "vai"
+/// do usuario, pra nao parecer que o agente simplesmente travou/ficou burro.
+pub fn spawn_auto_continue_turn(app: AppHandle, session_id: String, prompt: String) {
+    let state = app.state::<AppState>();
+    {
+        let mut counts = state.auto_continue_counts.lock().unwrap();
+        let count = counts.entry(session_id.clone()).or_insert(0);
+        if *count >= MAX_AUTO_CONTINUES {
+            notify_auto_continue_stopped(&app, &state, &session_id);
+            return;
+        }
+        *count += 1;
+    }
+
+    let mut running = state.running_turns.lock().unwrap();
+    if running.contains_key(&session_id) {
+        return; // sessao ja ocupada (ex: usuario mandou mensagem manual) - nao interfere
+    }
+
+    let app_task = app.clone();
+    let session_id_task = session_id.clone();
+    let handle = tauri::async_runtime::spawn(async move {
+        let state = app_task.state::<AppState>();
+        if let Err(e) = run_turn(
+            app_task.clone(),
+            &state,
+            session_id_task.clone(),
+            prompt,
+            Vec::new(),
+            None,
+        )
+        .await
+        {
+            let _ = app_task.emit(
+                "agent:error",
+                serde_json::json!({ "session_id": session_id_task, "message": e.to_string() }),
+            );
+        }
+        state.running_turns.lock().unwrap().remove(&session_id_task);
+    });
+    running.insert(session_id, handle);
+}
+
+#[derive(Serialize, Clone)]
+struct AutoContinueStoppedEvent {
+    session_id: String,
+}
+
+/// Injeta uma nota visivel no chat + avisa a UI quando o guard anti-loop do
+/// auto-continue (`MAX_AUTO_CONTINUES`) e atingido — sem isso a sessao
+/// simplesmente para de reagir sozinha sem nenhuma explicacao, reproduzindo
+/// o mesmo bug ("parece que o LLM travou/e burro") que `spawn_auto_continue_turn`
+/// existe pra evitar.
+fn notify_auto_continue_stopped(app: &AppHandle, state: &AppState, session_id: &str) {
+    let note = ChatMessage {
+        role: "system".to_string(),
+        content: format!(
+            "[Auto-continue parou apos {MAX_AUTO_CONTINUES} tentativas seguidas sem uma \
+             mensagem sua no meio - pode ter mais coisa pendente. Mande uma mensagem (ex: \
+             \"continua\") se quiser que eu siga.]"
+        ),
+        tool_calls: None,
+        tool_call_id: None,
+        name: Some("auto_continue_stopped".to_string()),
+        images: Vec::new(),
+        display_content: Some(
+            "⏸️ Parei de continuar sozinho depois de várias tentativas em sequência sem você \
+             mandar nada no meio — pode ter mais coisa pendente. Mande uma mensagem (ex: \
+             \"continua\") se quiser que eu siga."
+                .to_string(),
+        ),
+    };
+    if let Ok(mut messages) = sessions::load_messages(&state.app_data_dir, session_id) {
+        messages.push(note);
+        let _ = sessions::save_messages(&state.app_data_dir, session_id, &messages);
+    }
+    let _ = app.emit(
+        "agent:auto_continue_stopped",
+        AutoContinueStoppedEvent {
+            session_id: session_id.to_string(),
+        },
+    );
 }
 
 /// Registra o início de uma execução de agente/skill (`task`/

@@ -609,6 +609,14 @@ export function onBackgroundDone(cb: (e: BackgroundDoneEvent) => void): Promise<
   return listen<BackgroundDoneEvent>("agent:background_done", (e) => cb(e.payload));
 }
 
+// Guard anti-loop do auto-continue (job em segundo plano/sessão filha
+// reativando a sessão sozinha) bateu o teto — o backend já injeta uma nota
+// visível no histórico, mas precisa desse evento pra recarregar a tela
+// aberta na hora, mesmo padrão de `onBackgroundDone` acima.
+export function onAutoContinueStopped(cb: (sessionId: string) => void): Promise<UnlistenFn> {
+  return listen<{ session_id: string }>("agent:auto_continue_stopped", (e) => cb(e.payload.session_id));
+}
+
 // Fase G: sessão orquestrada (`start_agent_session`) criada pelo backend
 // sem passar pelo fluxo normal de "+ Nova sessão" — sem esse evento ela
 // ficaria invisível na sidebar até o usuário recarregar o app na mão.

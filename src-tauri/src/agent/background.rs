@@ -526,6 +526,21 @@ async fn on_job_finished(completion: JobCompletionCtx, output: Arc<Mutex<VecDequ
             &messages,
         );
     }
+
+    // Sem isso, a nota acima so ficava salva em disco, inerte, ate o
+    // usuario mandar outra mensagem por conta propria - o LLM nunca reagia
+    // ao comando ter terminado (achado reportado ao vivo). Guardado contra
+    // sessao ja ocupada e loop infinito dentro de `spawn_auto_continue_turn`.
+    if let Some(app) = &completion.app {
+        super::spawn_auto_continue_turn(
+            app.clone(),
+            completion.session_id.clone(),
+            "Um comando em segundo plano que voce iniciou acabou de terminar - o resultado ja \
+             esta no historico acima. Confira o output e continue a tarefa original a partir \
+             daqui."
+                .to_string(),
+        );
+    }
 }
 
 #[cfg(test)]
