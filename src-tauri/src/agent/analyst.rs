@@ -1,31 +1,21 @@
-//! "Goal mode": verificador adversarial independente, chamado via a tool
-//! `verify_completion` quando o agente principal acha que terminou uma
-//! tarefa complexa e quer confirmar antes de declarar sucesso pro usuario.
+//! Etapa ANALISTA do pipeline Dev → QA → Analista (Fase 3 do roteiro de
+//! Agentes/Skills, `PLANOS/13_roteiro_agentes_skills_fases.md`).
 //!
-//! Padrao vem do "goal mode" do grok-build (`agent-architecture-research.md`
-//! seção 3.3): quando o modelo chama `update_goal(completed: true)`, o
-//! harness deles dispara um "painel cetico" de subagentes verificadores
-//! independentes que reconferem o trabalho contra o plano original antes de
-//! aceitar a conclusao — a peca central sendo uma persona **adversarial**
-//! que assume "refutado" por padrao quando incerto, e audita evidencia real
-//! (rodar teste/build) em vez de aceitar so a narrativa de quem alega ter
-//! terminado.
+//! Estruturalmente é uma cópia de `verifier.rs` (mesmo toolset read-only,
+//! mesmo formato de veredito APROVADO/REFUTADO + evidência) — decisão de
+//! design deliberada: generalizar `verifier.rs` com um parâmetro `role` era
+//! a alternativa mais "DRY", mas arriscaria um módulo já testado e usado em
+//! produção (Fase A2/T28) por causa de uma feature nova. Duplicar ~80 linhas
+//! é mais seguro.
 //!
-//! Reduzido de proposito em relacao ao grok-build: sem criterio de aceite
-//! "congelado" antes de comecar (`goal_planner_prompt.md`) nem cutucao a
-//! cada turno (`goal_continuation_directive.md`) — so a peca que a pesquisa
-//! aponta como a que realmente muda o resultado (o veredito adversarial em
-//! si, `goal_verifier_prompt.md`), acionada sob demanda pelo proprio modelo
-//! via uma tool, nao um "modo" separado com config propria. Reusa a mesma
-//! maquina de loop de ferramentas do `subagent.rs` (`task`), so com prompt e
-//! toolset diferentes.
-//!
-//! **Toolset e so leitura/execucao** (`read_file`/`list_dir`/`grep`/
-//! `ast_grep`/`run_command`) — sem `write_file`/`edit_file`/`ast_edit`: o
-//! verificador so observa e reporta, nunca "conserta" o que encontrar (isso
-//! cabe ao agente principal, depois de ouvir o veredito). Mesma guarda de
-//! profundidade do sub-agente normal — nada de `task`/`ask`/`verify_completion`
-//! recursivo.
+//! **A diferença real não é o mecanismo, é O QUE cada um audita**: o QA
+//! (`verifier.rs`) confirma se a implementação FUNCIONA tecnicamente (roda
+//! teste/build de verdade). O Analista aqui confirma se ela satisfaz o
+//! PEDIDO ORIGINAL do usuário — pode aprovar um código que roda mas não faz
+//! o que foi pedido, ou vice-versa. Por isso o Analista recebe o requisito
+//! ORIGINAL (não só o relatório do DEV) e não tem ênfase em rodar comando —
+//! o foco dele é ler e comparar, não validar tecnicamente (isso já é
+//! trabalho do QA, que roda antes na sequência do pipeline).
 
 use super::tools;
 use crate::models::{ChatMessage, ProviderConfig, ToolSpec};
@@ -34,35 +24,29 @@ use anyhow::Result;
 use std::path::Path;
 use tauri::{AppHandle, Emitter};
 
-const MAX_VERIFIER_STEPS: usize = 8;
+const MAX_ANALYST_STEPS: usize = 8;
 
-/// Ferramentas que o verificador pode usar — so observar/executar, nunca
-/// editar. `run_command` fica de proposito (a pesquisa e explicita: o
-/// veredito precisa estar condicionado a pelo menos uma execucao real de
-/// teste/build/lint, nao so leitura de codigo).
-const VERIFIER_ALLOWED_TOOLS: &[&str] =
+/// Mesmo allowlist do QA — só observar, nunca consertar (isso cabe ao DEV,
+/// numa próxima rodada do pipeline se o Analista refutar).
+const ANALYST_ALLOWED_TOOLS: &[&str] =
     &["read_file", "list_dir", "grep", "ast_grep", "run_command"];
 
-const VERIFIER_SYSTEM_PROMPT: &str = "Voce e um VERIFICADOR independente e cetico - NAO a mesma \
-entidade que alega ter concluido a tarefa, e seu unico trabalho e confirmar com evidencia real se \
-ela foi de fato concluida. Assuma REFUTADO por padrao quando houver qualquer duvida - o onus da \
-prova e de quem alega sucesso, nao seu. NUNCA aceite so a narrativa de que algo foi feito: confira \
-voce mesmo lendo o codigo (read_file/grep/ast_grep) ou rodando um comando de verdade (run_command \
-- teste, build, lint, o que for aplicavel). Se a tarefa envolveu editar arquivo, lembre que \
-write_file/edit_file/ast_edit escrevem numa sandbox que precisa ser aceita pelo usuario antes de \
-valer pro arquivo real - se voce ler o arquivo real e ele nao refletir a mudanca, isso NAO e prova \
-de que a mudanca falhou, pode so estar pendente de aceite; nesse caso, confira o conteudo proposto \
-descrito no relato da tarefa em vez de exigir que o arquivo real ja reflita. Voce NAO tem \
-write_file/edit_file/ast_edit - so pode observar e reportar, nunca consertar o que encontrar. \
-Responda comecando com a palavra EXATA 'APROVADO' ou 'REFUTADO' sozinha na primeira linha, seguida \
-da evidencia concreta que embasa o veredito (o que voce leu, ou a saida exata do comando que \
-rodou) - sem essa evidencia concreta, o veredito e invalido.";
+const ANALYST_SYSTEM_PROMPT: &str = "Voce e um ANALISTA DE REQUISITOS independente, parte de um \
+pipeline Dev -> QA -> Analista. O QA ja confirmou que a implementacao FUNCIONA tecnicamente (testes/ \
+build passam) - seu trabalho e DIFERENTE: confirmar se ela realmente satisfaz o que o usuario PEDIU, \
+nao se o codigo roda. Um codigo pode passar em todo teste e mesmo assim nao fazer o que foi pedido \
+(ex: implementou a funcionalidade errada, ignorou um requisito explicito, resolveu so parte do \
+pedido). Leia o requisito original com atencao e confira o resultado (leia o codigo/arquivos \
+relevantes) contra ele, criterio por criterio. Assuma REFUTADO por padrao quando houver qualquer \
+duvida sobre cobertura do requisito - o onus da prova e de quem alega ter atendido o pedido, nao \
+seu. Voce NAO tem write_file/edit_file/ast_edit - so pode observar e reportar, nunca consertar o que \
+encontrar. Responda comecando com a palavra EXATA 'APROVADO' ou 'REFUTADO' sozinha na primeira \
+linha, seguida de EXATAMENTE quais partes do requisito foram atendidas e quais nao (se REFUTADO) - \
+sem isso o veredito e invalido.";
 
-/// Roda o verificador contra `task_summary`/`how_to_verify` e devolve o
-/// veredito formatado (sempre comecando com "APROVADO"/"REFUTADO" na
-/// primeira linha, mesmo que o proprio modelo verificador nao tenha seguido
-/// o formato — nesse caso vira "REFUTADO" por seguranca, ver
-/// [`extract_verdict`]).
+/// Roda o Analista contra o requisito original + relatório do DEV e devolve
+/// o veredito formatado — mesmo contrato de `verifier::run` (sempre começa
+/// com "APROVADO"/"REFUTADO" na primeira linha).
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     app: &AppHandle,
@@ -74,13 +58,13 @@ pub async fn run(
     model: &str,
     project_root: &Path,
     extra_read_paths: &[String],
-    task_summary: &str,
-    how_to_verify: &str,
+    requirement: &str,
+    dev_report: &str,
 ) -> Result<String> {
     let mut messages = vec![
         ChatMessage {
             role: "system".to_string(),
-            content: VERIFIER_SYSTEM_PROMPT.to_string(),
+            content: ANALYST_SYSTEM_PROMPT.to_string(),
             tool_calls: None,
             tool_call_id: None,
             name: None,
@@ -90,10 +74,10 @@ pub async fn run(
         ChatMessage {
             role: "user".to_string(),
             content: format!(
-                "Tarefa que o agente principal alega ter concluido:\n{task_summary}\n\n\
-                 Como verificar:\n{how_to_verify}\n\n\
-                 Confira de verdade (leia o codigo relevante e/ou rode o comando indicado) antes \
-                 de dar o veredito."
+                "Requisito original do usuario:\n{requirement}\n\n\
+                 Relatorio do DEV sobre o que foi implementado:\n{dev_report}\n\n\
+                 Confira se o requisito foi realmente atendido (leia o codigo/arquivos relevantes) \
+                 antes de dar o veredito."
             ),
             tool_calls: None,
             tool_call_id: None,
@@ -103,15 +87,14 @@ pub async fn run(
         },
     ];
 
-    let tool_specs = verifier_tool_specs();
+    let tool_specs = analyst_tool_specs();
     let mut recent_calls: Vec<(String, String)> = Vec::new();
 
-    // Canal sintetico (mesmo padrao do `maybe_compact`/`subagent::run`): o
-    // texto do verificador nao pode vazar no `chat:token` da sessao real,
-    // senao se mistura com o streaming do agente principal no chat visivel.
+    // Canal sintetico (mesmo padrao do verifier/subagent): o texto do
+    // analista nao pode vazar no `chat:token` da sessao real.
     let stream_channel = format!("{session_id}::exec::{execution_id}");
 
-    for step in 0..MAX_VERIFIER_STEPS {
+    for step in 0..MAX_ANALYST_STEPS {
         let assistant = providers::chat_stream(
             app,
             &stream_channel,
@@ -120,9 +103,6 @@ pub async fn run(
             model,
             &messages,
             &tool_specs,
-            // Verificador é chamada utilitária: em locais força Off (senão
-            // pensa à toa); em cloud deixa Auto pra não mandar campos que um
-            // backend OpenAI estrito rejeitaria.
             cfg.kind.default_reasoning_effort(),
             None,
         )
@@ -151,7 +131,7 @@ pub async fn run(
                 super::ToolCallEvent {
                     session_id: session_id.to_string(),
                     id: call.id.clone(),
-                    tool: format!("🔎 verificador: {}", call.function.name),
+                    tool: format!("📋 analista: {}", call.function.name),
                     args: call.function.arguments.clone(),
                     command: command.clone(),
                     file_path: file_path.clone(),
@@ -177,10 +157,6 @@ pub async fn run(
                 },
             );
 
-            // Sem background_jobs/mcp_clients reais de proposito seria mais
-            // codigo pra pouco ganho - o verificador reusa os do app, mas
-            // seu toolset ja exclui as ferramentas de controle de background
-            // (list_background/etc nao estao no allowlist).
             let folder_entries: Vec<crate::models::FolderEntry> = extra_read_paths
                 .iter()
                 .map(|p| crate::models::FolderEntry { path: p.clone(), mode: crate::models::FolderMode::Read })
@@ -235,7 +211,7 @@ pub async fn run(
             }
             if super::is_doom_loop(&recent_calls) {
                 return Ok(format!(
-                    "REFUTADO\n[verificador parou: chamou '{}' {} vezes seguidas com os mesmos \
+                    "REFUTADO\n[analista parou: chamou '{}' {} vezes seguidas com os mesmos \
                      argumentos, sem sinal de progresso - parece um loop, nao deu pra confirmar nada]",
                     call.function.name,
                     super::DOOM_LOOP_THRESHOLD
@@ -243,21 +219,20 @@ pub async fn run(
             }
         }
 
-        if step + 1 == MAX_VERIFIER_STEPS {
+        if step + 1 == MAX_ANALYST_STEPS {
             break;
         }
     }
 
     Ok(format!(
-        "REFUTADO\n[verificador atingiu o limite de {MAX_VERIFIER_STEPS} passos sem dar um veredito \
+        "REFUTADO\n[analista atingiu o limite de {MAX_ANALYST_STEPS} passos sem dar um veredito \
          claro - por seguranca, trate como nao confirmado]"
     ))
 }
 
-/// Le so a primeira linha em busca de "APROVADO"/"REFUTADO" (o prompt pede
-/// exatamente isso); se o modelo verificador nao seguir o formato, o
-/// veredito vira REFUTADO por seguranca em vez de silenciosamente aprovar
-/// algo que nao foi claramente confirmado.
+/// Mesma lógica de `verifier::extract_verdict` — mantida duplicada por
+/// consistência com o resto do módulo (ver nota de topo sobre não
+/// compartilhar código com `verifier.rs`).
 fn extract_verdict(response: &str) -> String {
     let first_line = response.lines().next().unwrap_or("").trim().to_uppercase();
     if first_line.starts_with("APROVADO") {
@@ -265,18 +240,14 @@ fn extract_verdict(response: &str) -> String {
     } else if first_line.starts_with("REFUTADO") {
         response.to_string()
     } else {
-        format!("REFUTADO\n[verificador nao devolveu um veredito no formato esperado - resposta original abaixo, trate como nao confirmado]\n{response}")
+        format!("REFUTADO\n[analista nao devolveu um veredito no formato esperado - resposta original abaixo, trate como nao confirmado]\n{response}")
     }
 }
 
-/// So ferramentas de leitura/busca/execucao — sem escrita, sem recursao
-/// (`task`/`ask`/`verify_completion` de fora), sem controle de processo em
-/// segundo plano (o verificador roda comando sincrono, nao gerencia dev
-/// server).
-fn verifier_tool_specs() -> Vec<ToolSpec> {
+fn analyst_tool_specs() -> Vec<ToolSpec> {
     tools::project_tool_specs()
         .into_iter()
-        .filter(|t| VERIFIER_ALLOWED_TOOLS.contains(&t.function.name.as_str()))
+        .filter(|t| ANALYST_ALLOWED_TOOLS.contains(&t.function.name.as_str()))
         .collect()
 }
 
@@ -285,14 +256,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn verifier_toolset_is_read_only_allowlist() {
-        let specs = verifier_tool_specs();
+    fn analyst_toolset_is_read_only_allowlist() {
+        let specs = analyst_tool_specs();
         let names: Vec<&str> = specs.iter().map(|t| t.function.name.as_str()).collect();
-        for expected in VERIFIER_ALLOWED_TOOLS {
-            assert!(
-                names.contains(expected),
-                "verificador deveria ter '{expected}'"
-            );
+        for expected in ANALYST_ALLOWED_TOOLS {
+            assert!(names.contains(expected), "analista deveria ter '{expected}'");
         }
         for forbidden in [
             "write_file",
@@ -300,38 +268,31 @@ mod tests {
             "ast_edit",
             "task",
             "ask",
+            "verify_completion",
+            "run_pipeline",
             "check_background_output",
             "stop_background",
             "list_background",
         ] {
-            assert!(
-                !names.contains(&forbidden),
-                "verificador NAO deveria ter '{forbidden}'"
-            );
+            assert!(!names.contains(&forbidden), "analista NAO deveria ter '{forbidden}'");
         }
     }
 
     #[test]
     fn extract_verdict_recognizes_aprovado() {
-        let verdict = extract_verdict("APROVADO\nrodei cargo test e passou, 12 testes ok");
+        let verdict = extract_verdict("APROVADO\ntodos os criterios do requisito foram atendidos");
         assert!(verdict.starts_with("APROVADO"));
     }
 
     #[test]
     fn extract_verdict_recognizes_refutado() {
-        let verdict = extract_verdict("REFUTADO\ncargo test falhou com 2 erros de compilacao");
+        let verdict = extract_verdict("REFUTADO\nfaltou implementar o criterio X do requisito");
         assert!(verdict.starts_with("REFUTADO"));
     }
 
     #[test]
-    fn extract_verdict_is_case_insensitive() {
-        let verdict = extract_verdict("aprovado\nfoo");
-        assert!(verdict.starts_with("aprovado"));
-    }
-
-    #[test]
     fn extract_verdict_defaults_to_refutado_when_format_not_followed() {
-        let verdict = extract_verdict("Acho que ficou tudo certo, o codigo parece bom.");
+        let verdict = extract_verdict("Acho que atende bem o que foi pedido.");
         assert!(
             verdict.starts_with("REFUTADO"),
             "sem veredito claro deveria ser tratado como nao confirmado: {verdict}"
