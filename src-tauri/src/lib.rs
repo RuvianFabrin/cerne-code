@@ -1,20 +1,30 @@
 mod agent;
 mod attachments;
+mod audio;
+mod backup;
 mod config;
 mod context;
 mod encoding;
+mod folders;
+mod git;
 mod mcp;
+mod memory;
 mod models;
+mod osv;
+mod personas;
 mod providers;
+mod python_tools;
 mod sandbox;
 mod search;
 mod sessions;
 mod skills;
+mod voicebox;
 
 use models::{
-    AppConfig, ChatMessage, ExecutionMode, ModelInfo, PendingEdit, ProviderKind, ReasoningEffort,
-    Session, TaskItem,
+    AppConfig, ChatMessage, ExecutionMode, Folder, ModelInfo, PendingEdit, ProviderKind,
+    ReasoningEffort, Session, TaskItem,
 };
+use personas::Persona;
 use providers::llama_cpp::LlamaForkConfig;
 use skills::SkillMeta;
 use std::collections::HashMap;
@@ -40,11 +50,26 @@ pub struct AppState {
     /// aprovar/recusar uma tool call especifica — mesmo padrao de canal
     /// oneshot que `pending_questions` usa pro `ask`.
     pub pending_permissions: Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
+    /// Planos de agentes/skills (modo "Manual", Fase A5) esperando aprovacao
+    /// batelada do usuario antes de rodar `task`/`load_skill`/
+    /// `verify_completion` — mesmo padrao de canal oneshot que
+    /// `pending_permissions`, so que aprova/nega TODAS as chamadas listadas
+    /// de uma vez em vez de uma por vez.
+    pub pending_agent_plans: Mutex<HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
     /// Handle da task async de cada turno em andamento, por sessao — permite
     /// `cancel_turn` abortar um turno inteiro no modo "Auto" (o usuario nao
     /// precisa esperar o proximo checkpoint cooperativo, o abort da tokio
     /// task derruba a chamada HTTP em andamento imediatamente).
     pub running_turns: Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>,
+    /// Registro em memória de execuções de agente/skill em andamento ou
+    /// recém-terminadas (`task`/`verify_completion`) — Fase A1 do roteiro de
+    /// Agentes/Skills. Não persistido: é só pra UI consultar em tempo real,
+    /// não histórico de longo prazo.
+    pub agent_executions: Mutex<HashMap<String, models::AgentExecution>>,
+    /// Timing de sessões orquestradas (Fase G, `start_agent_session`) — só
+    /// pra `check_agent_session` sugerir quanto esperar (G2). Não
+    /// persistido, mesmo espírito de `agent_executions`.
+    pub orchestrated_sessions: Mutex<HashMap<String, agent::OrchestratedSessionInfo>>,
 }
 
 #[tauri::command]
@@ -83,11 +108,23 @@ fn clear_openrouter_key() -> Result<(), String> {
 /// configurado pelo usuário (id/label/base_url em `custom_providers.json`,
 /// chave no keyring do SO) em vez de ler campos fixos do `AppConfig`, já que
 /// não há como saber de antemão quais providers customizados existem.
+///
+/// `fork_id`: só relevante pra `LlamaCpp` — qual fork (com sua própria
+/// porta) usar. `None` cai no fork ativo global (`cfg.active_llama_fork`).
+///
+/// T43 (2026-08-15): antes disso, `LlamaCpp` sempre montava a `base_url` a
+/// partir de `cfg.llama_cpp_base_url` (fixo, default porta 8082),
+/// **ignorando completamente** qual fork estava selecionado — resultado:
+/// `ensure_llama_ready` subia o `llama-server` do fork certo (ex: Mainline,
+/// porta 8083, já usava `fork.port` corretamente), mas o chat em si tentava
+/// falar com a porta errada (8082) e falhava. Agora a porta vem sempre do
+/// `LlamaForkConfig` de verdade (mesma fonte que inicia o servidor).
 pub(crate) fn build_provider_config(
     kind: ProviderKind,
     cfg: &AppConfig,
     app_data_dir: &PathBuf,
     custom_provider_id: Option<&str>,
+    fork_id: Option<&str>,
 ) -> Result<(models::ProviderConfig, Option<String>), String> {
     if kind == ProviderKind::Custom {
         let id = custom_provider_id
@@ -112,12 +149,35 @@ pub(crate) fn build_provider_config(
         ));
     }
 
+    if kind == ProviderKind::LlamaCpp {
+        let fork_id = fork_id
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| cfg.active_llama_fork.clone());
+        let forks =
+            providers::llama_cpp::load_forks(app_data_dir).map_err(|e| e.to_string())?;
+        let fork = forks
+            .into_iter()
+            .find(|f| f.id == fork_id)
+            .ok_or_else(|| format!("fork llama.cpp desconhecido: {fork_id}"))?;
+        let base_url = format!("http://127.0.0.1:{}/v1", fork.port);
+        return Ok((
+            models::ProviderConfig {
+                kind,
+                base_url,
+                has_api_key: false,
+                llama_fork: Some(fork_id),
+                supports_vision_override: false,
+                context_length_override: None,
+            },
+            None,
+        ));
+    }
+
     let base_url = match kind {
         ProviderKind::Openrouter => cfg.openrouter_base_url.clone(),
-        ProviderKind::LlamaCpp => cfg.llama_cpp_base_url.clone(),
         ProviderKind::Ollama => cfg.ollama_base_url.clone(),
         ProviderKind::LmStudio => cfg.lmstudio_base_url.clone(),
-        ProviderKind::Custom => unreachable!(),
+        ProviderKind::LlamaCpp | ProviderKind::Custom => unreachable!(),
     };
     let api_key = if matches!(kind, ProviderKind::Openrouter) {
         config::get_openrouter_key()
@@ -149,6 +209,7 @@ async fn list_provider_models(
         &cfg,
         &state.app_data_dir,
         custom_provider_id.as_deref(),
+        None,
     )?;
     providers::list_models(&provider_cfg, api_key, &state.app_data_dir)
         .await
@@ -176,6 +237,125 @@ fn set_model_favorites(
         map.insert(provider_key, model_ids);
     }
     config::save_model_favorites(&state.app_data_dir, &map).map_err(|e| e.to_string())
+}
+
+/// Tamanho de contexto lembrado por modelo (`provider_key::model_id`, mesma
+/// convenção de `provider_key` que os favoritos usam) — pedido do usuário
+/// pra "colocar o contexto de um LLM por API" uma vez e ele valer em
+/// qualquer sessão futura com o mesmo modelo, não só a atual.
+#[tauri::command]
+fn get_model_context_override(state: State<AppState>, key: String) -> Option<u32> {
+    let map = config::load_model_context_overrides(&state.app_data_dir);
+    map.get(&key).copied()
+}
+
+#[tauri::command]
+fn set_model_context_override(
+    state: State<AppState>,
+    key: String,
+    context_length: Option<u32>,
+) -> Result<(), String> {
+    let mut map = config::load_model_context_overrides(&state.app_data_dir);
+    match context_length {
+        Some(len) => map.insert(key, len),
+        None => map.remove(&key),
+    };
+    config::save_model_context_overrides(&state.app_data_dir, &map).map_err(|e| e.to_string())
+}
+
+/// Mesma convenção de chave que `get_model_favorites`/`get_model_context_override`
+/// usam (`provider_key::model_id`) — replicada aqui (em vez de reusar uma só
+/// implementação) porque o lado Rust nunca tinha essa necessidade antes: até
+/// agora só o frontend computava essa chave (`modelContextOverrideKey` em
+/// `stores/provider.ts`), já que só ele chamava `get_model_context_override`.
+fn model_context_override_key(
+    kind: ProviderKind,
+    model: &str,
+    fork_id: Option<&str>,
+    custom_provider_id: Option<&str>,
+) -> String {
+    let provider_key = match kind {
+        ProviderKind::LlamaCpp => format!("llama_cpp:{}", fork_id.unwrap_or("")),
+        ProviderKind::Custom => format!("custom:{}", custom_provider_id.unwrap_or("")),
+        ProviderKind::Openrouter => "openrouter".to_string(),
+        ProviderKind::Ollama => "ollama".to_string(),
+        ProviderKind::LmStudio => "lm_studio".to_string(),
+    };
+    format!("{provider_key}::{model}")
+}
+
+#[cfg(test)]
+mod model_context_override_key_tests {
+    use super::*;
+
+    #[test]
+    fn matches_frontend_convention_for_openrouter() {
+        assert_eq!(
+            model_context_override_key(ProviderKind::Openrouter, "z-ai/glm-latest", None, None),
+            "openrouter::z-ai/glm-latest"
+        );
+    }
+
+    #[test]
+    fn matches_frontend_convention_for_llama_cpp_fork() {
+        assert_eq!(
+            model_context_override_key(ProviderKind::LlamaCpp, "qwen3-8b", Some("turboquant"), None),
+            "llama_cpp:turboquant::qwen3-8b"
+        );
+    }
+
+    #[test]
+    fn matches_frontend_convention_for_custom_provider() {
+        assert_eq!(
+            model_context_override_key(ProviderKind::Custom, "claude-sonnet", None, Some("claude-conn")),
+            "custom:claude-conn::claude-sonnet"
+        );
+    }
+
+    #[test]
+    fn distinguishes_ollama_from_lm_studio() {
+        assert_ne!(
+            model_context_override_key(ProviderKind::Ollama, "llama3", None, None),
+            model_context_override_key(ProviderKind::LmStudio, "llama3", None, None),
+        );
+    }
+}
+
+/// Tamanho de contexto pra uma sessão nova (ou trocando de modelo): o valor
+/// LEMBRADO pelo usuário pro modelo (`model_context_overrides.json`) sempre
+/// vence, se existir — só cai no lookup automático (`resolve_context_length`,
+/// que pra OpenRouter quase sempre acha um valor real via `/models`) quando
+/// não há nada lembrado ainda.
+///
+/// Bug real encontrado testando ao vivo, 2026-08-20: sem essa prioridade, o
+/// valor lembrado NUNCA tinha chance de ser aplicado em conexões de API —
+/// `resolve_context_length` já preenchia `context_length` na hora de criar a
+/// sessão (OpenRouter documenta o contexto de quase todo modelo), e o
+/// frontend (`applyRememberedContextLength`, `stores/session.ts`) só aplica
+/// o valor lembrado quando a sessão AINDA não tem nenhum — nunca disparava
+/// pra API. Em provider local (llama.cpp/Ollama/LM Studio), o lookup
+/// automático falha com mais frequência (deixa `None`), por isso "local já
+/// funcionava" e só a API estava presa no valor automático.
+async fn resolve_session_context_length(
+    state: State<'_, AppState>,
+    kind: ProviderKind,
+    model: &str,
+    fork_id: Option<&str>,
+    custom_provider_id: Option<&str>,
+) -> Option<u32> {
+    let key = model_context_override_key(kind, model, fork_id, custom_provider_id);
+    if let Some(remembered) = config::load_model_context_overrides(&state.app_data_dir).get(&key).copied() {
+        return Some(remembered);
+    }
+    resolve_context_length(
+        state,
+        kind,
+        model.to_string(),
+        fork_id.map(|s| s.to_string()),
+        custom_provider_id.map(|s| s.to_string()),
+    )
+    .await
+    .unwrap_or(None)
 }
 
 /// Best-effort context-window lookup for a given provider+model, used when
@@ -207,6 +387,7 @@ async fn resolve_context_length(
         &cfg,
         &state.app_data_dir,
         custom_provider_id.as_deref(),
+        None,
     )?;
     Ok(providers::get_context_length(&provider_cfg, api_key, &model, &state.app_data_dir).await)
 }
@@ -416,6 +597,24 @@ fn stop_all_llama_servers(state: &AppState) {
     }
 }
 
+/// Mata de vez todo `llama-server` ainda tracked, via `taskkill /T /F` —
+/// chamado no fechamento do app (ver `run`). `stop_all_llama_servers` acima
+/// usa só `start_kill()`/`kill_on_drop`, que dependem do runtime async ter
+/// chance de rodar o kill — no fechamento do app isso não é garantido (o
+/// processo do Cerne pode sumir antes do kill assíncrono terminar), e o
+/// llama-server fica órfão consumindo RAM/VRAM pra sempre. Síncrono de
+/// propósito, mesmo motivo do `BackgroundJobs::kill_all_blocking`.
+fn kill_all_llama_children_blocking(state: &AppState) {
+    let pids: Vec<u32> = {
+        let children = state.llama_children.lock().unwrap();
+        children.values().filter_map(|c| c.id()).collect()
+    };
+    for pid in pids {
+        agent::shell::kill_pid_tree_blocking(pid);
+    }
+    state.llama_children.lock().unwrap().clear();
+}
+
 #[tauri::command]
 fn list_sessions(state: State<AppState>) -> Result<Vec<Session>, String> {
     sessions::list_sessions(&state.app_data_dir).map_err(|e| e.to_string())
@@ -431,15 +630,14 @@ async fn create_session(
     fork_id: Option<String>,
     custom_provider_id: Option<String>,
 ) -> Result<Session, String> {
-    let context_length = resolve_context_length(
+    let context_length = resolve_session_context_length(
         state.clone(),
         provider,
-        model.clone(),
-        fork_id.clone(),
-        custom_provider_id.clone(),
+        &model,
+        fork_id.as_deref(),
+        custom_provider_id.as_deref(),
     )
-    .await
-    .unwrap_or(None);
+    .await;
     let session = sessions::create_session(
         &state.app_data_dir,
         title,
@@ -464,15 +662,14 @@ async fn update_session_provider_model(
     fork_id: Option<String>,
     custom_provider_id: Option<String>,
 ) -> Result<Session, String> {
-    let context_length = resolve_context_length(
+    let context_length = resolve_session_context_length(
         state.clone(),
         provider,
-        model.clone(),
-        fork_id.clone(),
-        custom_provider_id.clone(),
+        &model,
+        fork_id.as_deref(),
+        custom_provider_id.as_deref(),
     )
-    .await
-    .unwrap_or(None);
+    .await;
     let session = sessions::update_provider_model(
         &state.app_data_dir,
         &id,
@@ -506,11 +703,329 @@ fn update_session_read_paths(
         .map_err(|e| e.to_string())
 }
 
+/// Fase D1: troca a pasta de trabalho (project_root) de uma sessão já
+/// existente — ver `sessions::update_project_root`.
+#[tauri::command]
+fn update_session_project_root(
+    state: State<AppState>,
+    id: String,
+    project_root: Option<String>,
+) -> Result<Session, String> {
+    sessions::update_project_root(&state.app_data_dir, &id, project_root).map_err(|e| e.to_string())
+}
+
 /// Verifica se um caminho é um diretório existente. Usado pelo composer para
 /// detectar quando o usuário cola um caminho de pasta e oferecer adicioná-la.
 #[tauri::command]
 fn check_path_is_directory(path: String) -> bool {
     std::path::Path::new(&path).is_dir()
+}
+
+#[derive(serde::Serialize)]
+struct DirEntryInfo {
+    name: String,
+    path: String,
+    is_dir: bool,
+}
+
+/// Fase D2 do roteiro de Agentes/Skills: lista o conteúdo de UMA pasta (não
+/// recursivo) — pro `FileBrowser.vue` carregar sob demanda conforme o
+/// usuário expande nós da árvore, em vez de ler tudo de uma vez (mais
+/// simples e não trava em pastas gigantes tipo `node_modules`). Mesmo
+/// espírito de leitura sem restrição extra que a tool `list_dir` do agente
+/// já tem — quem está navegando é o próprio usuário, não o LLM.
+#[tauri::command]
+fn list_dir_entries(path: String) -> Result<Vec<DirEntryInfo>, String> {
+    let dir = std::path::Path::new(&path);
+    let mut entries = Vec::new();
+    for entry in std::fs::read_dir(dir).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        // Esconde ocultos (.git, .cerne, .env, etc.) — ruído que o usuário
+        // quase nunca quer navegar manualmente.
+        if name.starts_with('.') {
+            continue;
+        }
+        let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        entries.push(DirEntryInfo {
+            name,
+            path: entry.path().to_string_lossy().to_string(),
+            is_dir,
+        });
+    }
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
+    Ok(entries)
+}
+
+/// Fase D1 revisitada (2026-08-17): diff de repositório de verdade, pego do
+/// `git` — substitui a reconstrução a partir do histórico de tool calls que
+/// `RepoDiffViewer.vue` usava antes (perdia edição manual do usuário, não
+/// distinguia arquivo novo/deletado/renomeado direito). Roda em
+/// `spawn_blocking` porque `std::process::Command` bloqueia a thread
+/// enquanto o subprocesso `git` roda.
+#[tauri::command]
+async fn git_repo_status(project_root: String) -> Result<Vec<git::GitFileChange>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git::status(std::path::Path::new(&project_root)).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn git_file_diff(project_root: String, path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        git::diff_file(std::path::Path::new(&project_root), &path).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(serde::Serialize)]
+struct ExportSessionsResult {
+    exported: usize,
+}
+
+#[tauri::command]
+async fn export_sessions_backup(
+    state: tauri::State<'_, AppState>,
+    session_ids: Vec<String>,
+    dest_path: String,
+) -> Result<ExportSessionsResult, String> {
+    let app_data_dir = state.app_data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        backup::export_sessions_zip(&app_data_dir, &session_ids, std::path::Path::new(&dest_path))
+            .map(|exported| ExportSessionsResult { exported })
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn import_sessions_backup(
+    state: tauri::State<'_, AppState>,
+    source_path: String,
+) -> Result<backup::ImportSummary, String> {
+    let app_data_dir = state.app_data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        backup::import_sessions_zip(&app_data_dir, std::path::Path::new(&source_path))
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(serde::Serialize)]
+struct BackupGitStatus {
+    is_repo: bool,
+    remote: Option<String>,
+    identity_name: Option<String>,
+    identity_email: Option<String>,
+    has_token: bool,
+    token_preview: Option<String>,
+}
+
+fn backup_git_dir(app_data_dir: &std::path::Path) -> std::path::PathBuf {
+    app_data_dir.join("sessions")
+}
+
+#[tauri::command]
+async fn backup_git_status(state: tauri::State<'_, AppState>) -> Result<BackupGitStatus, String> {
+    let dir = backup_git_dir(&state.app_data_dir);
+    tauri::async_runtime::spawn_blocking(move || {
+        let (identity_name, identity_email) = git::get_local_identity(&dir);
+        BackupGitStatus {
+            is_repo: git::is_repo(&dir),
+            remote: git::get_remote(&dir),
+            identity_name,
+            identity_email,
+            has_token: config::has_backup_git_token(),
+            token_preview: config::backup_git_token_preview(),
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn backup_git_init(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let dir = backup_git_dir(&state.app_data_dir);
+    tauri::async_runtime::spawn_blocking(move || git::init_repo(&dir).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn backup_git_set_remote(state: tauri::State<'_, AppState>, url: String) -> Result<(), String> {
+    let dir = backup_git_dir(&state.app_data_dir);
+    tauri::async_runtime::spawn_blocking(move || {
+        git::set_remote(&dir, &url).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn backup_git_set_identity(
+    state: tauri::State<'_, AppState>,
+    name: String,
+    email: String,
+) -> Result<(), String> {
+    let dir = backup_git_dir(&state.app_data_dir);
+    tauri::async_runtime::spawn_blocking(move || {
+        git::set_local_identity(&dir, &name, &email).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn set_backup_git_token(token: String) -> Result<(), String> {
+    config::set_backup_git_token(&token).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn clear_backup_git_token() -> Result<(), String> {
+    config::clear_backup_git_token().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn backup_git_sync(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let dir = backup_git_dir(&state.app_data_dir);
+    tauri::async_runtime::spawn_blocking(move || {
+        let token = config::get_backup_git_token();
+        git::sync(&dir, token.as_deref()).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn get_memory(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let app_data_dir = state.app_data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || memory::load_memory(&app_data_dir).map_err(|e| e.to_string()))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+async fn set_memory(state: tauri::State<'_, AppState>, content: String) -> Result<(), String> {
+    let app_data_dir = state.app_data_dir.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        memory::save_memory(&app_data_dir, &content).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(serde::Serialize)]
+struct TtsResult {
+    audio_base64: String,
+    /// MIME real do áudio devolvido — a OpenAI/OpenRouter mandam MP3, então
+    /// o frontend usa isso pra montar a data URI certa em vez de assumir
+    /// MP3 sempre. Vazio quando `play_locally` é falso (nada pra tocar).
+    mime: String,
+    /// Quando falso, o Cerne não deve criar/tocar nenhum `<audio>` — o
+    /// Voicebox já toca a fala sozinho (opção "Autoplay on generate" dele,
+    /// ligada por padrão). Pedido do usuário, 2026-08-20: com os dois
+    /// tocando, soava como fala duplicada/eco; a correção é deixar só o
+    /// Voicebox tocar e o Cerne só disparar e mostrar o estado.
+    play_locally: bool,
+}
+
+#[tauri::command]
+async fn tts_speak(state: State<'_, AppState>, text: String) -> Result<TtsResult, String> {
+    let cfg = state.config.lock().unwrap().clone();
+
+    if cfg.tts_backend == models::VoiceBackend::Voicebox {
+        let language = if cfg.tts_auto_language {
+            Some(audio::detect_language(&text))
+        } else {
+            None
+        };
+        voicebox::speak(&cfg.voicebox_base_url, &text, &cfg.voicebox_tts_profile, language)
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(TtsResult { audio_base64: String::new(), mime: String::new(), play_locally: false });
+    }
+
+    let (provider_cfg, api_key) = build_provider_config(
+        cfg.tts_provider,
+        &cfg,
+        &state.app_data_dir,
+        cfg.tts_custom_provider_id.as_deref(),
+        cfg.tts_llama_fork.as_deref(),
+    )?;
+    if cfg.tts_provider == ProviderKind::Openrouter && api_key.is_none() {
+        return Err("chave da OpenRouter nao configurada".to_string());
+    }
+    let voice = audio::resolve_voice(&cfg.tts_model, &cfg.tts_voice, &text, cfg.tts_auto_language);
+    let audio_base64 = audio::synthesize_speech(&provider_cfg.base_url, api_key.as_deref(), &text, &cfg.tts_model, &voice)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(TtsResult { audio_base64, mime: "audio/mpeg".to_string(), play_locally: true })
+}
+
+#[tauri::command]
+async fn stt_transcribe(
+    state: State<'_, AppState>,
+    audio_base64: String,
+    format: String,
+) -> Result<String, String> {
+    let cfg = state.config.lock().unwrap().clone();
+
+    if cfg.stt_backend == models::VoiceBackend::Voicebox {
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&audio_base64)
+            .map_err(|e| format!("audio base64 invalido: {e}"))?;
+        let language = if cfg.voicebox_stt_language.trim().is_empty() {
+            None
+        } else {
+            Some(cfg.voicebox_stt_language.as_str())
+        };
+        return voicebox::transcribe_audio(&cfg.voicebox_base_url, bytes, &format, language)
+            .await
+            .map_err(|e| e.to_string());
+    }
+
+    let (provider_cfg, api_key) = build_provider_config(
+        cfg.stt_provider,
+        &cfg,
+        &state.app_data_dir,
+        cfg.stt_custom_provider_id.as_deref(),
+        cfg.stt_llama_fork.as_deref(),
+    )?;
+    if cfg.stt_provider == ProviderKind::Openrouter && api_key.is_none() {
+        return Err("chave da OpenRouter nao configurada".to_string());
+    }
+    audio::transcribe_audio(
+        &provider_cfg.base_url,
+        api_key.as_deref(),
+        &audio_base64,
+        &format,
+        &cfg.stt_model,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Checagem genérica de dependência externa opcional (`git`, `uv`, `node`) —
+/// 2026-08-17, pedido do usuário testando ao vivo: um usuário só com o
+/// Cerne Code instalado (sem `uv`, por exemplo) batia num erro de shell
+/// confuso na primeira vez que uma ferramenta Python era usada, sem
+/// entender o motivo. UI consulta isso pra mostrar um aviso claro em vez de
+/// deixar a ferramenta falhar silenciosamente depois.
+#[tauri::command]
+async fn check_command_available(name: String) -> bool {
+    tauri::async_runtime::spawn_blocking(move || agent::shell::command_exists(&name))
+        .await
+        .unwrap_or(false)
 }
 
 /// Extrai o texto de um arquivo anexado no composer (pdf/docx/xlsx/md/código/
@@ -556,6 +1071,7 @@ async fn check_vision_support(
         &session.provider,
         &state,
         session.custom_provider_id.as_deref(),
+        None,
     )
     .map_err(|e| e.to_string())?;
     Ok(providers::supports_vision(&cfg, api_key, &session.model, &state.app_data_dir).await)
@@ -577,6 +1093,7 @@ async fn test_vision(
         &cfg,
         &state.app_data_dir,
         custom_provider_id.as_deref(),
+        None,
     )
     .map_err(|e| e.to_string())?;
 
@@ -710,6 +1227,37 @@ fn get_session_context_usage(
         session.total_completion_tokens,
         session.total_requests,
     ))
+}
+
+/// Lista as execuções de agente/skill (`task`/`verify_completion`) em
+/// andamento ou recém-terminadas, de qualquer sessão — mesmo escopo global
+/// ao app que `list_background` já usa pra jobs em segundo plano.
+#[tauri::command]
+fn list_agent_executions(state: State<AppState>) -> Vec<models::AgentExecution> {
+    let mut executions: Vec<models::AgentExecution> =
+        state.agent_executions.lock().unwrap().values().cloned().collect();
+    // Mais recente primeiro — pedido do usuário testando ao vivo: o painel é
+    // um histórico, e ele quer ver o último comando/skill rodado no topo, sem
+    // ter que rolar passando pelos mais antigos.
+    executions.sort_by_key(|e| std::cmp::Reverse(e.started_at_ms));
+    executions
+}
+
+/// Fase C1: versão pro painel da UI de `list_background` (que já existe
+/// como tool do LLM) — antes o frontend não tinha NENHUM comando Tauri pra
+/// listar jobs em segundo plano, só via evento `agent:background_output`
+/// (push, mas sem descoberta inicial dos jobs já rodando).
+#[tauri::command]
+fn list_background_jobs(state: State<AppState>) -> Vec<agent::background::BackgroundJobInfo> {
+    state.background_jobs.list_structured()
+}
+
+/// Fase C1: encerra um job em segundo plano a pedido do usuário (botão
+/// "cancelar" no painel) — mesma lógica de `stop_background` (tool do LLM),
+/// só exposta como comando Tauri direto.
+#[tauri::command]
+async fn stop_background_job(state: State<'_, AppState>, id: String) -> Result<String, String> {
+    state.background_jobs.stop(&id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -923,6 +1471,21 @@ fn answer_permission(state: State<AppState>, id: String, approved: bool) -> Resu
     })
 }
 
+/// Aprova ou recusa um plano de agentes/skills pendente (Fase A5) — ver
+/// `agent::request_agents_skills_plan`.
+#[tauri::command]
+fn answer_agents_skills_plan(state: State<AppState>, id: String, approved: bool) -> Result<(), String> {
+    let sender = state
+        .pending_agent_plans
+        .lock()
+        .unwrap()
+        .remove(&id)
+        .ok_or("plano de agentes/skills nao encontrado (id errado, ou ja respondido)")?;
+    sender.send(approved).map_err(|_| {
+        "nao foi possivel entregar a resposta (a tarefa que pediu o plano ja desistiu)".to_string()
+    })
+}
+
 #[tauri::command]
 fn update_session_execution_mode(
     state: State<AppState>,
@@ -973,6 +1536,89 @@ fn update_session_mcp_servers(
 }
 
 #[tauri::command]
+fn update_session_persona(
+    state: State<AppState>,
+    id: String,
+    persona_id: Option<String>,
+) -> Result<Session, String> {
+    sessions::update_persona(&state.app_data_dir, &id, persona_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_personas(state: State<AppState>) -> Result<Vec<Persona>, String> {
+    personas::list_personas(&state.app_data_dir).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_persona(
+    state: State<AppState>,
+    name: String,
+    content: String,
+    tools: Vec<String>,
+    skills: Vec<String>,
+    kind: personas::PersonaKind,
+) -> Result<Persona, String> {
+    personas::create_persona(&state.app_data_dir, &name, &content, tools, skills, kind)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_persona(
+    state: State<AppState>,
+    id: String,
+    name: String,
+    content: String,
+    tools: Vec<String>,
+    skills: Vec<String>,
+    kind: personas::PersonaKind,
+) -> Result<Persona, String> {
+    personas::update_persona(&state.app_data_dir, &id, &name, &content, tools, skills, kind)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_persona(state: State<AppState>, id: String) -> Result<(), String> {
+    personas::delete_persona(&state.app_data_dir, &id).map_err(|e| e.to_string())
+}
+
+/// T29: pastas na lista de sessões da barra lateral, 2 níveis.
+#[tauri::command]
+fn list_folders(state: State<AppState>) -> Result<Vec<Folder>, String> {
+    folders::list_folders(&state.app_data_dir).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn create_folder(
+    state: State<AppState>,
+    name: String,
+    parent_id: Option<String>,
+) -> Result<Folder, String> {
+    folders::create_folder(&state.app_data_dir, &name, parent_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn rename_folder(state: State<AppState>, id: String, name: String) -> Result<Folder, String> {
+    folders::rename_folder(&state.app_data_dir, &id, &name).map_err(|e| e.to_string())
+}
+
+/// Devolve os ids das subpastas que ficaram órfãs (movidas pra raiz) — o
+/// frontend usa isso pra atualizar a árvore local sem precisar recarregar
+/// tudo de novo.
+#[tauri::command]
+fn delete_folder(state: State<AppState>, id: String) -> Result<Vec<String>, String> {
+    folders::delete_folder(&state.app_data_dir, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_session_folder(
+    state: State<AppState>,
+    id: String,
+    folder_id: Option<String>,
+) -> Result<Session, String> {
+    sessions::update_folder(&state.app_data_dir, &id, folder_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn list_skills(
     state: State<AppState>,
     project_root: Option<String>,
@@ -1016,6 +1662,45 @@ fn open_skills_folder(app: tauri::AppHandle, state: State<AppState>) -> Result<(
         .map_err(|e| e.to_string())
 }
 
+/// Fase 6, Degrau 1 (skill store — importar de URL, sem registry/hospedagem
+/// nova): busca o conteúdo pro preview no `SkillImportModal.vue`.
+#[tauri::command]
+async fn fetch_skill_from_url(url: String) -> Result<String, String> {
+    skills::fetch_skill_from_url(&url).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn import_skill(state: State<AppState>, content: String) -> Result<String, String> {
+    skills::import_skill(&state.app_data_dir, &content)
+        .map(|p| p.to_string_lossy().to_string())
+        .map_err(|e| e.to_string())
+}
+
+/// T17: ferramentas Python que o próprio LLM cria (`create_python_tool`/
+/// `update_python_tool`, ver `agent/tools.rs`) — o usuário só vê/edita/apaga
+/// pela UI, não cria uma do zero por aqui (ver `python_tools.rs`).
+#[tauri::command]
+fn list_python_tools(state: State<AppState>) -> Result<Vec<python_tools::PythonTool>, String> {
+    python_tools::list_python_tools(&state.app_data_dir).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_python_tool(
+    state: State<AppState>,
+    name: String,
+    description: String,
+    script: String,
+    dependencies: Vec<String>,
+) -> Result<python_tools::PythonTool, String> {
+    python_tools::update_python_tool(&state.app_data_dir, &name, &description, &script, dependencies)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_python_tool(state: State<AppState>, name: String) -> Result<(), String> {
+    python_tools::delete_python_tool(&state.app_data_dir, &name).map_err(|e| e.to_string())
+}
+
 /// Abre um link (de uma resposta em markdown, por exemplo) no navegador
 /// padrão do sistema em vez de navegar a janela do próprio app pra fora —
 /// sem isso, clicar num link joga o WebView inteiro pra aquela URL e some
@@ -1038,12 +1723,19 @@ fn save_search_config(
     provider: search::SearchProviderKind,
     searxng_url: String,
     api_key: Option<String>,
+    google_cse_id: Option<String>,
+    bing_endpoint: Option<String>,
 ) -> Result<search::SearchConfigView, String> {
+    let previous = search::load_config(&state.app_data_dir);
     search::save_config(
         &state.app_data_dir,
         &search::SearchConfig {
             provider,
             searxng_url,
+            google_cse_id: google_cse_id.unwrap_or(previous.google_cse_id),
+            bing_endpoint: bing_endpoint
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or(previous.bing_endpoint),
         },
     )
     .map_err(|e| e.to_string())?;
@@ -1070,10 +1762,18 @@ async fn test_search_provider(
     provider: search::SearchProviderKind,
     api_key: Option<String>,
     searxng_url: Option<String>,
+    google_cse_id: Option<String>,
+    bing_endpoint: Option<String>,
 ) -> Result<usize, String> {
-    agent::websearch::test_provider(provider, api_key.as_deref(), searxng_url.as_deref())
-        .await
-        .map_err(|e| e.to_string())
+    agent::websearch::test_provider(
+        provider,
+        api_key.as_deref(),
+        searxng_url.as_deref(),
+        google_cse_id.as_deref(),
+        bing_endpoint.as_deref(),
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1101,10 +1801,28 @@ fn remove_mcp_server(state: State<AppState>, name: String) -> Result<(), String>
 /// tools em caso de sucesso, ou uma mensagem de erro específica o bastante
 /// pra apontar o que checar.
 #[tauri::command]
-async fn test_mcp_server(server: mcp::McpServerConfig) -> Result<Vec<String>, String> {
+async fn test_mcp_server(server: mcp::McpServerConfig) -> Result<Vec<mcp::McpToolInfo>, String> {
     mcp::test_connection(&server)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Modal "ver ferramentas" do composer (2026-08-17): se o servidor já
+/// estiver conectado no pool compartilhado (habilitado nesta sessão de
+/// app), reaproveita essa conexão em vez de abrir uma segunda em paralelo
+/// pro mesmo comando — algumas implementações de servidor MCP não toleram
+/// duas instâncias ao mesmo tempo e derrubavam o handshake (achado ao
+/// vivo). Só cai pra uma conexão descartável (`test_mcp_server`) quando o
+/// servidor ainda não está conectado (nunca habilitado, ou desconectado).
+#[tauri::command]
+async fn list_mcp_server_tools(
+    state: State<'_, AppState>,
+    server: mcp::McpServerConfig,
+) -> Result<Vec<mcp::McpToolInfo>, String> {
+    if let Some(tools) = state.mcp_clients.list_tools(&server.name).await {
+        return Ok(tools);
+    }
+    mcp::test_connection(&server).await.map_err(|e| e.to_string())
 }
 
 /// Verifica se o usuário já aceitou o disclaimer de responsabilidade.
@@ -1136,17 +1854,33 @@ pub fn run() {
                 config: Mutex::new(config),
                 pending_edits: Mutex::new(HashMap::new()),
                 llama_children: Mutex::new(HashMap::new()),
-                background_jobs: agent::background::BackgroundJobs::default(),
+                background_jobs: agent::background::BackgroundJobs::new(app.handle().clone()),
                 mcp_clients: mcp::McpClients::default(),
                 pending_questions: Mutex::new(HashMap::new()),
                 pending_permissions: Mutex::new(HashMap::new()),
+                pending_agent_plans: Mutex::new(HashMap::new()),
                 running_turns: Mutex::new(HashMap::new()),
+                agent_executions: Mutex::new(HashMap::new()),
+                orchestrated_sessions: Mutex::new(HashMap::new()),
             });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_config,
             set_config,
+            export_sessions_backup,
+            import_sessions_backup,
+            backup_git_status,
+            backup_git_init,
+            backup_git_set_remote,
+            backup_git_set_identity,
+            set_backup_git_token,
+            clear_backup_git_token,
+            backup_git_sync,
+            tts_speak,
+            stt_transcribe,
+            get_memory,
+            set_memory,
             set_openrouter_key,
             has_openrouter_key,
             openrouter_key_preview,
@@ -1156,6 +1890,8 @@ pub fn run() {
             list_provider_models,
             get_model_favorites,
             set_model_favorites,
+            get_model_context_override,
+            set_model_context_override,
             resolve_context_length,
             list_llama_forks,
             add_llama_fork,
@@ -1178,8 +1914,23 @@ pub fn run() {
             update_session_reasoning_effort,
             update_session_fable_method,
             update_session_mcp_servers,
+            update_session_persona,
+            list_personas,
+            create_persona,
+            update_persona,
+            delete_persona,
+            list_folders,
+            create_folder,
+            rename_folder,
+            delete_folder,
+            update_session_folder,
             update_session_read_paths,
+            update_session_project_root,
             check_path_is_directory,
+            list_dir_entries,
+            git_repo_status,
+            git_file_diff,
+            check_command_available,
             extract_attachment_text,
             check_vision_support,
             test_vision,
@@ -1188,6 +1939,9 @@ pub fn run() {
             get_session_messages,
             get_session_tasks,
             get_session_context_usage,
+            list_agent_executions,
+            list_background_jobs,
+            stop_background_job,
             delete_session,
             send_message,
             cancel_turn,
@@ -1197,22 +1951,40 @@ pub fn run() {
             save_attachment_md,
             answer_ask,
             answer_permission,
+            answer_agents_skills_plan,
             list_skills,
             create_skill,
             skill_template_body,
             read_skill,
             save_skill,
             open_skills_folder,
+            fetch_skill_from_url,
+            import_skill,
+            list_python_tools,
+            update_python_tool,
+            delete_python_tool,
             open_external_url,
             list_mcp_servers,
             add_mcp_server,
             remove_mcp_server,
             test_mcp_server,
+            list_mcp_server_tools,
             get_search_config,
             save_search_config,
             clear_search_api_key,
             test_search_provider,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| {
+            // Fechar a ultima janela dispara isso antes do processo do app
+            // realmente sumir - e a unica chance confiavel de matar
+            // llama-server/dev-servers em background (ver funcoes acima:
+            // sem isso eles ficam orfaos consumindo RAM/VRAM pra sempre).
+            if let tauri::RunEvent::ExitRequested { .. } = event {
+                let state = app_handle.state::<AppState>();
+                kill_all_llama_children_blocking(&state);
+                state.background_jobs.kill_all_blocking();
+            }
+        });
 }
