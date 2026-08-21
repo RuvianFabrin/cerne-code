@@ -3,22 +3,22 @@ import { computed, nextTick, ref } from "vue";
 import { useI18n } from "vue-i18n";
 import Dialog from "primevue/dialog";
 import { useSessionStore } from "../stores/session";
+import SidebarSessionItem from "./SidebarSessionItem.vue";
+import SidebarSessionTree from "./SidebarSessionTree.vue";
+import type { Session } from "../api";
 
-const props = defineProps<{ view: "chat" | "settings" }>();
 const emit = defineEmits<{
-  "update:view": [value: "chat" | "settings"];
-  "new-session": [];
+  "new-session": [folderId?: string | null];
   "open-help": [];
   "open-about": [];
+  "open-settings": [];
+  "open-agents-skills": [];
 }>();
 
 const { t } = useI18n();
 const sessionStore = useSessionStore();
 const search = ref("");
 const collapsed = ref(false);
-const editingId = ref<string | null>(null);
-const editingTitle = ref("");
-const renameInputRef = ref<HTMLInputElement | null>(null);
 
 // Largura da sidebar é arrastável (handle na borda direita) e persiste entre
 // reinícios — sem isso, todo mundo fica preso na largura fixa original,
@@ -71,31 +71,192 @@ async function confirmDelete() {
   deleteTarget.value = null;
 }
 
+// Pasta que o usuário pediu pra excluir — sessões/subpastas dela sobem pra
+// raiz automaticamente (reversível arrastando de volta), sem exigir uma
+// segunda confirmação além do próprio clique no ícone de excluir.
+const deleteFolderTarget = ref<{ id: string; name: string } | null>(null);
+
+function requestDeleteFolder(id: string, name: string) {
+  deleteFolderTarget.value = { id, name };
+}
+
+async function confirmDeleteFolder() {
+  if (!deleteFolderTarget.value) return;
+  await sessionStore.deleteFolder(deleteFolderTarget.value.id);
+  deleteFolderTarget.value = null;
+}
+
 const filtered = computed(() =>
   sessionStore.sessions.filter((s) => s.title.toLowerCase().includes(search.value.toLowerCase())),
 );
 
-function select(id: string) {
-  emit("update:view", "chat");
-  sessionStore.selectSession(id);
+// Buscando: achata a árvore (ignora pastas, mostra resultados soltos) — faz
+// mais sentido que filtrar mantendo a hierarquia intacta.
+const isSearching = computed(() => search.value.trim().length > 0);
+
+const rootFolders = computed(() =>
+  sessionStore.folders.filter((f) => !f.parent_id).sort((a, b) => a.name.localeCompare(b.name)),
+);
+
+function subfoldersOf(rootId: string) {
+  return sessionStore.folders
+    .filter((f) => f.parent_id === rootId)
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-async function startRename(id: string, currentTitle: string) {
-  editingId.value = id;
-  editingTitle.value = currentTitle;
+const knownFolderIds = computed(() => new Set(sessionStore.folders.map((f) => f.id)));
+
+// Lista achatada em ordem de árvore (pai sempre antes dos próprios filhos,
+// recursivo) — pro dropdown "mover sessão" de SidebarSessionItem, que só
+// recebe um array flat e não pode construir a árvore sozinho. Sem isso o
+// dropdown usava `sessionStore.folders` cru (ordem de chegada da API), então
+// uma subpasta podia aparecer longe da pasta-mãe dela na lista.
+const sortedFolders = computed(() => {
+  const result: typeof sessionStore.folders = [];
+  function addChildren(parentId: string | null) {
+    const children = sessionStore.folders
+      .filter((f) => f.parent_id === parentId)
+      .sort((a, b) => a.name.localeCompare(b.name));
+    for (const f of children) {
+      result.push(f);
+      addChildren(f.id);
+    }
+  }
+  addChildren(null);
+  return result;
+});
+
+// Sessão orquestrada (com parent_session_id) nunca aparece como entrada solta
+// na lista/pasta dela mesma — só nasce visível quando a sessão-mãe é
+// expandida (G4.1), não importa em qual pasta ela caiu. Exceção: se a
+// sessão-mãe não existe mais (foi excluída), a filha órfã volta a aparecer
+// normal, senão ela some da sidebar pra sempre sem jeito de abrir.
+const knownSessionIds = computed(() => new Set(sessionStore.sessions.map((s) => s.id)));
+function isNestedChild(s: Session): boolean {
+  return !!s.parent_session_id && knownSessionIds.value.has(s.parent_session_id);
+}
+
+function sessionsIn(folderId: string): Session[] {
+  return filtered.value.filter((s) => s.folder_id === folderId && !isNestedChild(s));
+}
+
+const looseSessions = computed(() =>
+  filtered.value.filter(
+    (s) => (!s.folder_id || !knownFolderIds.value.has(s.folder_id)) && !isNestedChild(s),
+  ),
+);
+
+// G4.1: árvore expansível pra sessões orquestradas — mesmo padrão de
+// localStorage já usado pras pastas (expandedFolders acima), estado de UI
+// puro, não vale a pena mandar pro backend.
+const EXPANDED_SESSIONS_KEY = "cerne-sidebar-expanded-sessions";
+
+function loadExpandedSessions(): Set<string> {
+  try {
+    const raw = localStorage.getItem(EXPANDED_SESSIONS_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+const expandedSessions = ref<Set<string>>(loadExpandedSessions());
+
+function isSessionExpanded(id: string) {
+  return expandedSessions.value.has(id);
+}
+
+function toggleSessionExpanded(id: string) {
+  const next = new Set(expandedSessions.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  expandedSessions.value = next;
+  localStorage.setItem(EXPANDED_SESSIONS_KEY, JSON.stringify([...next]));
+}
+
+// Estado de expandido/recolhido é preferência de UI local — não vale a pena
+// ir pro backend, só persiste em localStorage entre reinícios.
+const EXPANDED_FOLDERS_KEY = "cerne-sidebar-expanded-folders";
+
+function loadExpandedFolders(): Set<string> {
+  try {
+    const raw = localStorage.getItem(EXPANDED_FOLDERS_KEY);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+const expandedFolders = ref<Set<string>>(loadExpandedFolders());
+
+function isExpanded(id: string) {
+  return expandedFolders.value.has(id);
+}
+
+function toggleFolder(id: string) {
+  const next = new Set(expandedFolders.value);
+  if (next.has(id)) next.delete(id);
+  else next.add(id);
+  expandedFolders.value = next;
+  localStorage.setItem(EXPANDED_FOLDERS_KEY, JSON.stringify([...next]));
+}
+
+function expandFolder(id: string) {
+  if (expandedFolders.value.has(id)) return;
+  toggleFolder(id);
+}
+
+// Criar pasta (raiz ou subpasta): mesmo padrão de edição inline já usado pra
+// renomear sessão — abre um input no lugar, confirma no Enter/blur.
+const creatingFolderParentId = ref<string | null | undefined>(undefined);
+const newFolderName = ref("");
+const newFolderInputRef = ref<HTMLInputElement | null>(null);
+
+async function startCreateFolder(parentId: string | null) {
+  creatingFolderParentId.value = parentId;
+  newFolderName.value = "";
+  if (parentId) expandFolder(parentId);
   await nextTick();
-  renameInputRef.value?.focus();
-  renameInputRef.value?.select();
+  newFolderInputRef.value?.focus();
 }
 
-async function confirmRename() {
-  if (!editingId.value) return;
-  await sessionStore.updateTitle(editingId.value, editingTitle.value);
-  editingId.value = null;
+async function confirmCreateFolder() {
+  if (creatingFolderParentId.value === undefined) return;
+  const name = newFolderName.value.trim();
+  const parentId = creatingFolderParentId.value;
+  creatingFolderParentId.value = undefined;
+  if (!name) return;
+  const folder = await sessionStore.createFolder(name, parentId);
+  expandFolder(folder.id);
+  if (parentId) expandFolder(parentId);
 }
 
-function cancelRename() {
-  editingId.value = null;
+function cancelCreateFolder() {
+  creatingFolderParentId.value = undefined;
+}
+
+// Renomear pasta: mesmo padrão inline.
+const editingFolderId = ref<string | null>(null);
+const editingFolderName = ref("");
+const editFolderInputRef = ref<HTMLInputElement | null>(null);
+
+async function startRenameFolder(id: string, currentName: string) {
+  editingFolderId.value = id;
+  editingFolderName.value = currentName;
+  await nextTick();
+  editFolderInputRef.value?.focus();
+  editFolderInputRef.value?.select();
+}
+
+async function confirmRenameFolder() {
+  if (!editingFolderId.value) return;
+  const id = editingFolderId.value;
+  editingFolderId.value = null;
+  await sessionStore.renameFolder(id, editingFolderName.value);
+}
+
+function cancelRenameFolder() {
+  editingFolderId.value = null;
 }
 </script>
 
@@ -123,58 +284,173 @@ function cancelRename() {
         <input v-model="search" :placeholder="$t('sidebar.searchPlaceholder')" />
       </div>
 
-      <div class="section-label">{{ $t("sidebar.recent") }}</div>
-      <div class="session-list">
-        <div
-          v-for="s in filtered"
-          :key="s.id"
-          class="session-item"
-          :class="{ active: s.id === sessionStore.currentId && props.view === 'chat' }"
-          @click="editingId !== s.id && select(s.id)"
+      <div class="section-label-row">
+        <span class="section-label">{{ $t("sidebar.recent") }}</span>
+        <button
+          v-if="!isSearching"
+          class="folder-add-btn"
+          v-tooltip.top="$t('sidebar.newFolder')"
+          @click="startCreateFolder(null)"
         >
-          <span
-            class="msi session-icon"
-            :class="{ 'code-icon': s.project_root || s.extra_read_paths?.length }"
-            v-tooltip.right="(s.project_root || s.extra_read_paths?.length) ? $t('sidebar.codeTooltip', { path: s.project_root || s.extra_read_paths?.[0]?.path || '' }) : $t('sidebar.chatTooltip')"
-          >{{ (s.project_root || s.extra_read_paths?.length) ? "terminal" : "chat_bubble" }}</span>
-          <input
-            v-if="editingId === s.id"
-            ref="renameInputRef"
-            v-model="editingTitle"
-            class="session-rename-input"
-            @click.stop
-            @keydown.enter="confirmRename"
-            @keydown.escape="cancelRename"
-            @blur="confirmRename"
+          <span class="msi">create_new_folder</span>
+        </button>
+      </div>
+
+      <div class="session-list">
+        <!-- Buscando: lista achatada, sem árvore de pastas. -->
+        <template v-if="isSearching">
+          <SidebarSessionItem
+            v-for="s in filtered"
+            :key="s.id"
+            :session="s"
+            :active="s.id === sessionStore.currentId"
+            :folders="sortedFolders"
+            @delete="requestDelete"
           />
-          <span v-else class="session-title">{{ s.title }}</span>
-          <div v-if="editingId === s.id" class="session-actions editing">
-            <button class="session-action-btn" v-tooltip.top="$t('sidebar.save')" @mousedown.prevent="confirmRename">
-              <span class="msi">save</span>
-            </button>
+          <p v-if="filtered.length === 0" class="empty">{{ $t("sidebar.empty") }}</p>
+        </template>
+
+        <template v-else>
+          <div v-if="creatingFolderParentId === null" class="folder-create-row">
+            <span class="msi">folder</span>
+            <input
+              ref="newFolderInputRef"
+              v-model="newFolderName"
+              class="session-rename-input"
+              :placeholder="$t('sidebar.folderNamePlaceholder')"
+              @keydown.enter="confirmCreateFolder"
+              @keydown.escape="cancelCreateFolder"
+              @blur="confirmCreateFolder"
+            />
           </div>
-          <div v-else class="session-actions">
-            <button class="session-action-btn" v-tooltip.top="$t('sidebar.rename')" @click.stop="startRename(s.id, s.title)">
-              <span class="msi">edit</span>
-            </button>
-            <button class="session-action-btn" v-tooltip.top="$t('sidebar.delete')" @click.stop="requestDelete(s.id, s.title)">
-              <span class="msi">delete</span>
-            </button>
+
+          <div v-for="folder in rootFolders" :key="folder.id" class="folder-group">
+            <div class="folder-row" @click="toggleFolder(folder.id)">
+              <span class="msi folder-caret">{{ isExpanded(folder.id) ? "expand_more" : "chevron_right" }}</span>
+              <span class="msi folder-icon">folder</span>
+              <input
+                v-if="editingFolderId === folder.id"
+                ref="editFolderInputRef"
+                v-model="editingFolderName"
+                class="session-rename-input"
+                @click.stop
+                @keydown.enter="confirmRenameFolder"
+                @keydown.escape="cancelRenameFolder"
+                @blur="confirmRenameFolder"
+              />
+              <span v-else class="folder-title">{{ folder.name }}</span>
+              <div class="session-actions" @click.stop>
+                <button class="session-action-btn" v-tooltip.top="$t('sidebar.newSession')" @click="emit('new-session', folder.id); expandFolder(folder.id)">
+                  <span class="msi">add</span>
+                </button>
+                <button class="session-action-btn" v-tooltip.top="$t('sidebar.newSubfolder')" @click="startCreateFolder(folder.id)">
+                  <span class="msi">create_new_folder</span>
+                </button>
+                <button class="session-action-btn" v-tooltip.top="$t('sidebar.rename')" @click="startRenameFolder(folder.id, folder.name)">
+                  <span class="msi">edit</span>
+                </button>
+                <button class="session-action-btn" v-tooltip.top="$t('sidebar.delete')" @click="requestDeleteFolder(folder.id, folder.name)">
+                  <span class="msi">delete</span>
+                </button>
+              </div>
+            </div>
+
+            <div v-if="isExpanded(folder.id)" class="folder-children">
+              <div v-if="creatingFolderParentId === folder.id" class="folder-create-row nested">
+                <span class="msi">folder</span>
+                <input
+                  ref="newFolderInputRef"
+                  v-model="newFolderName"
+                  class="session-rename-input"
+                  :placeholder="$t('sidebar.folderNamePlaceholder')"
+                  @keydown.enter="confirmCreateFolder"
+                  @keydown.escape="cancelCreateFolder"
+                  @blur="confirmCreateFolder"
+                />
+              </div>
+
+              <SidebarSessionTree
+                v-for="s in sessionsIn(folder.id)"
+                :key="s.id"
+                :session="s"
+                :depth="0"
+                :folders="sortedFolders"
+                :is-expanded="isSessionExpanded"
+                @delete="requestDelete"
+                @toggle="toggleSessionExpanded"
+              />
+
+              <div v-for="sub in subfoldersOf(folder.id)" :key="sub.id" class="folder-group nested">
+                <div class="folder-row" @click="toggleFolder(sub.id)">
+                  <span class="msi folder-caret">{{ isExpanded(sub.id) ? "expand_more" : "chevron_right" }}</span>
+                  <span class="msi folder-icon">folder</span>
+                  <input
+                    v-if="editingFolderId === sub.id"
+                    ref="editFolderInputRef"
+                    v-model="editingFolderName"
+                    class="session-rename-input"
+                    @click.stop
+                    @keydown.enter="confirmRenameFolder"
+                    @keydown.escape="cancelRenameFolder"
+                    @blur="confirmRenameFolder"
+                  />
+                  <span v-else class="folder-title">{{ sub.name }}</span>
+                  <div class="session-actions" @click.stop>
+                    <button class="session-action-btn" v-tooltip.top="$t('sidebar.newSession')" @click="emit('new-session', sub.id); expandFolder(sub.id)">
+                      <span class="msi">add</span>
+                    </button>
+                    <button class="session-action-btn" v-tooltip.top="$t('sidebar.rename')" @click="startRenameFolder(sub.id, sub.name)">
+                      <span class="msi">edit</span>
+                    </button>
+                    <button class="session-action-btn" v-tooltip.top="$t('sidebar.delete')" @click="requestDeleteFolder(sub.id, sub.name)">
+                      <span class="msi">delete</span>
+                    </button>
+                  </div>
+                </div>
+                <div v-if="isExpanded(sub.id)" class="folder-children">
+                  <SidebarSessionTree
+                    v-for="s in sessionsIn(sub.id)"
+                    :key="s.id"
+                    :session="s"
+                    :depth="0"
+                    :folders="sortedFolders"
+                    :is-expanded="isSessionExpanded"
+                    @delete="requestDelete"
+                    @toggle="toggleSessionExpanded"
+                  />
+                  <p v-if="sessionsIn(sub.id).length === 0" class="empty nested">{{ $t("sidebar.emptyFolder") }}</p>
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
-        <p v-if="filtered.length === 0" class="empty">{{ $t("sidebar.empty") }}</p>
+
+          <SidebarSessionTree
+            v-for="s in looseSessions"
+            :key="s.id"
+            :session="s"
+            :depth="0"
+            :folders="sortedFolders"
+            :is-expanded="isSessionExpanded"
+            @delete="requestDelete"
+            @toggle="toggleSessionExpanded"
+          />
+          <p v-if="rootFolders.length === 0 && looseSessions.length === 0 && creatingFolderParentId === undefined" class="empty">{{ $t("sidebar.empty") }}</p>
+        </template>
       </div>
     </template>
 
     <div class="bottom-row">
+      <button class="icon-btn" @click="emit('open-agents-skills')" v-tooltip.right="$t('sidebar.agentsSkills')">
+        <span class="msi">smart_toy</span>
+        <span v-if="!collapsed">{{ $t("sidebar.agentsSkills") }}</span>
+      </button>
       <button class="icon-btn" @click="emit('open-help')" v-tooltip.right="$t('sidebar.help')">
         <span class="msi">help</span>
         <span v-if="!collapsed">{{ $t("sidebar.help") }}</span>
       </button>
       <button
         class="icon-btn"
-        :class="{ active: props.view === 'settings' }"
-        @click="emit('update:view', 'settings')"
+        @click="emit('open-settings')"
         v-tooltip.right="$t('sidebar.settings')"
       >
         <span class="msi">settings</span>
@@ -205,6 +481,20 @@ function cancelRename() {
     <template #footer>
       <button class="btn-secondary" @click="deleteTarget = null">{{ t("newSession.cancel") }}</button>
       <button class="btn-danger" @click="confirmDelete">{{ t("sidebar.delete") }}</button>
+    </template>
+  </Dialog>
+
+  <Dialog
+    :visible="!!deleteFolderTarget"
+    @update:visible="(v) => { if (!v) deleteFolderTarget = null; }"
+    modal
+    :header="t('sidebar.deleteFolderConfirmTitle')"
+    :style="{ width: 'min(420px, 92vw)' }"
+  >
+    <p class="delete-confirm-text">{{ t("sidebar.deleteFolderConfirmBody", { name: deleteFolderTarget?.name ?? "" }) }}</p>
+    <template #footer>
+      <button class="btn-secondary" @click="deleteFolderTarget = null">{{ t("newSession.cancel") }}</button>
+      <button class="btn-danger" @click="confirmDeleteFolder">{{ t("sidebar.delete") }}</button>
     </template>
   </Dialog>
 </template>
@@ -426,6 +716,119 @@ function cancelRename() {
   font-size: 12px;
   color: #a1a1aa;
   padding: 8px;
+}
+
+.empty.nested {
+  padding: 4px 8px 4px 30px;
+}
+
+.section-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 4px;
+}
+
+.section-label-row .section-label {
+  padding-right: 0;
+}
+
+.folder-add-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: #a1a1aa;
+  padding: 3px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.folder-add-btn:hover {
+  background: #e4e4e7;
+  color: #18181b;
+}
+
+.folder-add-btn .msi {
+  font-size: 15px;
+}
+
+.folder-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.folder-group.nested {
+  margin-left: 18px;
+}
+
+.folder-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: transparent;
+  padding: 3px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  color: #3f3f46;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.folder-row:hover {
+  background: #f4f4f5;
+}
+
+.folder-row .msi {
+  font-size: 16px;
+  color: #a1a1aa;
+  flex-shrink: 0;
+}
+
+.folder-caret {
+  font-size: 15px !important;
+}
+
+.folder-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-row .session-actions {
+  margin-left: auto;
+}
+
+.folder-row:hover .session-actions {
+  opacity: 1;
+}
+
+.folder-children {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin-left: 18px;
+}
+
+.folder-create-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+}
+
+.folder-create-row.nested {
+  margin-left: 18px;
+}
+
+.folder-create-row .msi {
+  font-size: 16px;
+  color: #a1a1aa;
 }
 
 .bottom-row {

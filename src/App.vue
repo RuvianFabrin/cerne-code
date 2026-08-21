@@ -6,21 +6,23 @@ import Settings from "./components/Settings.vue";
 import HelpModal from "./components/HelpModal.vue";
 import AboutModal from "./components/AboutModal.vue";
 import DisclaimerModal from "./components/DisclaimerModal.vue";
+import AgentsSkillsPanel from "./components/AgentsSkillsPanel.vue";
 import { useI18n } from "vue-i18n";
 import { useProviderStore } from "./stores/provider";
 import { useSessionStore } from "./stores/session";
 import { api } from "./api";
 
 const { t } = useI18n();
-const view = ref<"chat" | "settings">("chat");
+const showSettings = ref(false);
 const showHelp = ref(false);
 const showAbout = ref(false);
 const showDisclaimer = ref(false);
+const showAgentsSkills = ref(false);
 
 const providerStore = useProviderStore();
 const sessionStore = useSessionStore();
 
-async function createNewSession() {
+async function createNewSession(folderId: string | null = null) {
   const cfg = providerStore.config;
   if (!cfg) return;
   const provider = cfg.active_provider;
@@ -29,8 +31,8 @@ async function createNewSession() {
   const customId = provider === "custom" ? (cfg.active_custom_provider_id ?? null) : null;
   // Título default traduzido — o backend reconhece esses mesmos textos pra
   // auto-nomear a sessão na primeira mensagem (agent::run_turn).
-  await sessionStore.createSession(t("newSession.defaultTitle"), provider, model, null, forkId, customId);
-  view.value = "chat";
+  const session = await sessionStore.createSession(t("newSession.defaultTitle"), provider, model, null, forkId, customId);
+  if (folderId) await sessionStore.moveSessionToFolder(session.id, folderId);
 }
 
 onMounted(async () => {
@@ -38,6 +40,9 @@ onMounted(async () => {
     await providerStore.init();
     await sessionStore.initListeners();
     await sessionStore.loadSessions();
+    await sessionStore.loadFolders();
+    await sessionStore.loadPersonas();
+    sessionStore.checkGitAvailable(); // não bloqueia a abertura do app
     if (sessionStore.sessions.length > 0) {
       await sessionStore.selectSession(sessionStore.sessions[0].id);
     }
@@ -59,13 +64,20 @@ async function acceptDisclaimer() {
 
 <template>
   <div class="shell">
-    <Sidebar v-model:view="view" @new-session="createNewSession" @open-help="showHelp = true" @open-about="showAbout = true" />
+    <Sidebar
+      @new-session="createNewSession"
+      @open-help="showHelp = true"
+      @open-about="showAbout = true"
+      @open-settings="showSettings = true"
+      @open-agents-skills="showAgentsSkills = true"
+    />
     <main class="main-panel">
-      <ChatView v-if="view === 'chat'" @open-settings="view = 'settings'" />
-      <Settings v-else />
+      <ChatView @open-settings="showSettings = true" />
     </main>
+    <Settings v-model:visible="showSettings" />
     <HelpModal v-model:visible="showHelp" />
     <AboutModal v-model:visible="showAbout" />
+    <AgentsSkillsPanel v-model:visible="showAgentsSkills" />
     <DisclaimerModal v-model:visible="showDisclaimer" @accepted="acceptDisclaimer" />
   </div>
 </template>
