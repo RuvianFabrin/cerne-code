@@ -13,6 +13,20 @@ const MERGE_TOP_N: usize = 12;
 /// vetor de carga/abuso.
 const MAX_QUERIES_PER_CALL: usize = 5;
 
+/// `reqwest::Client::new()` sozinho NÃO tem timeout nenhum — se o provider
+/// (scraping de DuckDuckGo/Brave/Mojeek, ou qualquer API) travar a conexão
+/// sem responder, a chamada fica pendurada PRA SEMPRE, o turno nunca
+/// termina e a bolinha de "processando" pisca sem parar. Bug real
+/// encontrado testando ao vivo, 2026-08-20: duas sessões diferentes
+/// travaram juntas em "Buscou na web" por minutos, sem timeout nenhum pra
+/// desistir. Todo `reqwest::Client` deste arquivo usa este helper agora.
+fn http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .unwrap_or_default()
+}
+
 /// Busca usando o provider configurado em Configurações → Busca na web
 /// (`Auto` por padrão, sem precisar de chave nem instalar nada). Aceita uma
 /// ou mais queries — o agente decide quantas fazer numa unica chamada (ver
@@ -67,23 +81,118 @@ pub async fn search(app_data_dir: &Path, query: &str) -> Result<String> {
             search_tavily(query, &key).await?
         }
         SearchProviderKind::Searxng => search_searxng(query, &config.searxng_url).await?,
+        SearchProviderKind::Serper => {
+            let key = crate::search::get_key(SearchProviderKind::Serper).ok_or_else(|| {
+                anyhow!(
+                    "busca via Serper selecionada mas sem chave de API configurada — adicione em Configurações → Busca na web"
+                )
+            })?;
+            search_serper(query, &key).await?
+        }
+        SearchProviderKind::Exa => {
+            let key = crate::search::get_key(SearchProviderKind::Exa).ok_or_else(|| {
+                anyhow!(
+                    "busca via Exa selecionada mas sem chave de API configurada — adicione em Configurações → Busca na web"
+                )
+            })?;
+            search_exa(query, &key).await?
+        }
+        SearchProviderKind::GoogleCse => {
+            let key = crate::search::get_key(SearchProviderKind::GoogleCse).ok_or_else(|| {
+                anyhow!(
+                    "busca via Google Custom Search selecionada mas sem chave de API configurada — adicione em Configurações → Busca na web"
+                )
+            })?;
+            if config.google_cse_id.trim().is_empty() {
+                return Err(anyhow!(
+                    "busca via Google Custom Search selecionada mas sem Search Engine ID (cx) configurado — adicione em Configurações → Busca na web"
+                ));
+            }
+            search_google_cse(query, &key, &config.google_cse_id).await?
+        }
+        SearchProviderKind::Bing => {
+            let key = crate::search::get_key(SearchProviderKind::Bing).ok_or_else(|| {
+                anyhow!(
+                    "busca via Bing/Azure selecionada mas sem chave de API configurada — adicione em Configurações → Busca na web"
+                )
+            })?;
+            search_bing(query, &key, &config.bing_endpoint).await?
+        }
     };
     Ok(format_results(&results))
 }
 
-/// Agregador multi-engine no estilo do SearXNG (estudei o código-fonte dele
-/// — `searx/results.py`/`searx/engines/*.py` — pra copiar a ideia real, não só
-/// a API JSON que o Cerne já chamava): várias fontes independentes e
-/// keyless em paralelo (DuckDuckGo, a página pública do Brave, Mojeek),
-/// merge por URL normalizada com pontuação por posição
-/// (`1/posição`, somada entre engines que concordam) e corte no topo — assim
-/// se uma fonte cair ou bloquear o scraping, as outras sustentam a busca em
-/// vez do recurso inteiro falhar.
+/// Limite de chamadas concorrentes a `search_auto` no app inteiro — as 3
+/// fontes que ele usa (DuckDuckGo, pagina publica do Brave, Mojeek) sao
+/// scraping sem API oficial, entao rajadas de requisicoes simultaneas
+/// aumentam muito a chance de bloqueio anti-bot. Antes só existia uma
+/// chamada de busca por vez; com `task` em paralelo (Fase A4) e sub-agente
+/// tendo acesso a `web_search` (Fase A6/T45), um turno agora pode disparar
+/// o `web_search` do agente principal AO MESMO TEMPO que 2+ sub-agentes
+/// também chamam `web_search` — cada chamada já dispara 3 requisições em
+/// paralelo (uma por fonte) e pode ter várias queries na mesma chamada
+/// (`search_many`, mais 3x cada), multiplicando rápido a carga simultânea
+/// nas mesmas 3 fontes gratuitas. O semáforo enfileira o excesso em vez de
+/// disparar tudo de uma vez — não impede a concorrência real de `task`,
+/// só a parte de busca na web despachada por eles.
+fn search_auto_semaphore() -> &'static tokio::sync::Semaphore {
+    static SEM: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    SEM.get_or_init(|| tokio::sync::Semaphore::new(2))
+}
+
+/// Atraso antes da 2a tentativa de uma fonte que falhou — só pra dar um
+/// respiro numa falha transiente de rede/rate-limit momentâneo, não uma
+/// espera longa.
+const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Roda `f` uma vez; se falhar (erro de rede/HTTP, não "0 resultados" — isso
+/// já é um resultado válido, só fraco), espera `RETRY_DELAY` e tenta mais
+/// uma vez antes de desistir. Devolve o erro da 1a tentativa se as duas
+/// falharem (geralmente mais informativo que o da 2a, que costuma ser o
+/// mesmo bloqueio batendo de novo).
+async fn with_retry<F, Fut>(f: F) -> Result<Vec<SearchResultItem>>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<Vec<SearchResultItem>>>,
+{
+    match f().await {
+        Ok(items) => Ok(items),
+        Err(first_err) => {
+            tokio::time::sleep(RETRY_DELAY).await;
+            f().await.map_err(|_| first_err)
+        }
+    }
+}
+
+/// Agregador multi-engine keyless (DuckDuckGo, a página pública do Brave,
+/// Mojeek) — cadeia de fallback com retry (estudei como o projeto Odysseus
+/// estrutura busca: tenta 1 provider por vez com retry, só escala pro
+/// próximo em falha/vazio, em vez de disparar tudo de uma vez) em vez do
+/// fan-out sempre-3-em-paralelo de antes. **DuckDuckGo primeiro, sozinho**:
+/// na maioria das buscas ele já traz resultado suficiente sozinho, e um só
+/// request reduz MUITO a chance de bloqueio anti-bot comparado a martelar
+/// as 3 fontes toda hora — só escala pra Brave+Mojeek em paralelo (e faz o
+/// merge multi-engine com pontuação por posição, mesma ideia do SearXNG de
+/// antes) quando o DuckDuckGo vier fraco/vazio/com erro mesmo após retry.
 async fn search_auto(query: &str) -> Result<Vec<SearchResultItem>> {
-    let (ddg, brave, mojeek) = tokio::join!(
-        search_duckduckgo(query),
-        search_brave_html(query),
-        search_mojeek(query),
+    let _permit = search_auto_semaphore()
+        .acquire()
+        .await
+        .expect("search_auto_semaphore nunca é fechado");
+
+    let ddg = with_retry(|| search_duckduckgo(query)).await;
+    if let Ok(items) = &ddg {
+        if items.len() >= MIN_RESULTS {
+            return Ok(merge_engine_results(vec![("duckduckgo", items.clone())]));
+        }
+    }
+
+    // DuckDuckGo sozinho não bastou (fraco, vazio ou falhou mesmo com
+    // retry) — escala pras outras 2 fontes em paralelo. O resultado do DDG
+    // (mesmo que fraco) ainda entra no merge se tiver trazido algo.
+    let (brave, mojeek) = tokio::join!(
+        with_retry(|| search_brave_html(query)),
+        with_retry(|| search_mojeek(query)),
     );
 
     let mut engine_results: Vec<(&'static str, Vec<SearchResultItem>)> = Vec::new();
@@ -188,20 +297,41 @@ pub async fn test_provider(
     provider: SearchProviderKind,
     api_key: Option<&str>,
     searxng_url: Option<&str>,
+    google_cse_id: Option<&str>,
+    bing_endpoint: Option<&str>,
 ) -> Result<usize> {
+    const TEST_QUERY: &str = "rust programming language";
     let results = match provider {
-        SearchProviderKind::Auto => search_auto("rust programming language").await?,
+        SearchProviderKind::Auto => search_auto(TEST_QUERY).await?,
         SearchProviderKind::Brave => {
             let key = api_key.ok_or_else(|| anyhow!("informe a chave de API da Brave"))?;
-            search_brave("rust programming language", key).await?
+            search_brave(TEST_QUERY, key).await?
         }
         SearchProviderKind::Tavily => {
             let key = api_key.ok_or_else(|| anyhow!("informe a chave de API da Tavily"))?;
-            search_tavily("rust programming language", key).await?
+            search_tavily(TEST_QUERY, key).await?
         }
         SearchProviderKind::Searxng => {
             let url = searxng_url.ok_or_else(|| anyhow!("informe a URL do SearXNG"))?;
-            search_searxng("rust programming language", url).await?
+            search_searxng(TEST_QUERY, url).await?
+        }
+        SearchProviderKind::Serper => {
+            let key = api_key.ok_or_else(|| anyhow!("informe a chave de API da Serper"))?;
+            search_serper(TEST_QUERY, key).await?
+        }
+        SearchProviderKind::Exa => {
+            let key = api_key.ok_or_else(|| anyhow!("informe a chave de API da Exa"))?;
+            search_exa(TEST_QUERY, key).await?
+        }
+        SearchProviderKind::GoogleCse => {
+            let key = api_key.ok_or_else(|| anyhow!("informe a chave de API do Google"))?;
+            let cx = google_cse_id.ok_or_else(|| anyhow!("informe o Search Engine ID (cx)"))?;
+            search_google_cse(TEST_QUERY, key, cx).await?
+        }
+        SearchProviderKind::Bing => {
+            let key = api_key.ok_or_else(|| anyhow!("informe a chave de API da Bing/Azure"))?;
+            let endpoint = bing_endpoint.unwrap_or("https://api.bing.microsoft.com/v7.0/search");
+            search_bing(TEST_QUERY, key, endpoint).await?
         }
     };
     Ok(results.len())
@@ -231,7 +361,7 @@ fn format_results(results: &[SearchResultItem]) -> String {
 /// ferramentas de agente (ex. plugin `opencode-websearch_duckduckgo`) usam
 /// como padrão sem exigir nenhuma conta.
 async fn search_duckduckgo(query: &str) -> Result<Vec<SearchResultItem>> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let resp = client
         .get("https://html.duckduckgo.com/html/")
         .query(&[("q", query)])
@@ -325,7 +455,7 @@ const DESKTOP_USER_AGENT: &str =
 /// título em `.title`, corpo em `.content`) — aqui convertidos pro
 /// equivalente em CSS que o `scraper` entende.
 async fn search_brave_html(query: &str) -> Result<Vec<SearchResultItem>> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let resp = client
         .get("https://search.brave.com/search")
         .query(&[("q", query), ("source", "web")])
@@ -393,7 +523,7 @@ fn parse_brave_html(html: &str) -> Vec<SearchResultItem> {
 /// próprio que ainda tolera bem scraping simples (usado pelo SearXNG via
 /// `mojeek.py`) — bom desempate quando DuckDuckGo e Brave concordam menos.
 async fn search_mojeek(query: &str) -> Result<Vec<SearchResultItem>> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let resp = client
         .get("https://www.mojeek.com/search")
         .query(&[("q", query)])
@@ -476,7 +606,7 @@ struct BraveResult {
 }
 
 async fn search_brave(query: &str, api_key: &str) -> Result<Vec<SearchResultItem>> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let resp = client
         .get("https://api.search.brave.com/res/v1/web/search")
         .query(&[("q", query), ("count", "10")])
@@ -532,7 +662,7 @@ struct TavilyResult {
 }
 
 async fn search_tavily(query: &str, api_key: &str) -> Result<Vec<SearchResultItem>> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let resp = client
         .post("https://api.tavily.com/search")
         .bearer_auth(api_key)
@@ -586,7 +716,7 @@ struct SearxResult {
 /// existir, preservado pra quem já roda uma (ex: setup com
 /// `docker run ... -p 8888:8080`, JSON API habilitada em settings.yml).
 async fn search_searxng(query: &str, base_url: &str) -> Result<Vec<SearchResultItem>> {
-    let client = reqwest::Client::new();
+    let client = http_client();
     let mut results: Vec<SearxResult> = Vec::new();
     let mut page = 1u32;
 
@@ -623,6 +753,254 @@ async fn search_searxng(query: &str, base_url: &str) -> Result<Vec<SearchResultI
         .collect())
 }
 
+#[derive(Debug, serde::Serialize)]
+struct SerperRequest<'a> {
+    q: &'a str,
+}
+
+#[derive(Debug, Deserialize)]
+struct SerperResponse {
+    #[serde(default)]
+    organic: Vec<SerperResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SerperResult {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    link: String,
+    #[serde(default)]
+    snippet: String,
+}
+
+/// Resultados do Google via API (google.serper.dev) — nao e a API oficial do
+/// Google, mas retorna o mesmo indice, com um plano gratuito generoso e
+/// integracao bem mais simples que o Custom Search oficial (sem precisar
+/// configurar um "motor de busca programavel" separado).
+async fn search_serper(query: &str, api_key: &str) -> Result<Vec<SearchResultItem>> {
+    let client = http_client();
+    let resp = client
+        .post("https://google.serper.dev/search")
+        .header("X-API-KEY", api_key)
+        .header("Content-Type", "application/json")
+        .json(&SerperRequest { q: query })
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| anyhow!("falha ao buscar na Serper: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("Serper respondeu {status}: {body}"));
+    }
+    let parsed: SerperResponse = resp
+        .json()
+        .await
+        .map_err(|e| anyhow!("resposta invalida da Serper: {e}"))?;
+
+    Ok(parsed
+        .organic
+        .into_iter()
+        .map(|r| SearchResultItem {
+            title: r.title,
+            url: r.link,
+            snippet: r.snippet,
+        })
+        .collect())
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ExaRequest<'a> {
+    query: &'a str,
+    #[serde(rename = "numResults")]
+    num_results: u32,
+    contents: ExaContents,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ExaContents {
+    text: ExaTextOpts,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ExaTextOpts {
+    #[serde(rename = "maxCharacters")]
+    max_characters: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExaResponse {
+    #[serde(default)]
+    results: Vec<ExaResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ExaResult {
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    text: Option<String>,
+}
+
+/// Busca "neural"/semantica da Exa (api.exa.ai) — indice voltado pra achar
+/// paginas por significado em vez de so por palavra-chave, costuma trazer
+/// fontes tecnicas/de nicho melhor que um motor generico. `contents.text`
+/// pedido explicitamente porque a resposta padrao da Exa nao inclui trecho
+/// nenhum, so titulo/URL/metadados.
+async fn search_exa(query: &str, api_key: &str) -> Result<Vec<SearchResultItem>> {
+    let client = http_client();
+    let resp = client
+        .post("https://api.exa.ai/search")
+        .header("x-api-key", api_key)
+        .json(&ExaRequest {
+            query,
+            num_results: 10,
+            contents: ExaContents {
+                text: ExaTextOpts { max_characters: 300 },
+            },
+        })
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| anyhow!("falha ao buscar na Exa: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("Exa respondeu {status}: {body}"));
+    }
+    let parsed: ExaResponse = resp
+        .json()
+        .await
+        .map_err(|e| anyhow!("resposta invalida da Exa: {e}"))?;
+
+    Ok(parsed
+        .results
+        .into_iter()
+        .map(|r| SearchResultItem {
+            title: r.title.unwrap_or_default(),
+            url: r.url,
+            snippet: r.text.unwrap_or_default(),
+        })
+        .collect())
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleCseResponse {
+    #[serde(default)]
+    items: Vec<GoogleCseResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GoogleCseResult {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    link: String,
+    #[serde(default)]
+    snippet: String,
+}
+
+/// API oficial do Google (Programmable Search Engine / Custom Search JSON
+/// API) — exige uma chave de API E um Search Engine ID ("cx") criado no
+/// console do Google (console.cloud.google.com + programmablesearchengine.google.com),
+/// mais burocratico de configurar que Serper/Brave/Tavily mas e a fonte
+/// oficial pra quem ja tem isso montado.
+async fn search_google_cse(query: &str, api_key: &str, cx: &str) -> Result<Vec<SearchResultItem>> {
+    let client = http_client();
+    let resp = client
+        .get("https://www.googleapis.com/customsearch/v1")
+        .query(&[("key", api_key), ("cx", cx), ("q", query)])
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| anyhow!("falha ao buscar no Google Custom Search: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("Google Custom Search respondeu {status}: {body}"));
+    }
+    let parsed: GoogleCseResponse = resp
+        .json()
+        .await
+        .map_err(|e| anyhow!("resposta invalida do Google Custom Search: {e}"))?;
+
+    Ok(parsed
+        .items
+        .into_iter()
+        .map(|r| SearchResultItem {
+            title: r.title,
+            url: r.link,
+            snippet: r.snippet,
+        })
+        .collect())
+}
+
+#[derive(Debug, Deserialize)]
+struct BingResponse {
+    #[serde(default)]
+    #[serde(rename = "webPages")]
+    web_pages: Option<BingWebPages>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BingWebPages {
+    #[serde(default)]
+    value: Vec<BingResult>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BingResult {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    snippet: String,
+}
+
+/// Bing Web Search via Azure AI Search (`Ocp-Apim-Subscription-Key`) —
+/// `endpoint` e configuravel porque recursos do Azure ganham um endpoint
+/// proprio por regiao/recurso, diferente do dominio fixo da API classica.
+async fn search_bing(query: &str, api_key: &str, endpoint: &str) -> Result<Vec<SearchResultItem>> {
+    let client = http_client();
+    let resp = client
+        .get(endpoint)
+        .header("Ocp-Apim-Subscription-Key", api_key)
+        .query(&[("q", query), ("count", "10")])
+        .timeout(std::time::Duration::from_secs(20))
+        .send()
+        .await
+        .map_err(|e| anyhow!("falha ao buscar na Bing/Azure Search: {e}"))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(anyhow!("Bing/Azure Search respondeu {status}: {body}"));
+    }
+    let parsed: BingResponse = resp
+        .json()
+        .await
+        .map_err(|e| anyhow!("resposta invalida da Bing/Azure Search: {e}"))?;
+
+    Ok(parsed
+        .web_pages
+        .map(|wp| wp.value)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|r| SearchResultItem {
+            title: r.name,
+            url: r.url,
+            snippet: r.snippet,
+        })
+        .collect())
+}
+
 /// Fetches a single page and returns its visible text, stripped of
 /// scripts/styles/nav chrome. Guards against SSRF: only http/https, and the
 /// resolved IP can't be loopback/private/link-local — the URL almost always
@@ -631,7 +1009,7 @@ async fn search_searxng(query: &str, base_url: &str) -> Result<Vec<SearchResultI
 pub async fn fetch(url_str: &str) -> Result<String> {
     let parsed = validate_public_url(url_str).await?;
 
-    let client = reqwest::Client::new();
+    let client = http_client();
     let resp = client
         .get(parsed.clone())
         .timeout(std::time::Duration::from_secs(15))
@@ -689,7 +1067,7 @@ fn extract_text(html: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-async fn validate_public_url(url_str: &str) -> Result<url::Url> {
+pub(crate) async fn validate_public_url(url_str: &str) -> Result<url::Url> {
     let parsed = url::Url::parse(url_str).map_err(|e| anyhow!("URL invalida: {e}"))?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return Err(anyhow!("apenas URLs http/https sao permitidas"));
@@ -743,6 +1121,55 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[tokio::test]
+    async fn with_retry_succeeds_on_second_attempt_after_first_error() {
+        let attempts = AtomicUsize::new(0);
+        let result = with_retry(|| {
+            let n = attempts.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if n == 0 {
+                    Err(anyhow!("falha transiente simulada"))
+                } else {
+                    Ok(vec![SearchResultItem {
+                        title: "ok".to_string(),
+                        url: "https://example.com".to_string(),
+                        snippet: "s".to_string(),
+                    }])
+                }
+            }
+        })
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2, "deveria ter tentado 2 vezes");
+    }
+
+    #[tokio::test]
+    async fn with_retry_gives_up_after_two_failures_returning_first_error() {
+        let attempts = AtomicUsize::new(0);
+        let result = with_retry(|| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async move { Err::<Vec<SearchResultItem>, _>(anyhow!("falha permanente")) }
+        })
+        .await;
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 2, "deveria ter tentado exatamente 2 vezes, sem 3a tentativa");
+    }
+
+    #[tokio::test]
+    async fn with_retry_does_not_retry_on_ok_even_if_empty() {
+        // Resultado vazio (Ok(vec![])) e um resultado valido, so fraco - nao
+        // e a mesma coisa que falha de rede, entao nao deveria disparar retry.
+        let attempts = AtomicUsize::new(0);
+        let result = with_retry(|| {
+            attempts.fetch_add(1, Ordering::SeqCst);
+            async move { Ok::<Vec<SearchResultItem>, anyhow::Error>(vec![]) }
+        })
+        .await;
+        assert!(result.unwrap().is_empty());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1, "Ok vazio nao deveria disparar retry");
+    }
 
     // Hits a rede de verdade (DuckDuckGo por padrao) — run manually com
     // `cargo test -- --ignored --nocapture`, nao faz parte da suite default.

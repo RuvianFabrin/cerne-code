@@ -90,7 +90,27 @@ pub fn save_context_length(app_data_dir: &std::path::Path, model_id: &str, conte
     }
 }
 
+/// Prioridade: valor real devolvido pelo PRÓPRIO provider agora
+/// (`provider_override`, ex: `context_length`/`top_provider.context_length`
+/// que a OpenRouter já manda no `/models`) sempre vence — é o mais preciso E
+/// mais fresco que existe. `KNOWN_CONTEXT_LENGTHS` é só um chute pra quando
+/// o provider NÃO manda contexto nenhum (self-hosted/DashScope etc, ver
+/// comentário da tabela acima); o cache em disco só existe pra não
+/// recalcular à toa entre chamadas.
+///
+/// Bug real encontrado testando ao vivo, 2026-08-20: a ordem estava
+/// INVERTIDA — cache e o chute hardcoded eram checados ANTES do valor real
+/// do provider, então um modelo como `deepseek/deepseek-v4-flash-0731`
+/// (a OpenRouter diz 1M de contexto) caía no match por substring da tabela
+/// (`"deepseek-v4-flash"` → 131072, pensado pra uma versão mais antiga) e
+/// ficava PRESO nesse valor errado (inclusive persistido no cache,
+/// perpetuando o erro em toda chamada futura). Agora o valor real sempre
+/// atualiza o cache, nunca o contrário.
 pub fn resolve_context_length(app_data_dir: &std::path::Path, model_id: &str, provider_override: Option<u32>) -> u32 {
+    if let Some(len) = provider_override {
+        save_context_length(app_data_dir, model_id, len);
+        return len;
+    }
     let cache = load_context_cache(app_data_dir);
     if let Some(&len) = cache.get(model_id) {
         return len;
@@ -99,7 +119,7 @@ pub fn resolve_context_length(app_data_dir: &std::path::Path, model_id: &str, pr
         save_context_length(app_data_dir, model_id, len);
         return len;
     }
-    provider_override.unwrap_or(crate::models::DEFAULT_CONTEXT_LENGTH)
+    crate::models::DEFAULT_CONTEXT_LENGTH
 }
 
 /// Converts `ChatMessage`s to the wire format the OpenAI-compatible
@@ -134,27 +154,69 @@ fn to_wire_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// Custom endpoints conhecidos que falam o dialeto "OpenAI real" de
+/// reasoning (`reasoning_effort` string solta no topo do body, incluindo
+/// `"none"` pra desligar) em vez do dialeto "self-hosted" (`chat_template_kwargs
+/// .enable_thinking` boolean). Confirmado via docs oficiais: OpenAI
+/// (developers.openai.com/api/docs/guides/reasoning) e o endpoint de
+/// compatibilidade do Gemini (ai.google.dev/gemini-api/docs/openai) mapeiam
+/// `reasoning_effort` pro controle nativo deles (effort real / thinkingBudget
+/// ou thinkingLevel conforme a geração do modelo). Endpoints self-hosted
+/// arbitrários (vLLM, sglang, llama.cpp de terceiros etc.) não têm essa
+/// garantia, por isso ficam no fallback `enable_thinking`.
+fn is_reasoning_effort_native(base_url: &str) -> bool {
+    base_url.contains("api.openai.com") || base_url.contains("generativelanguage.googleapis.com")
+}
+
 /// Escreve no `body` do `/chat/completions` o controle de raciocínio pedido,
 /// traduzindo o esforço genérico pro campo que cada provider entende.
 ///
 /// - `None` ("Auto"): não escreve nada — o modelo usa o default dele.
+/// - `Some(On)`: liga o reasoning de forma explícita. Só usado por providers
+///   locais (a UI não oferece essa opção pra Openrouter/Custom, que têm
+///   Low/Medium/High de verdade). llama.cpp/LM Studio: `chat_template_kwargs
+///   .enable_thinking=true` (confirmado funcionando nos 3 forks/engines
+///   locais testados — TurboQuant, ik_llama.cpp e mainline, já que todos
+///   compartilham esse mecanismo do llama.cpp upstream). Ollama: manda
+///   `reasoning_effort:"high"` (o /v1 dele só entende essa string, não
+///   `chat_template_kwargs`; ver mapeamento do `Off` abaixo).
 /// - `Some(Off)`: desliga o reasoning de forma explícita. Cada provider
 ///   desliga de um jeito (pesquisa de APIs verificada, ver testes abaixo):
 ///   Ollama /v1 mapeia `reasoning_effort:"none"` → `Think=false`; llama.cpp e
 ///   LM Studio aceitam `reasoning_effort:"none"` e ainda honram
 ///   `chat_template_kwargs.enable_thinking=false` no template do Qwen3;
-///   OpenRouter usa `reasoning.effort:"none"`; em Custom não existe "off"
-///   universal, então mandamos `enable_thinking:false` + `chat_template_kwargs`
-///   (cobre vLLM/sglang/Qwen/DeepSeek/GLM self-hosted — backends OpenAI
-///   estritos não têm como desligar, só baixar a força).
-/// - `Some(Low/Medium/High)`: `reasoning_effort` (padrão OpenAI-compat).
+///   OpenRouter usa `reasoning.effort:"none"` (também usado pro Low/Medium/
+///   High dele — é sempre o objeto aninhado, nunca `reasoning_effort` solto);
+///   em Custom, se o endpoint for um dos "nativos" conhecidos (ver
+///   `is_reasoning_effort_native`) mandamos `reasoning_effort:"none"` puro
+///   (formato real da OpenAI/Gemini); senão mandamos `enable_thinking:false`
+///   + `chat_template_kwargs` (cobre vLLM/sglang/Qwen/DeepSeek/GLM
+///   self-hosted). Não mandamos os dois formatos ao mesmo tempo pra Custom —
+///   um endpoint estrito pode rejeitar campo desconhecido com 400.
+/// - `Some(Low/Medium/High)`: `reasoning_effort` (padrão OpenAI-compat) pra
+///   quase todo mundo; OpenRouter é exceção e sempre quer o objeto aninhado
+///   `reasoning:{effort:...}`, em qualquer nível (bug corrigido — antes só o
+///   `Off` usava o objeto aninhado, Low/Medium/High vazavam pro formato
+///   solto errado).
 fn apply_reasoning(
     body: &mut serde_json::Value,
     kind: ProviderKind,
+    base_url: &str,
     effort: Option<ReasoningEffort>,
 ) {
     match effort {
         None => {}
+        Some(ReasoningEffort::On) => match kind {
+            ProviderKind::Ollama => {
+                body["reasoning_effort"] = json!("high");
+            }
+            ProviderKind::LlamaCpp | ProviderKind::LmStudio => {
+                body["chat_template_kwargs"] = json!({ "enable_thinking": true });
+            }
+            // On só é oferecido pela UI pra providers locais; se chegar aqui
+            // por algum outro caminho, não faz nada (Auto de fato).
+            ProviderKind::Openrouter | ProviderKind::Custom => {}
+        },
         Some(ReasoningEffort::Off) => match kind {
             ProviderKind::Ollama => {
                 body["reasoning_effort"] = json!("none");
@@ -167,17 +229,29 @@ fn apply_reasoning(
                 body["reasoning"] = json!({ "effort": "none" });
             }
             ProviderKind::Custom => {
-                body["enable_thinking"] = json!(false);
-                body["chat_template_kwargs"] = json!({ "enable_thinking": false });
+                if is_reasoning_effort_native(base_url) {
+                    body["reasoning_effort"] = json!("none");
+                } else {
+                    body["enable_thinking"] = json!(false);
+                    body["chat_template_kwargs"] = json!({ "enable_thinking": false });
+                }
             }
         },
         Some(effort) => {
-            body["reasoning_effort"] = json!(match effort {
+            let level = match effort {
                 ReasoningEffort::Low => "low",
                 ReasoningEffort::Medium => "medium",
                 ReasoningEffort::High => "high",
-                ReasoningEffort::Off => unreachable!(),
-            });
+                ReasoningEffort::Off | ReasoningEffort::On => unreachable!(),
+            };
+            match kind {
+                ProviderKind::Openrouter => {
+                    body["reasoning"] = json!({ "effort": level });
+                }
+                _ => {
+                    body["reasoning_effort"] = json!(level);
+                }
+            }
         }
     }
 }
@@ -215,7 +289,7 @@ pub async fn chat_stream(
     }
     // Controle de raciocínio — ver `apply_reasoning` pra o que cada provider
     // recebe no wire (e por quê).
-    apply_reasoning(&mut body, cfg.kind, reasoning_effort);
+    apply_reasoning(&mut body, cfg.kind, &cfg.base_url, reasoning_effort);
 
     let mut req = client.post(&url).json(&body);
     if let Some(key) = api_key {
@@ -402,6 +476,16 @@ pub async fn list_models(cfg: &ProviderConfig, api_key: Option<String>, app_data
                 return Err(anyhow!("failed to list models ({status})"));
             }
             let json: serde_json::Value = resp.json().await?;
+            // Resolve o contexto de TODOS os modelos da lista (centenas, pra
+            // OpenRouter) em memória, contra UMA leitura do cache — e só
+            // grava no disco UMA vez no final, só se algo mudou. Antes disso
+            // cada modelo chamava `resolve_context_length` (que lê E,
+            // com o fix da prioridade acima, quase sempre GRAVA o arquivo
+            // inteiro de novo) individualmente — achado testando ao vivo,
+            // 2026-08-20: centenas de leituras+escritas sequenciais do mesmo
+            // JSON deixavam "criar sessão" visivelmente lento.
+            let mut cache = load_context_cache(app_data_dir);
+            let mut cache_changed = false;
             let models = json["data"]
                 .as_array()
                 .cloned()
@@ -413,7 +497,19 @@ pub async fn list_models(cfg: &ProviderConfig, api_key: Option<String>, app_data
                         .as_u64()
                         .or_else(|| m["top_provider"]["context_length"].as_u64())
                         .map(|v| v as u32);
-                    let context_length = Some(resolve_context_length(app_data_dir, &id, api_ctx));
+                    let resolved = match api_ctx {
+                        Some(len) => len,
+                        None => cache
+                            .get(&id)
+                            .copied()
+                            .or_else(|| known_context_length(&id))
+                            .unwrap_or(crate::models::DEFAULT_CONTEXT_LENGTH),
+                    };
+                    if cache.get(&id) != Some(&resolved) {
+                        cache.insert(id.clone(), resolved);
+                        cache_changed = true;
+                    }
+                    let context_length = Some(resolved);
                     // OpenRouter traz nome/descrição/preço/modalidades; um
                     // endpoint OpenAI-compat genérico (Custom/LM Studio) não
                     // traz nada disso e os campos ficam None.
@@ -455,6 +551,11 @@ pub async fn list_models(cfg: &ProviderConfig, api_key: Option<String>, app_data
                     })
                 })
                 .collect();
+            if cache_changed {
+                if let Ok(json) = serde_json::to_string_pretty(&cache) {
+                    let _ = std::fs::write(context_cache_path(app_data_dir), json);
+                }
+            }
             Ok(models)
         }
     }
@@ -474,7 +575,16 @@ pub async fn get_context_length(
 
     match cfg.kind {
         ProviderKind::Custom if cfg.context_length_override.is_some() => cfg.context_length_override,
+        // Se o contexto deste modelo já está no cache (visto numa listagem
+        // anterior — ex: o usuário abriu "Nova sessão" e já viu a lista),
+        // usa direto: evita buscar o catálogo INTEIRO de novo (centenas de
+        // modelos na OpenRouter) só pra reler um valor já conhecido. Achado
+        // testando ao vivo, 2026-08-20: isso deixava criar sessão lento —
+        // cada sessão nova refazia esse fetch completo do zero.
         ProviderKind::Openrouter | ProviderKind::Custom => {
+            if let Some(&len) = load_context_cache(app_data_dir).get(model) {
+                return Some(len);
+            }
             let models = list_models(cfg, api_key, app_data_dir).await.ok()?;
             models.into_iter().find(|m| m.id == model)?.context_length
         }
@@ -681,6 +791,48 @@ mod tests {
         );
     }
 
+    fn scratch_dir() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "cerne-resolve-ctx-test-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn resolve_context_length_prefers_provider_override_over_known_table_guess() {
+        let dir = scratch_dir();
+        // "deepseek-v4-flash" bate por substring na tabela hardcoded (131072)
+        // pra um id mais antigo — mas a OpenRouter, pra este modelo
+        // especifico, manda o valor real (1_048_576). O real tem que vencer.
+        let len = resolve_context_length(&dir, "deepseek/deepseek-v4-flash-0731", Some(1_048_576));
+        assert_eq!(len, 1_048_576);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_context_length_falls_back_to_known_table_when_provider_gives_nothing() {
+        let dir = scratch_dir();
+        let len = resolve_context_length(&dir, "some/deepseek-v4-flash-variant", None);
+        assert_eq!(len, 131_072);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolve_context_length_provider_override_overwrites_a_stale_cached_guess() {
+        let dir = scratch_dir();
+        // Simula o bug real: um valor errado (do chute hardcoded) já foi
+        // cacheado antes. Uma chamada nova com o valor real do provider
+        // precisa corrigir o cache, não continuar preso no valor velho.
+        save_context_length(&dir, "deepseek/deepseek-v4-flash-0731", 131_072);
+        let len = resolve_context_length(&dir, "deepseek/deepseek-v4-flash-0731", Some(1_048_576));
+        assert_eq!(len, 1_048_576);
+        let cached = load_context_cache(&dir);
+        assert_eq!(cached.get("deepseek/deepseek-v4-flash-0731"), Some(&1_048_576));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn to_wire_messages_never_leaks_display_content_to_the_provider() {
         // display_content e so pra UI (mensagens com anexo de documento
@@ -714,7 +866,7 @@ mod tests {
     fn apply_reasoning_auto_sends_nothing() {
         // Auto = não envia campo nenhum (modelo usa o default dele).
         let mut body = empty_body();
-        apply_reasoning(&mut body, ProviderKind::LlamaCpp, None);
+        apply_reasoning(&mut body, ProviderKind::LlamaCpp, "http://127.0.0.1:8082/v1", None);
         assert!(body.get("reasoning_effort").is_none());
         assert!(body.get("chat_template_kwargs").is_none());
         assert!(body.get("enable_thinking").is_none());
@@ -724,24 +876,72 @@ mod tests {
     #[test]
     fn apply_reasoning_strength_uses_reasoning_effort() {
         let mut body = empty_body();
-        apply_reasoning(&mut body, ProviderKind::Custom, Some(ReasoningEffort::Medium));
+        apply_reasoning(
+            &mut body,
+            ProviderKind::Custom,
+            "https://example.com/v1",
+            Some(ReasoningEffort::Medium),
+        );
         assert_eq!(body["reasoning_effort"], json!("medium"));
+    }
+
+    #[test]
+    fn apply_reasoning_strength_openrouter_uses_reasoning_object() {
+        // Bug corrigido: Low/Medium/High vazavam pro campo solto errado antes,
+        // OpenRouter sempre quer o objeto aninhado, em qualquer nivel.
+        for (effort, expected) in [
+            (ReasoningEffort::Low, "low"),
+            (ReasoningEffort::Medium, "medium"),
+            (ReasoningEffort::High, "high"),
+        ] {
+            let mut body = empty_body();
+            apply_reasoning(
+                &mut body,
+                ProviderKind::Openrouter,
+                "https://openrouter.ai/api/v1",
+                Some(effort),
+            );
+            assert_eq!(body["reasoning"]["effort"], json!(expected));
+            assert!(body.get("reasoning_effort").is_none());
+        }
     }
 
     #[test]
     fn apply_reasoning_off_ollama_sends_reasoning_effort_none() {
         // Ollama /v1 mapeia reasoning_effort:"none" -> Think=false.
         let mut body = empty_body();
-        apply_reasoning(&mut body, ProviderKind::Ollama, Some(ReasoningEffort::Off));
+        apply_reasoning(
+            &mut body,
+            ProviderKind::Ollama,
+            "http://127.0.0.1:11434/v1",
+            Some(ReasoningEffort::Off),
+        );
         assert_eq!(body["reasoning_effort"], json!("none"));
         assert!(body.get("chat_template_kwargs").is_none());
+    }
+
+    #[test]
+    fn apply_reasoning_on_ollama_sends_reasoning_effort_high() {
+        let mut body = empty_body();
+        apply_reasoning(
+            &mut body,
+            ProviderKind::Ollama,
+            "http://127.0.0.1:11434/v1",
+            Some(ReasoningEffort::On),
+        );
+        assert_eq!(body["reasoning_effort"], json!("high"));
     }
 
     #[test]
     fn apply_reasoning_off_llamacpp_and_lmstudio_add_template_kwarg() {
         for kind in [ProviderKind::LlamaCpp, ProviderKind::LmStudio] {
             let mut body = empty_body();
-            apply_reasoning(&mut body, kind, Some(ReasoningEffort::Off));
+            apply_reasoning(
+                &mut body,
+                kind,
+                "http://127.0.0.1:8082/v1",
+                Some(ReasoningEffort::Off),
+            );
             assert_eq!(body["reasoning_effort"], json!("none"));
             assert_eq!(
                 body["chat_template_kwargs"]["enable_thinking"],
@@ -751,21 +951,86 @@ mod tests {
     }
 
     #[test]
+    fn apply_reasoning_on_llamacpp_and_lmstudio_add_template_kwarg() {
+        // Confirmado funcionando nos 3 engines locais testados (TurboQuant,
+        // ik_llama.cpp, mainline) -- todos leem chat_template_kwargs.enable_thinking.
+        for kind in [ProviderKind::LlamaCpp, ProviderKind::LmStudio] {
+            let mut body = empty_body();
+            apply_reasoning(
+                &mut body,
+                kind,
+                "http://127.0.0.1:8082/v1",
+                Some(ReasoningEffort::On),
+            );
+            assert_eq!(
+                body["chat_template_kwargs"]["enable_thinking"],
+                json!(true)
+            );
+            // Não manda reasoning_effort:"none" nem nada que sugira desligar.
+            assert!(body.get("reasoning_effort").is_none());
+        }
+    }
+
+    #[test]
     fn apply_reasoning_off_openrouter_uses_reasoning_object() {
         let mut body = empty_body();
-        apply_reasoning(&mut body, ProviderKind::Openrouter, Some(ReasoningEffort::Off));
+        apply_reasoning(
+            &mut body,
+            ProviderKind::Openrouter,
+            "https://openrouter.ai/api/v1",
+            Some(ReasoningEffort::Off),
+        );
         assert_eq!(body["reasoning"]["effort"], json!("none"));
         assert!(body.get("reasoning_effort").is_none());
     }
 
     #[test]
     fn apply_reasoning_off_custom_uses_enable_thinking() {
-        // Custom não tem "off" universal; mandamos os campos que os servidores
-        // OpenAI-compat de modelos thinking (vLLM/sglang/Qwen/DeepSeek) honram.
+        // Custom generico (self-hosted desconhecido) nao tem "off" universal;
+        // mandamos os campos que os servidores OpenAI-compat de modelos
+        // thinking (vLLM/sglang/Qwen/DeepSeek) honram.
         let mut body = empty_body();
-        apply_reasoning(&mut body, ProviderKind::Custom, Some(ReasoningEffort::Off));
+        apply_reasoning(
+            &mut body,
+            ProviderKind::Custom,
+            "https://minha-vllm-selfhosted.example.com/v1",
+            Some(ReasoningEffort::Off),
+        );
         assert_eq!(body["enable_thinking"], json!(false));
         assert_eq!(body["chat_template_kwargs"]["enable_thinking"], json!(false));
         assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn apply_reasoning_off_custom_openai_uses_native_reasoning_effort() {
+        // Endpoint real da OpenAI (mesmo por baixo do kind generico Custom,
+        // ja que nao existe ProviderKind dedicado pra ChatGPT) -- NAO manda
+        // chat_template_kwargs/enable_thinking, que a OpenAI nao reconhece e
+        // pode rejeitar com 400 em validacao estrita.
+        let mut body = empty_body();
+        apply_reasoning(
+            &mut body,
+            ProviderKind::Custom,
+            "https://api.openai.com/v1",
+            Some(ReasoningEffort::Off),
+        );
+        assert_eq!(body["reasoning_effort"], json!("none"));
+        assert!(body.get("chat_template_kwargs").is_none());
+        assert!(body.get("enable_thinking").is_none());
+    }
+
+    #[test]
+    fn apply_reasoning_off_custom_gemini_uses_native_reasoning_effort() {
+        // Endpoint de compatibilidade OpenAI do Gemini -- mesmo dialeto da
+        // OpenAI (reasoning_effort solto), confirmado em ai.google.dev.
+        let mut body = empty_body();
+        apply_reasoning(
+            &mut body,
+            ProviderKind::Custom,
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            Some(ReasoningEffort::Off),
+        );
+        assert_eq!(body["reasoning_effort"], json!("none"));
+        assert!(body.get("chat_template_kwargs").is_none());
     }
 }

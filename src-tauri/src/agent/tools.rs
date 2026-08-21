@@ -47,6 +47,38 @@ pub fn always_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         spec(
+            "read_skill_details",
+            "Le a descricao COMPLETA (sem corte) de uma skill do catalogo pelo nome exato - use quando a descricao curta listada no catalogo terminar cortada ('...') e nao for suficiente pra decidir se a skill e relevante. Diferente de load_skill: isso NAO carrega as instrucoes da skill pra voce seguir, so mostra a descricao inteira pra ajudar a decidir SE vale chamar load_skill.",
+            json!({
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "required": ["name"]
+            }),
+        ),
+        spec(
+            "improve_skill",
+            "Reescreve o SKILL.md de uma skill existente do catálogo (frontmatter + corpo inteiros - SUBSTITUI tudo, não é um patch). Use quando perceber, USANDO a skill numa tarefa real, que as instruções dela estão desatualizadas, incompletas, ou levaram a um erro que valeria documentar pra da próxima vez sair certo de primeira - não use pra reescrever uma skill que nunca chegou a carregar/seguir nesta conversa. SEMPRE chame load_skill(name) primeiro pra ter o conteúdo completo atual (frontmatter incluso) antes de decidir o que mudar, senão o campo 'description' ou outro metadado pode se perder na reescrita.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Nome exato da skill no catálogo" },
+                    "new_content": { "type": "string", "description": "Conteúdo COMPLETO do novo SKILL.md (frontmatter '---\\nname: ...\\ndescription: ...\\n---' + corpo)" }
+                },
+                "required": ["name", "new_content"]
+            }),
+        ),
+        spec(
+            "remember",
+            "Registra um fato DURÁVEL em MEMORY.md, que vai aparecer no system prompt de TODA sessão futura (não só esta) - use pra preferências do usuário ('sempre responde em portugues'), convenções do projeto que vão continuar valendo, ou decisões já tomadas que valem a pena lembrar sem precisar reexplicar depois. NÃO use pra informação temporária/específica desta conversa - só o que genuinamente vale lembrar pra sempre. Só acrescenta (nunca edita nem apaga o que já tinha) - o usuário pode editar o arquivo direto se quiser corrigir algo.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "fact": { "type": "string", "description": "O fato em uma frase curta e autocontida" }
+                },
+                "required": ["fact"]
+            }),
+        ),
+        spec(
             "ask",
             "Pausa o turno e pergunta algo especifico ao usuario, com opcoes de multipla escolha e/ou texto livre, antes de continuar - use quando precisar de uma decisao que so o usuario pode tomar (escolher entre abordagens, confirmar uma acao arriscada, desambiguar algo) em vez de assumir e seguir. Espera a resposta antes de prosseguir, entao use com moderacao - so quando realmente travar sem essa decisao.",
             json!({
@@ -77,6 +109,34 @@ pub fn always_tool_specs() -> Vec<ToolSpec> {
                     }
                 },
                 "required": ["todos"]
+            }),
+        ),
+        spec(
+            "create_python_tool",
+            "Cria uma ferramenta Python reutilizavel que fica disponivel em QUALQUER sessao futura (nao so esta), nao apenas na sessao atual - use quando um pedido precisar de uma capacidade que provavelmente vale reusar depois (ex: 'converta X pra Y', 'gere um grafico assim', 'valide um CPF'), em vez de so rodar codigo Python avulso uma vez via run_command. Apos criada, a ferramenta aparece automaticamente no catalogo de skills (nome 'python-tool-<nome>') com instrucoes prontas de como chamar. O script roda via `uv run`, que instala as dependencias listadas automaticamente num ambiente Python efemero - nao precisa (nem deve) gerenciar venv na mao. Falha se ja existir uma ferramenta com esse nome (use update_python_tool pra editar).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Nome curto da ferramenta (vira slug, ex: 'validador-de-cpf')" },
+                    "description": { "type": "string", "description": "Quando usar essa ferramenta - aparece no catalogo de skills, e o que outras sessoes vao ler pra decidir se ela e relevante" },
+                    "script": { "type": "string", "description": "Codigo Python completo (SEM cabecalho de metadata - isso e gerado automaticamente a partir de 'dependencies'). Deve ler argumentos de sys.argv e imprimir o resultado em stdout, pra ser chamado via run_command." },
+                    "dependencies": { "type": "array", "items": { "type": "string" }, "description": "Pacotes pip necessarios, ex: ['requests', 'pillow'] (opcional, vazio = so biblioteca padrao do Python)" }
+                },
+                "required": ["name", "description", "script"]
+            }),
+        ),
+        spec(
+            "update_python_tool",
+            "Atualiza uma ferramenta Python ja criada (por create_python_tool, nesta sessao ou em outra) - use pra corrigir um bug ou mudar o comportamento de uma ferramenta que ja existe, em vez de criar uma nova do zero com outro nome. Mesmos parametros de create_python_tool. Falha se a ferramenta nao existir.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "description": "Nome exato (slug) da ferramenta ja existente" },
+                    "description": { "type": "string" },
+                    "script": { "type": "string" },
+                    "dependencies": { "type": "array", "items": { "type": "string" } }
+                },
+                "required": ["name", "description", "script"]
             }),
         ),
     ]
@@ -159,8 +219,17 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         spec(
+            "check_dependencies_osv",
+            "Confere as dependencias DIRETAS declaradas no manifesto do projeto (package.json, Cargo.toml e/ou requirements.txt, na raiz) contra a base publica de vulnerabilidades conhecidas do OSV.dev (osv.dev) - sem precisar de conta ou chave. Devolve um resumo do que foi encontrado, com id e descricao curta de cada vulnerabilidade. Nao resolve dependencias transitivas (so o que esta escrito no manifesto) nem le lockfile - use quando o usuario pedir pra checar seguranca/vulnerabilidade das dependencias do projeto.",
+            json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        ),
+        spec(
             "write_file",
-            "Cria ou sobrescreve um arquivo. A escrita vai para uma pasta sandbox espelhada; o usuario precisa aceitar o diff na interface antes de aplicar no arquivo real.",
+            "Cria ou sobrescreve um arquivo. Conforme o modo de execucao da sessao, aplica direto no arquivo real ou fica pendente numa sandbox esperando o usuario aceitar na interface - o texto devolvido por CADA chamada informa qual dos dois aconteceu.",
             json!({
                 "type": "object",
                 "properties": {
@@ -172,7 +241,7 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
         ),
         spec(
             "edit_file",
-            "Edita um arquivo existente substituindo uma ocorrencia exata de old_str por new_str. old_str deve aparecer exatamente uma vez no arquivo. Escreve na sandbox, precisa ser aceito na interface.",
+            "Edita um arquivo existente substituindo uma ocorrencia exata de old_str por new_str. old_str deve aparecer exatamente uma vez no arquivo. Conforme o modo de execucao da sessao, aplica direto no arquivo real ou fica pendente numa sandbox esperando o usuario aceitar na interface - o texto devolvido por CADA chamada informa qual dos dois aconteceu.",
             json!({
                 "type": "object",
                 "properties": {
@@ -198,7 +267,7 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
         ),
         spec(
             "ast_edit",
-            "Reescrita ESTRUTURAL de um arquivo: toda ocorrencia do padrao (mesma sintaxe do ast_grep, $VAR/$$$ARGS) e trocada pelo template de reescrita, que pode reusar os mesmos nomes de variavel capturados. Mais seguro que edit_file pra refactor (rename de chamada, mudar import, etc.) porque opera na estrutura, nao em texto exato. Escreve na sandbox, precisa ser aceito na interface.",
+            "Reescrita ESTRUTURAL de um arquivo: toda ocorrencia do padrao (mesma sintaxe do ast_grep, $VAR/$$$ARGS) e trocada pelo template de reescrita, que pode reusar os mesmos nomes de variavel capturados. Mais seguro que edit_file pra refactor (rename de chamada, mudar import, etc.) porque opera na estrutura, nao em texto exato. Conforme o modo de execucao da sessao, aplica direto no arquivo real ou fica pendente numa sandbox esperando o usuario aceitar na interface - o texto devolvido por CADA chamada informa qual dos dois aconteceu.",
             json!({
                 "type": "object",
                 "properties": {
@@ -232,6 +301,18 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
                     "how_to_verify": { "type": "string", "description": "Como confirmar de verdade - que comando rodar (ex: 'cargo test', 'npm run build') ou o que conferir no codigo" }
                 },
                 "required": ["task_summary", "how_to_verify"]
+            }),
+        ),
+        spec(
+            "run_pipeline",
+            "Dispara um pipeline DETERMINISTICO Dev -> QA -> Analista pra uma tarefa complexa que merece o rigor completo de implementacao + validacao tecnica + validacao de requisito, em vez de voce mesmo implementar e verificar. Diferente de task/verify_completion (que voce chama quando decide), aqui a SEQUENCIA e fixa: um Dev implementa, um QA confirma que funciona tecnicamente (roda teste/build de verdade), um Analista confirma que atende o pedido original (nao so que funciona) - se QA ou Analista refutar, volta pro Dev automaticamente com as pendencias, ate max_rounds. Voce so decide QUANDO usar isso (pedido grande, varios arquivos, criar algo do zero) - o que acontece depois de comecar nao e escolha sua. Use pra pedidos que voce mesmo trataria com task + verify_completion em sequencia de qualquer forma, mas quer o ciclo completo automatico incluindo validacao de requisito. NAO use pra pedido simples que uma unica chamada de ferramenta ja resolve.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "requirement": { "type": "string", "description": "O requisito completo e autocontido - o Dev/QA/Analista nao veem o historico desta conversa, so o que for escrito aqui" },
+                    "max_rounds": { "type": "integer", "description": "Quantas rodadas dev->qa->analista tentar antes de desistir e devolver o que ficou pendente (default 3)" }
+                },
+                "required": ["requirement"]
             }),
         ),
         spec(
@@ -312,7 +393,124 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
                 "required": ["path", "elements"]
             }),
         ),
+        spec(
+            "create_pptx",
+            "Cria uma apresentacao PowerPoint (.pptx) com um slide por item da lista. Cada slide tem titulo opcional e uma lista de elementos empilhados verticalmente: paragrafo (com negrito/italico/tamanho opcionais), lista de topicos (bullets), tabela, ou IMAGEM (le um arquivo png/jpg/jpeg/gif/bmp do disco e embute no slide, mantendo a proporcao original se largura/altura nao forem informadas). Escreve direto no disco (nao usa sandbox). Use quando o usuario pedir para criar apresentacoes/slides.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Caminho ABSOLUTO (preferido) do arquivo .pptx a criar" },
+                    "slides": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "title": { "type": "string", "description": "Titulo do slide (opcional)" },
+                                "elements": {
+                                    "type": "array",
+                                    "description": "Conteudo do slide, empilhado de cima pra baixo na ordem da lista",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "type": { "type": "string", "enum": ["paragraph", "bullets", "table", "image"], "description": "Tipo do elemento" },
+                                            "text": { "type": "string", "description": "Texto (so pra paragraph)" },
+                                            "bold": { "type": "boolean", "description": "Negrito (so pra paragraph)" },
+                                            "italic": { "type": "boolean", "description": "Italico (so pra paragraph)" },
+                                            "size": { "type": "integer", "description": "Tamanho da fonte em pontos (paragraph/bullets, default 18)" },
+                                            "items": { "type": "array", "items": { "type": "string" }, "description": "Topicos (so pra bullets)" },
+                                            "headers": { "type": "array", "items": { "type": "string" }, "description": "Headers da tabela (so pra table)" },
+                                            "rows": { "type": "array", "items": { "type": "array", "items": { "type": "string" } }, "description": "Linhas da tabela (so pra table)" },
+                                            "path": { "type": "string", "description": "Caminho (absoluto ou relativo ao projeto) da imagem png/jpg/jpeg/gif/bmp no disco (so pra image)" },
+                                            "width_in": { "type": "number", "description": "Largura da imagem em polegadas (opcional — sem isso usa a altura informada + proporcao original, ou um tamanho default)" },
+                                            "height_in": { "type": "number", "description": "Altura da imagem em polegadas (opcional, mesma logica de width_in)" }
+                                        },
+                                        "required": ["type"]
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                "required": ["path", "slides"]
+            }),
+        ),
     ]
+}
+
+/// Fase G do roteiro: sessões paralelas orquestradas — diferente de `task`
+/// (sub-agente efêmero, sempre síncrono do ponto de vista do turno que
+/// chamou), aqui o LLM principal cria uma `Session` de verdade que roda
+/// DESACOPLADA do turno atual (mesmo padrão de `send_message`, sem esperar)
+/// e confere o progresso sob demanda depois. Fora de `always_tool_specs()`/
+/// `project_tool_specs()` de propósito — só entra no toolset de sessões que
+/// NÃO são elas mesmas orquestradas (`session.parent_session_id.is_none()`
+/// em `agent/mod.rs`), guarda de profundidade de nível único, mesmo
+/// espírito do guard que `task` já tem pra não recursar.
+pub fn orchestration_tool_specs() -> Vec<ToolSpec> {
+    vec![
+        spec(
+            "start_agent_session",
+            "Cria uma SESSAO completa e independente que roda em paralelo, sem bloquear seu turno atual - diferente de task (que espera terminar), esta dispara e volta na hora com o id da sessao; voce confere o progresso depois via check_agent_session quando quiser. Use pra trabalho grande e genuinamente paralelo que nao precisa do resultado imediatamente (ex: 'monte o frontend Angular' enquanto voce continua com outra coisa, ou dispara varias de uma vez: uma pro frontend, outra pro backend, uma terceira pra conferir integracao). A sessao criada usa o mesmo provider/modelo/modo de execucao desta sessao. IMPORTANTE: se project_root ficar vazio (nem passado aqui, nem existente nesta sessao), a sessao criada NAO tera nenhuma ferramenta de arquivo/comando (read_file, write_file, run_command etc) - so use sem project_root pra tarefas que so precisam de busca na web ou raciocinio, nunca pra algo que crie/edite arquivos ou rode comandos. NAO use pra algo que precisa do resultado antes de continuar (isso e task ou fazer voce mesmo).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "description": { "type": "string", "description": "Descricao curta (vira o titulo da sessao na lista)" },
+                    "prompt": { "type": "string", "description": "A tarefa completa e autocontida - a sessao criada nao ve o historico desta conversa, so o que for escrito aqui" },
+                    "project_root": { "type": "string", "description": "Pasta de projeto pra essa sessao - default herda a pasta desta sessao, se houver. Passe explicitamente sempre que a tarefa envolver arquivos ou comandos, senao a sessao criada fica sem essas ferramentas." }
+                },
+                "required": ["description", "prompt"]
+            }),
+        ),
+        spec(
+            "check_agent_session",
+            "Confere o status de uma sessao orquestrada criada com start_agent_session. Se ainda estiver rodando, devolve isso mais uma sugestao de quanto esperar antes de checar de novo (baseado em quanto a primeira resposta dela levou) - nao fique chamando isso em loop apertado, va fazendo outra coisa entre uma checagem e outra. Se ja tiver terminado, devolve a ultima resposta do assistente daquela sessao.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string" }
+                },
+                "required": ["session_id"]
+            }),
+        ),
+        spec(
+            "list_agent_sessions",
+            "Lista as sessoes orquestradas que voce criou nesta conversa (via start_agent_session), com status de cada uma - use pra nao perder o fio de quais ja disparou.",
+            json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        ),
+        spec(
+            "stop_agent_session",
+            "Aborta uma sessao orquestrada em andamento (criada com start_agent_session) - encerra o turno dela na hora, sem esperar nenhum checkpoint.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string" }
+                },
+                "required": ["session_id"]
+            }),
+        ),
+    ]
+}
+
+/// Aviso anexado ao resultado de `create_python_tool`/`update_python_tool`
+/// quando `uv` não está no PATH desta máquina — sem isso, um usuário só com
+/// o Cerne Code instalado (sem `uv`) só ia descobrir o problema quando a
+/// ferramenta falhasse com "comando não encontrado", sem entender o motivo
+/// (pedido do usuário testando ao vivo, 2026-08-17). String vazia quando
+/// `uv` existe, pra não poluir a resposta no caso comum.
+fn uv_missing_warning() -> String {
+    if super::shell::command_exists("uv") {
+        String::new()
+    } else {
+        " AVISO: o comando 'uv' nao foi encontrado no PATH desta maquina - a ferramenta foi \
+         criada normalmente, mas nao vai funcionar ate o usuario instalar o uv \
+         (https://docs.astral.sh/uv/getting-started/installation/). Avise o usuario disso na \
+         sua resposta."
+            .to_string()
+    }
 }
 
 fn spec(name: &str, description: &str, parameters: Value) -> ToolSpec {
@@ -324,6 +522,19 @@ fn spec(name: &str, description: &str, parameters: Value) -> ToolSpec {
             parameters,
         },
     }
+}
+
+/// Escapa texto pra entrar cru dentro de um elemento/atributo XML — usado
+/// por `create_pptx`, que monta o OOXML na mao (sem lib de apresentacao,
+/// diferente de `create_excel`/`create_word`/`create_pdf` que tem crate
+/// dedicada). Ordem importa: `&` primeiro, senao escaparia os `&` que os
+/// outros replace's acabaram de inserir.
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 /// Resolve um caminho (relativo ou absoluto) pras ferramentas de ESCRITA
@@ -766,6 +977,7 @@ pub async fn execute_tool(
     mcp_clients: &crate::mcp::McpClients,
     app_data_dir: &Path,
     execution_mode: &crate::models::ExecutionMode,
+    session_id: &str,
 ) -> Result<ToolOutcome> {
     match name {
         "web_search" => {
@@ -787,6 +999,59 @@ pub async fn execute_tool(
                 .ok_or_else(|| anyhow!("url obrigatorio"))?;
             Ok(ok(websearch::fetch(url).await?))
         }
+        // Ferramentas Python (T17) sao GLOBAIS (nao presas a um projeto,
+        // diferente de write_file/edit_file) - ficam disponiveis pra
+        // qualquer sessao futura via a skill companheira que
+        // create_python_tool/update_python_tool geram, entao nao precisam
+        // de project_root pra rodar.
+        "create_python_tool" => {
+            let py_name = args["name"].as_str().ok_or_else(|| anyhow!("name obrigatorio"))?;
+            let description = args["description"]
+                .as_str()
+                .ok_or_else(|| anyhow!("description obrigatorio"))?;
+            let script = args["script"]
+                .as_str()
+                .ok_or_else(|| anyhow!("script obrigatorio"))?;
+            let dependencies: Vec<String> = args["dependencies"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            let tool = crate::python_tools::create_python_tool(
+                app_data_dir,
+                py_name,
+                description,
+                script,
+                dependencies,
+            )?;
+            Ok(ok(format!(
+                "Ferramenta Python '{}' criada e disponivel como skill 'python-tool-{}' em qualquer sessao futura. Pra chamar: uv run \"{}\" [args].{}",
+                tool.name, tool.name, tool.tool_path, uv_missing_warning()
+            )))
+        }
+        "update_python_tool" => {
+            let py_name = args["name"].as_str().ok_or_else(|| anyhow!("name obrigatorio"))?;
+            let description = args["description"]
+                .as_str()
+                .ok_or_else(|| anyhow!("description obrigatorio"))?;
+            let script = args["script"]
+                .as_str()
+                .ok_or_else(|| anyhow!("script obrigatorio"))?;
+            let dependencies: Vec<String> = args["dependencies"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect())
+                .unwrap_or_default();
+            let tool = crate::python_tools::update_python_tool(
+                app_data_dir,
+                py_name,
+                description,
+                script,
+                dependencies,
+            )?;
+            Ok(ok(format!(
+                "Ferramenta Python '{}' atualizada. Pra chamar: uv run \"{}\" [args].{}",
+                tool.name, tool.tool_path, uv_missing_warning()
+            )))
+        }
         _ if name.starts_with("mcp__") => Ok(ok(mcp_clients.call(name, args.clone()).await?)),
         _ => {
             let project_root = project_root.ok_or_else(|| {
@@ -796,11 +1061,23 @@ pub async fn execute_tool(
             let writable_paths = crate::models::FolderEntry::writable_paths(extra_folders);
             let mut extended_read = read_paths;
             extended_read.push(app_data_dir.to_string_lossy().to_string());
-            execute_project_tool(name, args, project_root, &extended_read, &writable_paths, background_jobs, execution_mode).await
+            execute_project_tool(
+                name,
+                args,
+                project_root,
+                &extended_read,
+                &writable_paths,
+                background_jobs,
+                execution_mode,
+                app_data_dir,
+                session_id,
+            )
+            .await
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_project_tool(
     name: &str,
     args: &Value,
@@ -809,6 +1086,8 @@ async fn execute_project_tool(
     writable_extra_roots: &[String],
     background_jobs: &super::background::BackgroundJobs,
     execution_mode: &crate::models::ExecutionMode,
+    app_data_dir: &Path,
+    session_id: &str,
 ) -> Result<ToolOutcome> {
     match name {
         "read_file" => {
@@ -868,7 +1147,7 @@ async fn execute_project_tool(
                 .as_str()
                 .ok_or_else(|| anyhow!("command obrigatorio"))?;
             if args["background"].as_bool().unwrap_or(false) {
-                let id = background_jobs.start(project_root, command)?;
+                let id = background_jobs.start(project_root, command, app_data_dir, session_id)?;
                 return Ok(ok(format!(
                     "Comando iniciado em segundo plano com id {id} (nao esperou terminar). Use \
                      check_background_output({{\"id\": \"{id}\"}}) pra ver o progresso, e \
@@ -930,6 +1209,10 @@ async fn execute_project_tool(
             Ok(ok(result))
         }
         "list_background" => Ok(ok(background_jobs.list())),
+        "check_dependencies_osv" => {
+            let result = crate::osv::check_project(project_root).await?;
+            Ok(ok(result))
+        }
         "create_excel" => {
             let rel = args["path"]
                 .as_str()
@@ -1147,6 +1430,27 @@ async fn execute_project_tool(
                 .map_err(|e| anyhow!("falha ao salvar pdf: {e}"))?;
             Ok(ok(format!("Documento PDF criado: {}", target.display())))
         }
+        "create_pptx" => {
+            let rel = args["path"]
+                .as_str()
+                .ok_or_else(|| anyhow!("path obrigatorio"))?;
+            let target = resolve_path(project_root, rel, execution_mode, writable_extra_roots)?;
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let slides = args["slides"]
+                .as_array()
+                .ok_or_else(|| anyhow!("slides obrigatorio (array)"))?;
+            if slides.is_empty() {
+                return Err(anyhow!("slides precisa ter pelo menos 1 item"));
+            }
+            write_pptx(&target, slides, project_root)?;
+            Ok(ok(format!(
+                "Apresentacao PowerPoint criada com {} slide(s): {}",
+                slides.len(),
+                target.display()
+            )))
+        }
         "write_file" => {
             let rel = args["path"]
                 .as_str()
@@ -1323,8 +1627,8 @@ async fn execute_project_tool(
             }
         }
         // "task" (subagente) e tratado a parte em agent::mod::run_turn, igual
-        // "load_skill" - precisa de app/estado/provider que essa funcao nao
-        // tem, entao nunca chega aqui de verdade.
+        // "load_skill"/"read_skill_details" - precisa de app/estado/provider
+        // que essa funcao nao tem, entao nunca chega aqui de verdade.
         other => Err(anyhow!("ferramenta desconhecida: {other}")),
     }
 }
@@ -1337,6 +1641,460 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+// ---------------------------------------------------------------------
+// create_pptx — gera um .pptx (Office Open XML) na mao, sem lib de
+// apresentacao dedicada (nao existe uma crate PPTX madura pro ecossistema
+// Rust, diferente de xlsx/docx/pdf que ja tem `rust_xlsxwriter`/`docx-rust`/
+// `printpdf`). Um .pptx e so um ZIP com um conjunto de partes XML descritas
+// pelo schema OOXML PresentationML — a crate `zip` (ja usada em
+// `attachments.rs` pra ler xlsx de anexo) e suficiente pra escrever.
+//
+// Estrutura minima gerada: 1 slideMaster + 1 slideLayout "blank" (boilerplate
+// fixo), 1 theme (cores/fontes do Cerne), N slides (1 por item da lista),
+// cada um com suas proprias shapes posicionadas explicitamente via `a:xfrm`
+// (nao depende de placeholder herdado do layout, que exigiria um layout mais
+// elaborado por tipo de slide). Imagens viram partes `ppt/media/imageN.*` +
+// relationship no slide + elemento `<p:pic>`.
+// ---------------------------------------------------------------------
+
+const PPTX_SLIDE_W_EMU: i64 = 12_192_000; // 13.333in — widescreen 16:9
+const PPTX_SLIDE_H_EMU: i64 = 6_858_000; // 7.5in
+const PPTX_MARGIN_EMU: i64 = 685_800; // 0.75in
+const PPTX_CONTENT_W_EMU: i64 = PPTX_SLIDE_W_EMU - 2 * PPTX_MARGIN_EMU;
+const PPTX_TITLE_Y_EMU: i64 = 274_638;
+const PPTX_TITLE_H_EMU: i64 = 1_143_000;
+const PPTX_EMU_PER_INCH: f64 = 914_400.0;
+const PPTX_EMU_PER_PX_96DPI: f64 = 9_525.0; // 914400 / 96, conversao padrao usada por python-pptx e afins
+
+struct PptxImagePart {
+    /// Nome do arquivo dentro de `ppt/media/`, ex. "image3.png".
+    file_name: String,
+    content_type: String,
+    bytes: Vec<u8>,
+}
+
+fn pptx_ext_content_type(ext: &str) -> &'static str {
+    match ext.to_lowercase().as_str() {
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        _ => "image/png",
+    }
+}
+
+/// Le a imagem do disco (mesma resolucao de caminho de leitura usada por
+/// `read_file` — aceita absoluto de qualquer lugar, relativo resolve dentro
+/// do projeto) e devolve os bytes + dimensoes em pixels (via crate `image`,
+/// ja dependencia do projeto pra screenshots do `computer_use`). Se o
+/// formato nao for decodificavel (arquivo corrompido, formato exotico),
+/// cai num fallback 800x600 em vez de falhar a apresentacao inteira por
+/// causa de UMA imagem ruim — o usuario ainda ve o slide, só com a imagem
+/// num tamanho generico.
+fn pptx_read_image(project_root: &Path, path_str: &str) -> Result<(Vec<u8>, String, u32, u32)> {
+    let resolved = resolve_read_path(project_root, &[], path_str)?;
+    let bytes = std::fs::read(&resolved)
+        .map_err(|e| anyhow!("nao foi possivel ler imagem '{path_str}': {e}"))?;
+    let ext = resolved
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("png")
+        .to_lowercase();
+    let (width_px, height_px) = image::load_from_memory(&bytes)
+        .map(|img| (img.width(), img.height()))
+        .unwrap_or((800, 600));
+    Ok((bytes, ext, width_px, height_px))
+}
+
+/// Monta o XML de UM slide + a lista de imagens que ele referencia (media
+/// parts a incluir no zip + relationships a declarar no `.rels` do slide).
+/// `media_counter` e compartilhado entre slides pra numerar `imageN.ext`
+/// sem colisao na apresentacao inteira.
+fn build_pptx_slide(
+    slide: &Value,
+    project_root: &Path,
+    media_counter: &mut u32,
+) -> Result<(String, String, Vec<PptxImagePart>)> {
+    let mut shapes = String::new();
+    let mut media = Vec::new();
+    // rId1 do slide sempre aponta pro slideLayout (ver build_pptx_slide_rels) —
+    // relationships de imagem comecam em rId2.
+    let mut next_rel_id: u32 = 2;
+    let mut shape_id: u32 = 2; // id 1 e do grupo raiz (nvGrpSpPr), shapes comecam em 2
+
+    let mut cur_y = PPTX_MARGIN_EMU;
+
+    if let Some(title) = slide["title"].as_str().filter(|t| !t.trim().is_empty()) {
+        shapes.push_str(&format!(
+            r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="Title"/><p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="pt-BR" sz="3200" b="1"/><a:t>{text}</a:t></a:r></a:p></p:txBody></p:sp>"#,
+            id = shape_id,
+            x = PPTX_MARGIN_EMU,
+            y = PPTX_TITLE_Y_EMU,
+            cx = PPTX_CONTENT_W_EMU,
+            cy = PPTX_TITLE_H_EMU,
+            text = xml_escape(title),
+        ));
+        shape_id += 1;
+        cur_y = PPTX_TITLE_Y_EMU + PPTX_TITLE_H_EMU + 100_000;
+    }
+
+    let elements = slide["elements"].as_array().cloned().unwrap_or_default();
+    for el in &elements {
+        let remaining_h = (PPTX_SLIDE_H_EMU - PPTX_MARGIN_EMU - cur_y).max(0);
+        if remaining_h <= 0 {
+            break; // slide cheio — resto do conteudo nao cabe, evita sobrepor
+        }
+        match el["type"].as_str().unwrap_or("") {
+            "paragraph" => {
+                let text = el["text"].as_str().unwrap_or("");
+                let size_pt = el["size"].as_i64().unwrap_or(18).clamp(6, 96);
+                let bold = if el["bold"].as_bool().unwrap_or(false) { " b=\"1\"" } else { "" };
+                let italic = if el["italic"].as_bool().unwrap_or(false) { " i=\"1\"" } else { "" };
+                let lines = text.lines().count().max(1) as i64;
+                let h = (size_pt * 12_700 * 16 / 10) * lines; // ~1.6x line-height, sz esta em pontos*100
+                shapes.push_str(&format!(
+                    r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="TextBox"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr wrap="square"><a:normAutofit/></a:bodyPr><a:lstStyle/><a:p><a:r><a:rPr lang="pt-BR" sz="{sz}"{bold}{italic}/><a:t>{text}</a:t></a:r></a:p></p:txBody></p:sp>"#,
+                    id = shape_id,
+                    x = PPTX_MARGIN_EMU,
+                    y = cur_y,
+                    cx = PPTX_CONTENT_W_EMU,
+                    cy = h.min(remaining_h),
+                    sz = size_pt * 100,
+                    bold = bold,
+                    italic = italic,
+                    text = xml_escape(text),
+                ));
+                shape_id += 1;
+                cur_y += h.min(remaining_h) + 50_000;
+            }
+            "bullets" => {
+                let items: Vec<&str> = el["items"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                    .unwrap_or_default();
+                if items.is_empty() {
+                    continue;
+                }
+                let size_pt = el["size"].as_i64().unwrap_or(18).clamp(6, 96);
+                let line_h = size_pt * 12_700 * 16 / 10;
+                let h = (line_h * items.len() as i64).min(remaining_h);
+                let mut paras = String::new();
+                for item in &items {
+                    paras.push_str(&format!(
+                        r#"<a:p><a:pPr marL="285750" indent="-285750"><a:buFont typeface="Arial"/><a:buChar char="&#8226;"/></a:pPr><a:r><a:rPr lang="pt-BR" sz="{sz}"/><a:t>{text}</a:t></a:r></a:p>"#,
+                        sz = size_pt * 100,
+                        text = xml_escape(item),
+                    ));
+                }
+                shapes.push_str(&format!(
+                    r#"<p:sp><p:nvSpPr><p:cNvPr id="{id}" name="Bullets"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr wrap="square"><a:normAutofit/></a:bodyPr><a:lstStyle/>{paras}</p:txBody></p:sp>"#,
+                    id = shape_id,
+                    x = PPTX_MARGIN_EMU,
+                    y = cur_y,
+                    cx = PPTX_CONTENT_W_EMU,
+                    cy = h,
+                    paras = paras,
+                ));
+                shape_id += 1;
+                cur_y += h + 50_000;
+            }
+            "table" => {
+                let headers: Vec<&str> = el["headers"]
+                    .as_array()
+                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                    .unwrap_or_default();
+                let rows: Vec<Vec<&str>> = el["rows"]
+                    .as_array()
+                    .map(|rs| {
+                        rs.iter()
+                            .map(|r| {
+                                r.as_array()
+                                    .map(|cs| cs.iter().filter_map(|c| c.as_str()).collect())
+                                    .unwrap_or_default()
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let col_count = headers.len().max(rows.first().map(|r| r.len()).unwrap_or(0));
+                if col_count == 0 {
+                    continue;
+                }
+                let row_h: i64 = 370_840;
+                let total_rows = 1 + rows.len() as i64; // header + dados
+                let h = (row_h * total_rows).min(remaining_h);
+                let col_w = PPTX_CONTENT_W_EMU / col_count as i64;
+                let mut grid = String::new();
+                for _ in 0..col_count {
+                    grid.push_str(&format!(r#"<a:gridCol w="{col_w}"/>"#));
+                }
+                let mut tr_xml = String::new();
+                let cell = |text: &str, bold: bool| -> String {
+                    format!(
+                        r#"<a:tc><a:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:rPr lang="pt-BR" sz="1400"{b}/><a:t>{t}</a:t></a:r></a:p></a:txBody><a:tcPr/></a:tc>"#,
+                        b = if bold { " b=\"1\"" } else { "" },
+                        t = xml_escape(text),
+                    )
+                };
+                if !headers.is_empty() {
+                    let cells: String = headers.iter().map(|h| cell(h, true)).collect();
+                    tr_xml.push_str(&format!(r#"<a:tr h="{row_h}">{cells}</a:tr>"#));
+                }
+                for row in &rows {
+                    let cells: String = row.iter().map(|c| cell(c, false)).collect();
+                    tr_xml.push_str(&format!(r#"<a:tr h="{row_h}">{cells}</a:tr>"#));
+                }
+                shapes.push_str(&format!(
+                    r#"<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="{id}" name="Table"/><p:cNvGraphicFramePr><a:graphicFrameLocks noGrp="1"/></p:cNvGraphicFramePr><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{cx}" cy="{cy}"/></p:xfrm><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table"><a:tbl><a:tblPr firstRow="1" bandRow="1"/><a:tblGrid>{grid}</a:tblGrid>{rows_xml}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>"#,
+                    id = shape_id,
+                    x = PPTX_MARGIN_EMU,
+                    y = cur_y,
+                    cx = PPTX_CONTENT_W_EMU,
+                    cy = h,
+                    grid = grid,
+                    rows_xml = tr_xml,
+                ));
+                shape_id += 1;
+                cur_y += h + 50_000;
+            }
+            "image" => {
+                let Some(path_str) = el["path"].as_str() else { continue };
+                let (bytes, ext, width_px, height_px) = pptx_read_image(project_root, path_str)?;
+                *media_counter += 1;
+                let file_name = format!("image{}.{}", media_counter, ext);
+                let content_type = pptx_ext_content_type(&ext).to_string();
+
+                // Tamanho: usa width_in/height_in se informados; senao deriva
+                // da proporcao real da imagem (px -> EMU a 96 DPI), limitado
+                // pra caber na largura de conteudo e no espaco vertical
+                // restante do slide — nunca estoura o slide.
+                let natural_cx = (width_px as f64 * PPTX_EMU_PER_PX_96DPI) as i64;
+                let natural_cy = (height_px as f64 * PPTX_EMU_PER_PX_96DPI) as i64;
+                let (mut cx, mut cy) = match (el["width_in"].as_f64(), el["height_in"].as_f64()) {
+                    (Some(w), Some(h)) => (
+                        (w * PPTX_EMU_PER_INCH) as i64,
+                        (h * PPTX_EMU_PER_INCH) as i64,
+                    ),
+                    (Some(w), None) => {
+                        let cx = (w * PPTX_EMU_PER_INCH) as i64;
+                        let cy = if natural_cx > 0 { cx * natural_cy / natural_cx } else { cx };
+                        (cx, cy)
+                    }
+                    (None, Some(h)) => {
+                        let cy = (h * PPTX_EMU_PER_INCH) as i64;
+                        let cx = if natural_cy > 0 { cy * natural_cx / natural_cy } else { cy };
+                        (cx, cy)
+                    }
+                    (None, None) => (natural_cx.max(1), natural_cy.max(1)),
+                };
+                // Encolhe mantendo proporcao se nao couber na largura de
+                // conteudo ou no espaco vertical restante do slide.
+                if cx > PPTX_CONTENT_W_EMU {
+                    let scale = PPTX_CONTENT_W_EMU as f64 / cx as f64;
+                    cx = PPTX_CONTENT_W_EMU;
+                    cy = (cy as f64 * scale) as i64;
+                }
+                if cy > remaining_h {
+                    let scale = remaining_h as f64 / cy.max(1) as f64;
+                    cy = remaining_h;
+                    cx = (cx as f64 * scale) as i64;
+                }
+
+                let rel_id = next_rel_id;
+                next_rel_id += 1;
+                shapes.push_str(&format!(
+                    r#"<p:pic><p:nvPicPr><p:cNvPr id="{id}" name="Picture"/><p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr><p:nvPr/></p:nvPicPr><p:blipFill><a:blip r:embed="rId{rel_id}"/><a:stretch><a:fillRect/></a:stretch></p:blipFill><p:spPr><a:xfrm><a:off x="{x}" y="{y}"/><a:ext cx="{cx}" cy="{cy}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>"#,
+                    id = shape_id,
+                    rel_id = rel_id,
+                    x = PPTX_MARGIN_EMU,
+                    y = cur_y,
+                    cx = cx,
+                    cy = cy,
+                ));
+                shape_id += 1;
+                cur_y += cy + 50_000;
+                media.push((rel_id, PptxImagePart { file_name, content_type, bytes }));
+            }
+            _ => {}
+        }
+    }
+
+    // media colhida acima carrega o rel_id junto pra montar o .rels do slide
+    // (rId1 = layout, rId de imagem = o que foi atribuido na hora de montar
+    // a shape) — separa em duas listas paralelas antes de devolver.
+    let mut rels = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>"#
+    );
+    let mut media_parts = Vec::new();
+    for (rel_id, part) in media {
+        rels.push_str(&format!(
+            r#"<Relationship Id="rId{rel_id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/{file}"/>"#,
+            rel_id = rel_id,
+            file = part.file_name,
+        ));
+        media_parts.push(part);
+    }
+    rels.push_str("</Relationships>");
+
+    let slide_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>{shapes}</p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sld>"#
+    );
+
+    Ok((slide_xml, rels, media_parts))
+}
+
+fn write_pptx(target: &Path, slides: &[Value], project_root: &Path) -> Result<()> {
+    use std::io::Write;
+    use zip::write::SimpleFileOptions;
+
+    let mut content_types = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>"#,
+    );
+    let mut media_extensions_seen: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    content_types.push_str(
+        r#"<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/><Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/><Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/><Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/><Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>"#,
+    );
+
+    let mut media_counter: u32 = 0;
+    let mut slide_entries: Vec<(String, String, Vec<PptxImagePart>)> = Vec::new(); // (slide_xml, rels_xml, media)
+    for slide in slides {
+        let (slide_xml, rels_xml, media) = build_pptx_slide(slide, project_root, &mut media_counter)?;
+        for part in &media {
+            let ext = part
+                .file_name
+                .rsplit('.')
+                .next()
+                .unwrap_or("png")
+                .to_lowercase();
+            media_extensions_seen.insert(ext, part.content_type.clone());
+        }
+        slide_entries.push((slide_xml, rels_xml, media));
+    }
+    for (ext, content_type) in &media_extensions_seen {
+        content_types.push_str(&format!(
+            r#"<Default Extension="{ext}" ContentType="{content_type}"/>"#,
+        ));
+    }
+    for i in 1..=slide_entries.len() {
+        content_types.push_str(&format!(
+            r#"<Override PartName="/ppt/slides/slide{i}.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>"#
+        ));
+    }
+    content_types.push_str("</Types>");
+
+    let package_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/></Relationships>"#;
+
+    let mut sld_id_lst = String::new();
+    for i in 0..slide_entries.len() {
+        sld_id_lst.push_str(&format!(
+            r#"<p:sldId id="{id}" r:id="rId{rid}"/>"#,
+            id = 256 + i,
+            rid = i + 1, // rId1..N nas presentation rels sao os slides (rIdM1 e o master, ver abaixo)
+        ));
+    }
+    let presentation_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rIdM1"/></p:sldMasterIdLst><p:sldIdLst>{sld_id_lst}</p:sldIdLst><p:sldSz cx="{w}" cy="{h}" type="screen16x9"/><p:notesSz cx="6858000" cy="9144000"/></p:presentation>"#,
+        sld_id_lst = sld_id_lst,
+        w = PPTX_SLIDE_W_EMU,
+        h = PPTX_SLIDE_H_EMU,
+    );
+
+    let mut presentation_rels = String::from(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+    );
+    for i in 0..slide_entries.len() {
+        presentation_rels.push_str(&format!(
+            r#"<Relationship Id="rId{rid}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide" Target="slides/slide{n}.xml"/>"#,
+            rid = i + 1,
+            n = i + 1,
+        ));
+    }
+    presentation_rels.push_str(
+        r#"<Relationship Id="rIdM1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="slideMasters/slideMaster1.xml"/></Relationships>"#,
+    );
+
+    let slide_master_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill><a:effectLst/></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld><p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/><p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst></p:sldMaster>"#;
+
+    let slide_master_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/></Relationships>"#;
+
+    let slide_layout_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="blank" preserve="1"><p:cSld name="Blank"><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld><p:clrMapOvr><a:masterClrMapping/></p:clrMapOvr></p:sldLayout>"#;
+
+    let slide_layout_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/></Relationships>"#;
+
+    // Tema simplificado mas schema-valido: cores/fontes do Cerne, com os 3
+    // niveis de fill/line/effect que o fmtScheme exige (mesmo padrao
+    // reduzido usado por outros geradores minimos de pptx).
+    let theme_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Cerne"><a:themeElements><a:clrScheme name="Cerne"><a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1><a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="1F1F1F"/></a:dk2><a:lt2><a:srgbClr val="EEEEEE"/></a:lt2><a:accent1><a:srgbClr val="6366F1"/></a:accent1><a:accent2><a:srgbClr val="8B5CF6"/></a:accent2><a:accent3><a:srgbClr val="EC4899"/></a:accent3><a:accent4><a:srgbClr val="F59E0B"/></a:accent4><a:accent5><a:srgbClr val="10B981"/></a:accent5><a:accent6><a:srgbClr val="3B82F6"/></a:accent6><a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink></a:clrScheme><a:fontScheme name="Cerne"><a:majorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont><a:minorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont></a:fontScheme><a:fmtScheme name="Cerne"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln><a:ln w="19050"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>"#;
+
+    let core_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:creator>Cerne Code</dc:creator></cp:coreProperties>"#
+    );
+    let app_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Cerne Code</Application><Slides>{n}</Slides></Properties>"#,
+        n = slide_entries.len(),
+    );
+
+    let file = std::fs::File::create(target)
+        .map_err(|e| anyhow!("nao foi possivel criar {}: {e}", target.display()))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let opts = SimpleFileOptions::default();
+
+    zip.start_file("[Content_Types].xml", opts)?;
+    zip.write_all(content_types.as_bytes())?;
+
+    zip.start_file("_rels/.rels", opts)?;
+    zip.write_all(package_rels.as_bytes())?;
+
+    zip.start_file("docProps/core.xml", opts)?;
+    zip.write_all(core_xml.as_bytes())?;
+    zip.start_file("docProps/app.xml", opts)?;
+    zip.write_all(app_xml.as_bytes())?;
+
+    zip.start_file("ppt/presentation.xml", opts)?;
+    zip.write_all(presentation_xml.as_bytes())?;
+    zip.start_file("ppt/_rels/presentation.xml.rels", opts)?;
+    zip.write_all(presentation_rels.as_bytes())?;
+
+    zip.start_file("ppt/slideMasters/slideMaster1.xml", opts)?;
+    zip.write_all(slide_master_xml.as_bytes())?;
+    zip.start_file("ppt/slideMasters/_rels/slideMaster1.xml.rels", opts)?;
+    zip.write_all(slide_master_rels.as_bytes())?;
+
+    zip.start_file("ppt/slideLayouts/slideLayout1.xml", opts)?;
+    zip.write_all(slide_layout_xml.as_bytes())?;
+    zip.start_file("ppt/slideLayouts/_rels/slideLayout1.xml.rels", opts)?;
+    zip.write_all(slide_layout_rels.as_bytes())?;
+
+    zip.start_file("ppt/theme/theme1.xml", opts)?;
+    zip.write_all(theme_xml.as_bytes())?;
+
+    for (i, (slide_xml, rels_xml, media)) in slide_entries.into_iter().enumerate() {
+        let n = i + 1;
+        zip.start_file(format!("ppt/slides/slide{n}.xml"), opts)?;
+        zip.write_all(slide_xml.as_bytes())?;
+        zip.start_file(format!("ppt/slides/_rels/slide{n}.xml.rels"), opts)?;
+        zip.write_all(rels_xml.as_bytes())?;
+        for part in media {
+            zip.start_file(format!("ppt/media/{}", part.file_name), opts)?;
+            zip.write_all(&part.bytes)?;
+        }
+    }
+
+    zip.finish()?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1346,6 +2104,25 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("cerne-grep-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn orchestration_tool_specs_has_the_four_session_tools() {
+        // Fase G: só as 4 ferramentas de sessão orquestrada, nada mais —
+        // guarda de profundidade (não deixa `task`/`run_pipeline` vazarem
+        // pra cá) é responsabilidade de `agent/mod.rs` filtrar isso pra
+        // sessões orquestradas, não desta função.
+        let specs = orchestration_tool_specs();
+        let names: Vec<&str> = specs.iter().map(|s| s.function.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "start_agent_session",
+                "check_agent_session",
+                "list_agent_sessions",
+                "stop_agent_session",
+            ]
+        );
     }
 
     #[test]
@@ -1508,7 +2285,7 @@ mod tests {
             "old_str": "let title = \"hello\";",
             "new_str": "let title = \"bye\";",
         });
-        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto)
+        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto, &dir, "test-session")
         .await
         .unwrap();
         assert!(
@@ -1535,7 +2312,7 @@ mod tests {
             "old_str": "let result = compute_totals(a, b);", // typo: "totals" em vez de "total"
             "new_str": "let result = compute_total(a, b) * 2;",
         });
-        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto)
+        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto, &dir, "test-session")
         .await
         .unwrap();
         assert!(
@@ -1558,7 +2335,7 @@ mod tests {
             "old_str": "let totally_unrelated_thing_not_in_file = 42;",
             "new_str": "x",
         });
-        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto)
+        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto, &dir, "test-session")
         .await
         .unwrap();
         assert!(outcome.pending_edit.is_none());
@@ -1575,7 +2352,7 @@ mod tests {
             "old_str": "    let x = 1;",
             "new_str": "    let x = 2;",
         });
-        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto)
+        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto, &dir, "test-session")
         .await
         .unwrap();
         assert!(
@@ -1602,7 +2379,7 @@ mod tests {
             "old_str": "let totally_missing = 1;",
             "new_str": "let x = 2;",
         });
-        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto)
+        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto, &dir, "test-session")
         .await
         .unwrap();
         assert!(
@@ -1630,7 +2407,7 @@ mod tests {
             "old_str": "café",
             "new_str": "cha",
         });
-        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto)
+        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto, &dir, "test-session")
         .await
         .unwrap();
         assert!(
@@ -1662,7 +2439,7 @@ mod tests {
             "old_str": "caf",
             "new_str": "bar",
         });
-        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto)
+        let outcome = execute_project_tool("edit_file", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto, &dir, "test-session")
         .await
         .unwrap();
         assert!(
@@ -1687,7 +2464,7 @@ mod tests {
         let background_jobs = crate::agent::background::BackgroundJobs::default();
 
         let start_args = json!({ "command": "echo from-tool-dispatch", "background": true });
-        let outcome = execute_project_tool("run_command", &start_args, &dir, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto)
+        let outcome = execute_project_tool("run_command", &start_args, &dir, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto, &dir, "test-session")
             .await
             .unwrap();
         assert!(
@@ -1708,7 +2485,7 @@ mod tests {
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         let check_args = json!({ "id": id });
-        let checked = execute_project_tool("check_background_output", &check_args, &dir, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto)
+        let checked = execute_project_tool("check_background_output", &check_args, &dir, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto, &dir, "test-session")
         .await
         .unwrap();
         assert!(
@@ -1718,13 +2495,13 @@ mod tests {
         );
 
         let listed =
-            execute_project_tool("list_background", &json!({}), &dir, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto)
+            execute_project_tool("list_background", &json!({}), &dir, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto, &dir, "test-session")
                 .await
                 .unwrap();
         assert!(listed.observation.contains(&id));
 
         let stopped =
-            execute_project_tool("stop_background", &check_args, &dir, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto)
+            execute_project_tool("stop_background", &check_args, &dir, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto, &dir, "test-session")
                 .await
                 .unwrap();
         assert!(stopped.observation.contains("encerrado"));
@@ -1753,7 +2530,7 @@ mod tests {
             "old_str": "def add(a, b):\n    return a + b",
             "new_str": "def add(a, b):\n    \"\"\"Soma dois numeros.\"\"\"\n    return a + b",
         });
-        let outcome1 = execute_project_tool("edit_file", &first, &dir, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto)
+        let outcome1 = execute_project_tool("edit_file", &first, &dir, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto, &dir, "test-session")
             .await
             .unwrap();
         assert!(
@@ -1768,7 +2545,7 @@ mod tests {
             "old_str": "def subtract(a, b):\n    return a - b",
             "new_str": "def subtract(a, b):\n    \"\"\"Subtrai dois numeros.\"\"\"\n    return a - b",
         });
-        let outcome2 = execute_project_tool("edit_file", &second, &dir, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto)
+        let outcome2 = execute_project_tool("edit_file", &second, &dir, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto, &dir, "test-session")
             .await
             .unwrap();
         assert!(
@@ -1820,6 +2597,7 @@ mod tests {
             &mcp_clients,
             Path::new("."),
             &crate::models::ExecutionMode::Auto,
+            "test-session",
         )
         .await;
         match result {
@@ -1848,6 +2626,8 @@ mod tests {
             &[],
             &background_jobs,
             &crate::models::ExecutionMode::Auto,
+            &project,
+            "test-session",
         )
         .await
         .unwrap();
@@ -1867,7 +2647,7 @@ mod tests {
         let outsider_path = outsider.join("secret.txt").to_string_lossy().to_string();
         let args = json!({ "path": outsider_path });
         let result =
-            execute_project_tool("read_file", &args, &project, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto).await;
+            execute_project_tool("read_file", &args, &project, &[], &[], &background_jobs, &crate::models::ExecutionMode::Auto, &project, "test-session").await;
         assert!(
             result.is_ok(),
             "read_file deve aceitar qualquer caminho absoluto, recebeu erro: {:?}",
@@ -1897,6 +2677,8 @@ mod tests {
             &[],
             &background_jobs,
             &crate::models::ExecutionMode::Auto,
+            &project,
+            "test-session",
         )
         .await
         .unwrap();
@@ -1905,7 +2687,7 @@ mod tests {
 
         let grep_args = json!({ "pattern": "hello", "path": extra.to_string_lossy().to_string() });
         let grepped =
-            execute_project_tool("grep", &grep_args, &project, &extra_roots, &[], &background_jobs, &crate::models::ExecutionMode::Auto)
+            execute_project_tool("grep", &grep_args, &project, &extra_roots, &[], &background_jobs, &crate::models::ExecutionMode::Auto, &project, "test-session")
                 .await
                 .unwrap();
         assert!(grepped.observation.contains("a.txt"));
@@ -1934,6 +2716,8 @@ mod tests {
             &[],
             &background_jobs,
             &crate::models::ExecutionMode::Manual,
+            &project,
+            "test-session",
         )
         .await;
         assert!(
@@ -1961,7 +2745,7 @@ mod tests {
             let target = extra.join("novo.txt");
             let args =
                 json!({ "path": target.to_string_lossy().to_string(), "content": "conteudo externo" });
-            let result = execute_project_tool("write_file", &args, &project, &[], &[], &background_jobs, &mode)
+            let result = execute_project_tool("write_file", &args, &project, &[], &[], &background_jobs, &mode, &project, "test-session")
             .await
             .unwrap_or_else(|e| panic!("write_file deveria aceitar caminho externo em modo {mode:?}: {e}"));
 
@@ -1982,5 +2766,108 @@ mod tests {
             fs::remove_dir_all(&project).ok();
             fs::remove_dir_all(&extra).ok();
         }
+    }
+
+    /// T16 — pptx com titulo, paragrafo, bullets, tabela e uma imagem real
+    /// (PNG minusculo gerado em memoria via a crate `image`) — confere que o
+    /// zip resultante tem as partes obrigatorias do OOXML e que os bytes da
+    /// imagem embutida batem com o arquivo original, byte a byte.
+    #[test]
+    fn create_pptx_end_to_end_with_image() {
+        let dir = scratch_dir();
+        let img_path = dir.join("logo.png");
+        let img = image::RgbaImage::from_pixel(4, 2, image::Rgba([255, 0, 0, 255]));
+        image::DynamicImage::ImageRgba8(img)
+            .save(&img_path)
+            .unwrap();
+        let original_png_bytes = fs::read(&img_path).unwrap();
+
+        let out_path = dir.join("apresentacao.pptx");
+        let slides = vec![
+            json!({
+                "title": "Slide 1",
+                "elements": [
+                    { "type": "paragraph", "text": "Um paragrafo em negrito.", "bold": true, "size": 20 },
+                    { "type": "bullets", "items": ["Topico A", "Topico B", "Topico C"] },
+                ]
+            }),
+            json!({
+                "title": "Slide 2 — tabela e imagem",
+                "elements": [
+                    { "type": "table", "headers": ["Coluna 1", "Coluna 2"], "rows": [["a", "b"], ["c", "d"]] },
+                    { "type": "image", "path": img_path.to_string_lossy().to_string() },
+                ]
+            }),
+        ];
+        write_pptx(&out_path, &slides, &dir).unwrap();
+
+        let file = fs::File::open(&out_path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .map(|i| archive.by_index(i).unwrap().name().to_string())
+            .collect();
+
+        for expected in [
+            "[Content_Types].xml",
+            "_rels/.rels",
+            "ppt/presentation.xml",
+            "ppt/_rels/presentation.xml.rels",
+            "ppt/slideMasters/slideMaster1.xml",
+            "ppt/slideLayouts/slideLayout1.xml",
+            "ppt/theme/theme1.xml",
+            "ppt/slides/slide1.xml",
+            "ppt/slides/slide2.xml",
+            "ppt/slides/_rels/slide1.xml.rels",
+            "ppt/slides/_rels/slide2.xml.rels",
+            "ppt/media/image1.png",
+        ] {
+            assert!(names.contains(&expected.to_string()), "esperava a parte '{expected}' no zip, achou: {names:?}");
+        }
+
+        let mut content_types = String::new();
+        std::io::Read::read_to_string(&mut archive.by_name("[Content_Types].xml").unwrap(), &mut content_types).unwrap();
+        assert!(content_types.contains(r#"Extension="png""#));
+        assert!(content_types.contains("slide1.xml"));
+        assert!(content_types.contains("slide2.xml"));
+
+        let mut slide1 = String::new();
+        std::io::Read::read_to_string(&mut archive.by_name("ppt/slides/slide1.xml").unwrap(), &mut slide1).unwrap();
+        assert!(slide1.contains("Slide 1"));
+        assert!(slide1.contains("Um paragrafo em negrito."));
+        assert!(slide1.contains("Topico A"));
+        assert!(slide1.contains("Topico B"));
+
+        let mut slide2 = String::new();
+        std::io::Read::read_to_string(&mut archive.by_name("ppt/slides/slide2.xml").unwrap(), &mut slide2).unwrap();
+        assert!(slide2.contains("Coluna 1"));
+        assert!(slide2.contains(r#"<a:t>a</a:t>"#));
+        assert!(slide2.contains("<p:pic>"), "slide 2 deveria ter a imagem embutida: {slide2}");
+
+        let mut embedded_png = Vec::new();
+        std::io::Read::read_to_end(&mut archive.by_name("ppt/media/image1.png").unwrap(), &mut embedded_png).unwrap();
+        assert_eq!(embedded_png, original_png_bytes, "imagem embutida deveria ser identica ao arquivo original");
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn create_pptx_rejects_empty_slides_via_execute_project_tool() {
+        let dir = scratch_dir();
+        let background_jobs = crate::agent::background::BackgroundJobs::default();
+        let args = json!({ "path": "out.pptx", "slides": [] });
+        let result = execute_project_tool(
+            "create_pptx",
+            &args,
+            &dir,
+            &[],
+            &[],
+            &background_jobs,
+            &crate::models::ExecutionMode::Auto,
+            &dir,
+            "test-session",
+        )
+        .await;
+        assert!(result.is_err(), "slides vazio deveria ser rejeitado");
+        fs::remove_dir_all(&dir).ok();
     }
 }

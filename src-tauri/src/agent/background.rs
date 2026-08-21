@@ -17,12 +17,57 @@
 //! job pertence a qual sessao.
 
 use anyhow::{anyhow, Result};
+use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Child;
+
+/// Intervalo mínimo entre eventos `agent:background_output` do MESMO job —
+/// sem isso, um processo bem tagarela (build verboso, por exemplo) inundaria
+/// o frontend com um evento por linha. O buffer completo continua sendo
+/// acumulado a cada linha (`read_output`/`check_background_output` sempre
+/// veem tudo); só o PUSH em tempo real é limitado.
+const BACKGROUND_OUTPUT_EMIT_INTERVAL: Duration = Duration::from_millis(200);
+
+#[derive(Serialize, Clone)]
+struct BackgroundOutputEvent {
+    id: String,
+    output: String,
+}
+
+/// Emitido quando um job em segundo plano termina de vez (ambos stdout e
+/// stderr fecharam) — sinal pro frontend mostrar uma notificação, sem
+/// precisar que o usuário/LLM fique conferindo (T14).
+#[derive(Serialize, Clone)]
+struct BackgroundDoneEvent {
+    id: String,
+    session_id: String,
+    command: String,
+    output: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BackgroundJobStatus {
+    Running,
+    Exited { code: Option<i32> },
+    Unknown,
+}
+
+#[derive(Serialize, Clone)]
+pub struct BackgroundJobInfo {
+    pub id: String,
+    pub command: String,
+    pub status: BackgroundJobStatus,
+    pub output: String,
+    pub started_at_ms: i64,
+    pub session_id: String,
+}
 
 /// Quantas linhas de output (stdout+stderr combinados) manter por job — mais
 /// que isso e descartado do inicio, tipo um `tail -f` com buffer limitado,
@@ -33,18 +78,79 @@ struct JobHandle {
     child: Child,
     command: String,
     output: Arc<Mutex<VecDeque<String>>>,
+    started_at_ms: i64,
+    session_id: String,
 }
 
 /// Registro dos processos em segundo plano ainda vivos (ou encerrados mas
 /// ainda nao conferidos/removidos). Uma instancia vive em `AppState`.
+///
+/// `app` fica `None` nos testes (que constroem via `Default`, sem app Tauri
+/// de verdade) e `Some` em produção (`BackgroundJobs::new`, chamado no
+/// `setup` do app) — quando `None`, o push de `agent:background_output`
+/// simplesmente não dispara, sem quebrar nada (mesmo espírito de todo outro
+/// `let _ = app.emit(...)` no código: melhor esforço, nunca crítico).
+/// Teto de jobs rastreados ao mesmo tempo (rodando + já terminados, ainda
+/// não "esquecidos") — sem isso, todo `run_command(background=true)` cujo
+/// processo termina SOZINHO (a maioria: build, teste, git, etc. — só o
+/// `stop()` explícito removia do mapa) ficava pra sempre em memória, com o
+/// `Child` handle e o buffer de output inteiro (até `MAX_OUTPUT_LINES`
+/// cada) nunca liberados. **Vazamento de memória real, confirmado**: Log de
+/// Eventos do Windows mostrou `RADAR_PRE_LEAK_64` (heurística de vazamento
+/// do próprio Windows) pouco mais de uma hora antes de um crash por falha
+/// fatal de alocação (`0xc0000409`) numa sessão de uso prolongado —
+/// achado investigando o relato do usuário, 2026-08-17. Só remove jobs JÁ
+/// TERMINADOS (nunca um rodando) quando o total passa do teto, começando
+/// pelo mais antigo.
+const MAX_TRACKED_JOBS: usize = 50;
+
+fn prune_finished_jobs(jobs: &mut HashMap<String, JobHandle>) {
+    if jobs.len() < MAX_TRACKED_JOBS {
+        return;
+    }
+    let mut finished: Vec<(String, i64)> = jobs
+        .iter_mut()
+        .filter_map(|(id, job)| match job.child.try_wait() {
+            Ok(Some(_)) => Some((id.clone(), job.started_at_ms)),
+            _ => None,
+        })
+        .collect();
+    finished.sort_by_key(|(_, started_at_ms)| *started_at_ms);
+    let excess = jobs.len() + 1 - MAX_TRACKED_JOBS;
+    for (id, _) in finished.into_iter().take(excess) {
+        jobs.remove(&id);
+    }
+}
+
 #[derive(Default)]
-pub struct BackgroundJobs(Mutex<HashMap<String, JobHandle>>);
+pub struct BackgroundJobs {
+    jobs: Mutex<HashMap<String, JobHandle>>,
+    app: Option<AppHandle>,
+}
 
 impl BackgroundJobs {
+    pub fn new(app: AppHandle) -> Self {
+        Self {
+            jobs: Mutex::new(HashMap::new()),
+            app: Some(app),
+        }
+    }
+
     /// Inicia `command` em segundo plano dentro de `project_root` e devolve
     /// o id (UUID) pra consultar/parar depois. Nao espera o processo
     /// terminar — retorna assim que o SO confirma que o processo nasceu.
-    pub fn start(&self, project_root: &Path, command: &str) -> Result<String> {
+    ///
+    /// `app_data_dir`/`session_id` sao pra T14 (callback automatico): quando
+    /// o job termina de vez, o resultado e injetado no historico dessa sessao
+    /// sem o LLM precisar ficar chamando `check_background_output` de novo.
+    pub fn start(
+        &self,
+        project_root: &Path,
+        command: &str,
+        app_data_dir: &Path,
+        session_id: &str,
+    ) -> Result<String> {
+        prune_finished_jobs(&mut self.jobs.lock().unwrap());
         let mut cmd = super::shell::build_shell_command(command);
         cmd.current_dir(project_root)
             .stdout(Stdio::piped())
@@ -54,21 +160,48 @@ impl BackgroundJobs {
             .spawn()
             .map_err(|e| anyhow!("nao foi possivel iniciar o comando em segundo plano: {e}"))?;
 
+        let id = uuid::Uuid::new_v4().to_string();
         let output = Arc::new(Mutex::new(VecDeque::new()));
+        let last_emit: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+        // Contador de streams (stdout+stderr) ainda abertos pra esse job —
+        // quando os dois fecham (chegou a 0), o processo terminou de vez;
+        // qualquer um dos dois readers pode ser o ultimo a fechar.
+        let remaining_streams = Arc::new(Mutex::new(2u8));
+        let completion = JobCompletionCtx {
+            app: self.app.clone(),
+            job_id: id.clone(),
+            session_id: session_id.to_string(),
+            command: command.to_string(),
+            app_data_dir: app_data_dir.to_path_buf(),
+            remaining_streams,
+        };
         if let Some(stdout) = child.stdout.take() {
-            spawn_reader(stdout, output.clone(), None);
+            spawn_reader(
+                stdout,
+                output.clone(),
+                None,
+                last_emit.clone(),
+                completion.clone(),
+            );
         }
         if let Some(stderr) = child.stderr.take() {
-            spawn_reader(stderr, output.clone(), Some("[stderr] "));
+            spawn_reader(
+                stderr,
+                output.clone(),
+                Some("[stderr] "),
+                last_emit.clone(),
+                completion.clone(),
+            );
         }
 
-        let id = uuid::Uuid::new_v4().to_string();
-        self.0.lock().unwrap().insert(
+        self.jobs.lock().unwrap().insert(
             id.clone(),
             JobHandle {
                 child,
                 command: command.to_string(),
                 output,
+                started_at_ms: chrono::Utc::now().timestamp_millis(),
+                session_id: session_id.to_string(),
             },
         );
         Ok(id)
@@ -77,7 +210,7 @@ impl BackgroundJobs {
     /// Le o output acumulado ate agora e o status atual (ainda rodando, ou
     /// encerrado com que codigo de saida) sem parar o processo.
     pub fn read_output(&self, id: &str) -> Result<String> {
-        let mut jobs = self.0.lock().unwrap();
+        let mut jobs = self.jobs.lock().unwrap();
         let job = jobs.get_mut(id).ok_or_else(|| {
             anyhow!("job em segundo plano '{id}' nao encontrado (id errado, ou ja foi parado)")
         })?;
@@ -114,7 +247,7 @@ impl BackgroundJobs {
     /// outros testes rodando `ping` em paralelo no mesmo processo de teste).
     #[cfg(test)]
     fn cmd_pid(&self, id: &str) -> Option<u32> {
-        self.0.lock().unwrap().get(id).and_then(|j| j.child.id())
+        self.jobs.lock().unwrap().get(id).and_then(|j| j.child.id())
     }
 
     /// Mata o processo (arvore inteira) e remove o job do registro.
@@ -139,7 +272,7 @@ impl BackgroundJobs {
         // encontrado" e os filhos (o processo de verdade) ficam orfaos.
         // Achado depurando um teste que falhava so as vezes.
         let job = {
-            let mut jobs = self.0.lock().unwrap();
+            let mut jobs = self.jobs.lock().unwrap();
             jobs.remove(id).ok_or_else(|| {
                 anyhow!("job em segundo plano '{id}' nao encontrado (id errado, ou ja foi parado)")
             })?
@@ -149,20 +282,78 @@ impl BackgroundJobs {
             // Ignora falha do taskkill de proposito: o caso mais comum e o
             // processo ja ter morrido sozinho entre o ultimo check e o stop,
             // que nao e erro real (o objetivo do usuario ja estava satisfeito).
-            let _ = tokio::process::Command::new("taskkill")
-                .args(["/PID", &pid.to_string(), "/T", "/F"])
-                .output()
-                .await;
+            let mut taskkill = tokio::process::Command::new("taskkill");
+            taskkill.args(["/PID", &pid.to_string(), "/T", "/F"]);
+            super::shell::apply_creation_flags(&mut taskkill);
+            let _ = taskkill.output().await;
         }
         drop(job); // kill_on_drop dispara aqui como rede de seguranca redundante, sem efeito (ja morto)
         Ok(format!("comando '{command}' (id {id}) encerrado"))
+    }
+
+    /// Mata TODOS os jobs ainda vivos de uma vez, via `taskkill /T /F` —
+    /// usado no encerramento do app (ver `lib.rs::run`) pra nao deixar dev
+    /// servers/processos filhos orfaos rodando depois que o Cerne fecha.
+    /// Sincrono de proposito: o handler de saida do Tauri nao e async, e
+    /// `kill_on_drop`/`start_kill()` sozinhos nao sao confiaveis nesse
+    /// momento (o runtime pode nao ter chance de rodar o kill assincrono
+    /// antes do processo do app sumir - mesmo achado documentado em `stop`
+    /// acima, so que ali o contexto e async e da pra fazer `.await`).
+    pub fn kill_all_blocking(&self) {
+        let pids: Vec<u32> = {
+            let jobs = self.jobs.lock().unwrap();
+            jobs.values().filter_map(|j| j.child.id()).collect()
+        };
+        for pid in pids {
+            super::shell::kill_pid_tree_blocking(pid);
+        }
+        self.jobs.lock().unwrap().clear();
+    }
+
+    /// Versão estruturada de `list()` — pro painel da UI (Fase C1), que
+    /// precisa dos campos separados pra renderizar (não pro LLM, que usa o
+    /// texto formatado de `list()`).
+    pub fn list_structured(&self) -> Vec<BackgroundJobInfo> {
+        let mut jobs = self.jobs.lock().unwrap();
+        let mut result: Vec<BackgroundJobInfo> = jobs
+            .iter_mut()
+            .map(|(id, job)| {
+                let status = match job.child.try_wait() {
+                    Ok(Some(exit_status)) => BackgroundJobStatus::Exited {
+                        code: exit_status.code(),
+                    },
+                    Ok(None) => BackgroundJobStatus::Running,
+                    Err(_) => BackgroundJobStatus::Unknown,
+                };
+                let output = job
+                    .output
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                BackgroundJobInfo {
+                    id: id.clone(),
+                    command: job.command.clone(),
+                    status,
+                    output,
+                    started_at_ms: job.started_at_ms,
+                    session_id: job.session_id.clone(),
+                }
+            })
+            .collect();
+        // Mais recente primeiro — `jobs` é um HashMap (ordem de iteração
+        // arbitrária), sem isso a lista pulava de ordem a cada refresh.
+        result.sort_by_key(|j| std::cmp::Reverse(j.started_at_ms));
+        result
     }
 
     /// Lista todo job conhecido (rodando ou encerrado, ainda nao limpo) —
     /// util pro modelo checar "ja tem um dev server rodando de antes?" antes
     /// de subir outro.
     pub fn list(&self) -> String {
-        let mut jobs = self.0.lock().unwrap();
+        let mut jobs = self.jobs.lock().unwrap();
         if jobs.is_empty() {
             return "nenhum comando em segundo plano".to_string();
         }
@@ -188,23 +379,153 @@ impl BackgroundJobs {
     }
 }
 
-fn spawn_reader<R>(reader: R, output: Arc<Mutex<VecDeque<String>>>, prefix: Option<&'static str>)
-where
+/// Tudo que o callback de conclusao (T14) precisa, agrupado pra nao
+/// carregar 6 parametros soltos entre os dois readers (stdout/stderr) de um
+/// mesmo job.
+#[derive(Clone)]
+struct JobCompletionCtx {
+    app: Option<AppHandle>,
+    job_id: String,
+    session_id: String,
+    command: String,
+    app_data_dir: PathBuf,
+    remaining_streams: Arc<Mutex<u8>>,
+}
+
+fn spawn_reader<R>(
+    reader: R,
+    output: Arc<Mutex<VecDeque<String>>>,
+    prefix: Option<&'static str>,
+    last_emit: Arc<Mutex<Option<Instant>>>,
+    completion: JobCompletionCtx,
+) where
     R: AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
         let mut lines = BufReader::new(reader).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let mut buf = output.lock().unwrap();
-            buf.push_back(match prefix {
-                Some(p) => format!("{p}{line}"),
-                None => line,
-            });
-            if buf.len() > MAX_OUTPUT_LINES {
-                buf.pop_front();
+            let joined = {
+                let mut buf = output.lock().unwrap();
+                buf.push_back(match prefix {
+                    Some(p) => format!("{p}{line}"),
+                    None => line,
+                });
+                if buf.len() > MAX_OUTPUT_LINES {
+                    buf.pop_front();
+                }
+                buf.iter().cloned().collect::<Vec<_>>().join("\n")
+            };
+
+            if let Some(app) = &completion.app {
+                let should_emit = {
+                    let mut last = last_emit.lock().unwrap();
+                    let now = Instant::now();
+                    let ready = last
+                        .map(|t| now.duration_since(t) >= BACKGROUND_OUTPUT_EMIT_INTERVAL)
+                        .unwrap_or(true);
+                    if ready {
+                        *last = Some(now);
+                    }
+                    ready
+                };
+                if should_emit {
+                    let _ = app.emit(
+                        "agent:background_output",
+                        BackgroundOutputEvent {
+                            id: completion.job_id.clone(),
+                            output: joined,
+                        },
+                    );
+                }
             }
         }
+
+        // Esse stream (stdout ou stderr) fechou — quando os dois fecharem
+        // (contador chega a 0), o processo terminou de vez.
+        let is_last = {
+            let mut remaining = completion.remaining_streams.lock().unwrap();
+            *remaining = remaining.saturating_sub(1);
+            *remaining == 0
+        };
+        if is_last {
+            on_job_finished(completion, output).await;
+        }
     });
+}
+
+/// Callback do T14: quando um job em segundo plano termina de vez, avisa a
+/// UI (`agent:background_done`) e injeta uma mensagem no historico da sessao
+/// que o iniciou, pra o LLM ver o resultado no proximo turno sem precisar
+/// ficar chamando `check_background_output` repetidamente. Melhor esforco —
+/// falhas aqui (sessao ja apagada, etc.) nao devem derrubar nada.
+async fn on_job_finished(completion: JobCompletionCtx, output: Arc<Mutex<VecDeque<String>>>) {
+    let final_output = output
+        .lock()
+        .unwrap()
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if let Some(app) = &completion.app {
+        let _ = app.emit(
+            "agent:background_done",
+            BackgroundDoneEvent {
+                id: completion.job_id.clone(),
+                session_id: completion.session_id.clone(),
+                command: completion.command.clone(),
+                output: final_output.clone(),
+            },
+        );
+    }
+
+    if completion.session_id.is_empty() {
+        return;
+    }
+    // Preview curto pro chat (`display_content`) — o output completo (ate
+    // MAX_OUTPUT_LINES) so vai pro `content`, que e o que o LLM realmente le
+    // no proximo turno. Sem essa distincao, um build/teste verboso vira uma
+    // bolha de chat gigante; com ela, a tela mostra so as ultimas linhas e o
+    // agente ainda tem o output inteiro disponivel se precisar investigar.
+    const PREVIEW_LINES: usize = 12;
+    let preview: String = final_output
+        .lines()
+        .rev()
+        .take(PREVIEW_LINES)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<Vec<_>>()
+        .join("\n");
+    let note = crate::models::ChatMessage {
+        role: "system".to_string(),
+        content: format!(
+            "[Comando em segundo plano concluido]\ncomando: {}\nid: {}\noutput (ultimas {MAX_OUTPUT_LINES} linhas):\n{}",
+            completion.command, completion.job_id, final_output
+        ),
+        tool_calls: None,
+        tool_call_id: None,
+        // Marca essa mensagem como a nota de conclusao do T14 pro frontend
+        // saber renderiza-la de um jeito distinto (nao e o system prompt
+        // real, que tambem usa role "system" mas nunca deveria aparecer no
+        // chat visivel).
+        name: Some("background_job_done".to_string()),
+        images: Vec::new(),
+        display_content: Some(format!(
+            "✅ Comando em segundo plano concluído: `{}`\n\n```\n{}\n```",
+            completion.command, preview
+        )),
+    };
+    if let Ok(mut messages) =
+        crate::sessions::load_messages(&completion.app_data_dir, &completion.session_id)
+    {
+        messages.push(note);
+        let _ = crate::sessions::save_messages(
+            &completion.app_data_dir,
+            &completion.session_id,
+            &messages,
+        );
+    }
 }
 
 #[cfg(test)]
@@ -230,7 +551,7 @@ mod tests {
     async fn start_read_and_stop_a_background_command() {
         let jobs = BackgroundJobs::default();
         let dir = std::env::temp_dir();
-        let id = jobs.start(&dir, "echo hello-from-background").unwrap();
+        let id = jobs.start(&dir, "echo hello-from-background", &dir, "test-session").unwrap();
 
         let output = wait_for(&jobs, &id, "hello-from-background").await;
         assert!(
@@ -256,7 +577,7 @@ mod tests {
         let dir = std::env::temp_dir();
         // ping localhost e um jeito portavel de ter um processo Windows que
         // fica rodando por alguns segundos, pra testar "parar enquanto ainda roda".
-        let id = jobs.start(&dir, "ping -n 20 127.0.0.1").unwrap();
+        let id = jobs.start(&dir, "ping -n 20 127.0.0.1", &dir, "test-session").unwrap();
 
         let output = wait_for(&jobs, &id, "status: rodando").await;
         assert!(
@@ -284,7 +605,7 @@ mod tests {
     async fn stop_kills_the_whole_process_tree_not_just_cmd_exe() {
         let jobs = BackgroundJobs::default();
         let dir = std::env::temp_dir();
-        let id = jobs.start(&dir, "ping -n 30 127.0.0.1").unwrap();
+        let id = jobs.start(&dir, "ping -n 30 127.0.0.1", &dir, "test-session").unwrap();
 
         let cmd_pid = jobs
             .cmd_pid(&id)
@@ -353,7 +674,7 @@ mod tests {
         let dir = std::env::temp_dir();
         assert_eq!(jobs.list(), "nenhum comando em segundo plano");
 
-        let id = jobs.start(&dir, "echo listed").unwrap();
+        let id = jobs.start(&dir, "echo listed", &dir, "test-session").unwrap();
         let listing = jobs.list();
         assert!(listing.contains(&id));
         assert!(listing.contains("echo listed"));
@@ -365,5 +686,56 @@ mod tests {
     async fn read_output_errors_for_unknown_id() {
         let jobs = BackgroundJobs::default();
         assert!(jobs.read_output("not-a-real-id").is_err());
+    }
+
+    /// T14: quando o job termina de vez (stdout e stderr fecham), o
+    /// resultado deve aparecer sozinho no historico da sessao que o
+    /// iniciou — sem o LLM precisar chamar `check_background_output` de
+    /// novo pra descobrir que terminou.
+    #[tokio::test]
+    async fn finished_job_injects_message_into_session_history() {
+        let jobs = BackgroundJobs::default();
+        let dir = std::env::temp_dir();
+        let app_data_dir = dir.join(format!("cerne-t14-test-{}", uuid::Uuid::new_v4()));
+        let session_id = "orquestrador-t14";
+
+        let id = jobs
+            .start(&dir, "echo t14-done", &app_data_dir, session_id)
+            .unwrap();
+
+        // Espera o job terminar de verdade (nao so aparecer no output).
+        let _ = wait_for(&jobs, &id, "encerrado").await;
+
+        let mut injected = Vec::new();
+        for _ in 0..60 {
+            injected = crate::sessions::load_messages(&app_data_dir, session_id).unwrap_or_default();
+            if injected.iter().any(|m| m.content.contains("t14-done")) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            injected.iter().any(|m| m.role == "system" && m.content.contains("t14-done")),
+            "esperava uma mensagem 'system' com o output do job injetada na sessao, recebeu: {injected:?}"
+        );
+        // T14 (achado testando ao vivo, 2026-08-16): a nota precisa do
+        // marcador `name` pro frontend distinguir do system prompt real, e
+        // de um `display_content` curto pra nao virar uma bolha gigante no
+        // chat visivel quando o output for grande.
+        let note = injected
+            .iter()
+            .find(|m| m.role == "system" && m.name.as_deref() == Some("background_job_done"))
+            .expect("nota deveria ter name = background_job_done");
+        assert!(
+            note.display_content.as_deref().unwrap_or("").contains("t14-done"),
+            "display_content deveria trazer um preview do output: {note:?}"
+        );
+
+        jobs.stop(&id).await.ok();
+        fs_remove_dir_all_ignore(&app_data_dir);
+    }
+
+    fn fs_remove_dir_all_ignore(dir: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -9,11 +9,19 @@
 //! vendorizar aqui, e o mesmo padrao das outras portas desta sessao (crate
 //! real e mantida, nao reimplementacao caseira do protocolo).
 //!
-//! Transporte suportado: só stdio (`TokioChildProcess` — sobe o servidor MCP
+//! Transporte suportado: stdio (`TokioChildProcess` — sobe o servidor MCP
 //! como subprocesso e fala JSON-RPC pela stdin/stdout dele), que cobre a
 //! grande maioria dos servidores MCP reais distribuidos hoje (`npx
-//! @escopo/pacote`, `uvx pacote`, um binario local). SSE/HTTP streamable
-//! ficam de fora por enquanto — soma reduzida ao caso de uso mais comum.
+//! @escopo/pacote`, `uvx pacote`, um binario local); e HTTP streamable
+//! (`StreamableHttpClientTransport`, pedido do usuario 2026-08-18 pra
+//! conectar servidores remotos tipo Notion/Linear/Stripe/Sentry — a maioria
+//! dos MCPs de produto SaaS hoje e hospedada, nao um pacote npm rodavel
+//! localmente). Servidor e "remoto" quando `McpServerConfig.url` esta
+//! preenchido (ignora `command`/`args` nesse caso); autenticacao e so um
+//! bearer token simples (`bearer_token`, sem prefixo "Bearer ") — nao
+//! implementa o fluxo OAuth completo que alguns desses servicos podem exigir
+//! pra token de longa duracao (usuario cola um token ja gerado no site do
+//! servico, mesmo padrao de token manual que a chave do OpenRouter usa).
 //!
 //! Ferramentas de servidores MCP aparecem namespaced como
 //! `mcp__{servidor}__{tool}` (mesma convencao que clientes MCP reais usam
@@ -23,7 +31,8 @@ use crate::models::{ToolFunctionSpec, ToolSpec};
 use anyhow::{anyhow, Result};
 use rmcp::model::{CallToolRequestParams, ContentBlock};
 use rmcp::service::RunningService;
-use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
+use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
+use rmcp::transport::{ConfigureCommandExt, StreamableHttpClientTransport, TokioChildProcess};
 use rmcp::{RoleClient, ServiceExt};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -34,13 +43,31 @@ use tokio::sync::Mutex;
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 pub struct McpServerConfig {
     pub name: String,
+    #[serde(default)]
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
     #[serde(default)]
     pub env: HashMap<String, String>,
+    /// Quando preenchido, este servidor é REMOTO (HTTP streamable) —
+    /// `command`/`args`/`env` são ignorados, a conexão usa `url` +
+    /// `bearer_token` em vez de subir um processo local. `None` (default) =
+    /// comportamento de sempre, servidor stdio local.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Token de autenticação simples pro servidor remoto, SEM o prefixo
+    /// "Bearer " (a lib já adiciona) — só relevante quando `url` está
+    /// preenchido. Alguns servidores remotos não exigem token nenhum.
+    #[serde(default)]
+    pub bearer_token: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
+}
+
+impl McpServerConfig {
+    pub fn is_remote(&self) -> bool {
+        self.url.is_some()
+    }
 }
 
 fn default_true() -> bool {
@@ -64,11 +91,16 @@ fn legacy_toml_path(app_data_dir: &Path) -> PathBuf {
 /// de tool `mcp__{servidor}__{tool}`, UI) trabalha com a struct completa.
 #[derive(Serialize, Deserialize)]
 struct StoredServer {
+    #[serde(default)]
     command: String,
     #[serde(default)]
     args: Vec<String>,
     #[serde(default)]
     env: HashMap<String, String>,
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    bearer_token: Option<String>,
     #[serde(default = "default_true")]
     enabled: bool,
 }
@@ -100,6 +132,8 @@ pub fn load_servers(app_data_dir: &Path) -> Result<Vec<McpServerConfig>> {
             command: s.command,
             args: s.args,
             env: s.env,
+            url: s.url,
+            bearer_token: s.bearer_token,
             enabled: s.enabled,
         })
         .collect();
@@ -137,6 +171,8 @@ pub fn save_servers(app_data_dir: &Path, servers: &[McpServerConfig]) -> Result<
                     command: s.command.clone(),
                     args: s.args.clone(),
                     env: s.env.clone(),
+                    url: s.url.clone(),
+                    bearer_token: s.bearer_token.clone(),
                     enabled: s.enabled,
                 },
             )
@@ -179,19 +215,48 @@ fn build_command(command: &str) -> Command {
     }
 }
 
-/// Conexoes ja estabelecidas com servidores MCP, mantidas vivas entre
-/// chamadas de ferramenta (reconectar a cada tool call seria lento — muitos
-/// servidores MCP levam tempo real pra inicializar). Uma instancia vive em
-/// `AppState`, compartilhada entre sessoes (igual `background_jobs`).
-#[derive(Default)]
-pub struct McpClients(Mutex<HashMap<String, McpClient>>);
+/// Conecta num servidor MCP, local (stdio) ou remoto (HTTP streamable,
+/// conforme `server.is_remote()`) — ponto único usado tanto pelo pool
+/// (`ensure_connected`) quanto pelo teste de conexão descartável
+/// (`test_connection`), pra não duplicar a lógica de qual transporte montar.
+/// Erros de rede (`reqwest`, e por extensão o transporte HTTP do `rmcp`)
+/// só mostram na Display a camada mais externa (ex: "error sending request
+/// for url (...)"), escondendo a causa raiz (DNS, TLS, timeout, conexão
+/// recusada) — mesmo problema já corrigido em `audio.rs::describe_reqwest_error`
+/// (achado testando TTS, 2026-08-19); aqui é o mesmo sintoma no teste de
+/// conexão MCP remoto (usuário viu o erro cortado testando o Notion,
+/// 2026-08-20). Genérico (`dyn Error`, não só `reqwest::Error`) porque o
+/// erro do `rmcp` embrulha o de rede, não É um `reqwest::Error` direto.
+fn describe_error_chain(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut msg = e.to_string();
+    let mut source = e.source();
+    while let Some(s) = source {
+        msg.push_str(" -> ");
+        msg.push_str(&s.to_string());
+        source = s.source();
+    }
+    msg
+}
 
-impl McpClients {
-    async fn ensure_connected(&self, server: &McpServerConfig) -> Result<()> {
-        let mut clients = self.0.lock().await;
-        if clients.contains_key(&server.name) {
-            return Ok(());
+async fn connect_server(server: &McpServerConfig) -> Result<McpClient> {
+    if server.is_remote() {
+        let url = server
+            .url
+            .as_ref()
+            .ok_or_else(|| anyhow!("servidor remoto sem url configurada"))?;
+        let mut config = StreamableHttpClientTransportConfig::with_uri(url.clone());
+        if let Some(token) = server.bearer_token.as_ref().filter(|t| !t.is_empty()) {
+            config = config.auth_header(token.clone());
         }
+        let transport = StreamableHttpClientTransport::from_config(config);
+        ().serve(transport).await.map_err(|e| {
+            anyhow!(
+                "nao foi possivel conectar no servidor MCP remoto '{}' ({url}): {}",
+                server.name,
+                describe_error_chain(&e)
+            )
+        })
+    } else {
         let args = server.args.clone();
         let env = server.env.clone();
         let transport = TokioChildProcess::new(build_command(&server.command).configure(|cmd| {
@@ -206,10 +271,27 @@ impl McpClients {
                 server.name
             )
         })?;
-        let client = ()
+        ()
             .serve(transport)
             .await
-            .map_err(|e| anyhow!("falha ao conectar no servidor MCP '{}': {e}", server.name))?;
+            .map_err(|e| anyhow!("falha ao conectar no servidor MCP '{}': {}", server.name, describe_error_chain(&e)))
+    }
+}
+
+/// Conexoes ja estabelecidas com servidores MCP, mantidas vivas entre
+/// chamadas de ferramenta (reconectar a cada tool call seria lento — muitos
+/// servidores MCP levam tempo real pra inicializar). Uma instancia vive em
+/// `AppState`, compartilhada entre sessoes (igual `background_jobs`).
+#[derive(Default)]
+pub struct McpClients(Mutex<HashMap<String, McpClient>>);
+
+impl McpClients {
+    async fn ensure_connected(&self, server: &McpServerConfig) -> Result<()> {
+        let mut clients = self.0.lock().await;
+        if clients.contains_key(&server.name) {
+            return Ok(());
+        }
+        let client = connect_server(server).await?;
         clients.insert(server.name.clone(), client);
         Ok(())
     }
@@ -246,6 +328,29 @@ impl McpClients {
             }
         }
         specs
+    }
+
+    /// Devolve as tools de um servidor JÁ CONECTADO no pool, sem abrir
+    /// nenhuma conexão nova — `None` se esse servidor não estiver conectado
+    /// aqui agora (nunca foi habilitado nesta sessão de app, ou desconectou).
+    /// Usado pelo modal "ver ferramentas" do composer: abrir uma SEGUNDA
+    /// conexão paralela pro mesmo servidor (como `test_connection` faz)
+    /// quebrava o handshake de alguns servidores MCP que não toleram duas
+    /// instâncias rodando ao mesmo tempo — achado testando ao vivo,
+    /// 2026-08-17, com o próprio servidor já habilitado na sessão.
+    pub async fn list_tools(&self, name: &str) -> Option<Vec<McpToolInfo>> {
+        let clients = self.0.lock().await;
+        let client = clients.get(name)?;
+        let tools = client.list_all_tools().await.ok()?;
+        Some(
+            tools
+                .into_iter()
+                .map(|t| McpToolInfo {
+                    name: t.name.to_string(),
+                    description: t.description.map(|d| d.to_string()).unwrap_or_default(),
+                })
+                .collect(),
+        )
     }
 
     /// Executa uma tool MCP pelo nome namespaced (`mcp__{servidor}__{tool}`).
@@ -289,27 +394,20 @@ const TEST_CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_s
 /// que checar (comando nao encontrado, handshake que nunca responde, etc.) —
 /// mesma ideia do teste de conexao que o LM Studio faz antes de confirmar um
 /// servidor MCP novo.
-pub async fn test_connection(server: &McpServerConfig) -> Result<Vec<String>> {
-    let args = server.args.clone();
-    let env = server.env.clone();
-    let transport = TokioChildProcess::new(build_command(&server.command).configure(|cmd| {
-        cmd.args(&args);
-        for (key, value) in &env {
-            cmd.env(key, value);
-        }
-    }))
-    .map_err(|e| {
-        anyhow!(
-            "nao foi possivel iniciar o comando '{}': {e} — confira se ele existe e esta no PATH",
-            server.command
-        )
-    })?;
+/// Nome + descrição de uma tool de um servidor MCP — usado tanto no teste
+/// de conexão (Configurações) quanto no modal "ver ferramentas" do
+/// composer (pedido do usuário, 2026-08-17: mostrar o que cada MCP
+/// habilitado numa sessão realmente oferece, sem precisar adivinhar pelo
+/// nome do servidor).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct McpToolInfo {
+    pub name: String,
+    pub description: String,
+}
 
+pub async fn test_connection(server: &McpServerConfig) -> Result<Vec<McpToolInfo>> {
     let attempt = async move {
-        let client = ()
-            .serve(transport)
-            .await
-            .map_err(|e| anyhow!("processo iniciou, mas o handshake MCP falhou: {e} — confira os argumentos e se e mesmo um servidor MCP"))?;
+        let client = connect_server(server).await?;
         let tools = client
             .list_all_tools()
             .await
@@ -319,7 +417,15 @@ pub async fn test_connection(server: &McpServerConfig) -> Result<Vec<String>> {
     };
 
     match tokio::time::timeout(TEST_CONNECTION_TIMEOUT, attempt).await {
-        Ok(result) => result.map(|tools| tools.into_iter().map(|t| t.name.to_string()).collect()),
+        Ok(result) => result.map(|tools| {
+            tools
+                .into_iter()
+                .map(|t| McpToolInfo {
+                    name: t.name.to_string(),
+                    description: t.description.map(|d| d.to_string()).unwrap_or_default(),
+                })
+                .collect()
+        }),
         Err(_) => Err(anyhow!(
             "tempo esgotado ({}s) esperando o servidor responder ao handshake — o processo pode ter travado, ou nunca vai responder",
             TEST_CONNECTION_TIMEOUT.as_secs()
@@ -405,11 +511,53 @@ mod tests {
                 "@modelcontextprotocol/server-everything".to_string(),
             ],
             env: HashMap::new(),
+            url: None,
+            bearer_token: None,
             enabled: true,
         }];
         save_servers(&dir, &servers).unwrap();
         let loaded = load_servers(&dir).unwrap();
         assert_eq!(loaded, servers);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn is_remote_is_true_only_when_url_is_set() {
+        let local = McpServerConfig {
+            name: "local".to_string(),
+            command: "npx".to_string(),
+            args: vec![],
+            env: HashMap::new(),
+            url: None,
+            bearer_token: None,
+            enabled: true,
+        };
+        assert!(!local.is_remote());
+
+        let remote = McpServerConfig {
+            url: Some("https://mcp.example.com/mcp".to_string()),
+            ..local
+        };
+        assert!(remote.is_remote());
+    }
+
+    #[test]
+    fn remote_server_config_roundtrips_url_and_bearer_token() {
+        let dir = std::env::temp_dir().join(format!("cerne-mcp-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let servers = vec![McpServerConfig {
+            name: "notion".to_string(),
+            command: String::new(),
+            args: vec![],
+            env: HashMap::new(),
+            url: Some("https://mcp.notion.com/mcp".to_string()),
+            bearer_token: Some("secret-token".to_string()),
+            enabled: true,
+        }];
+        save_servers(&dir, &servers).unwrap();
+        let loaded = load_servers(&dir).unwrap();
+        assert_eq!(loaded, servers);
+        assert!(loaded[0].is_remote());
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -430,6 +578,8 @@ mod tests {
                 "@modelcontextprotocol/server-github".to_string(),
             ],
             env,
+            url: None,
+            bearer_token: None,
             enabled: true,
         }];
         save_servers(&dir, &servers).unwrap();

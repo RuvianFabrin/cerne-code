@@ -76,21 +76,28 @@ fn detect_unix_shell() -> ShellInfo {
     }
 }
 
-/// Verifica se um comando existe no PATH (sem executar).
+/// Verifica se um comando existe no PATH (sem executar). `pub(crate)` desde
+/// 2026-08-17 pra dar mensagem clara ao usuário quando falta uma
+/// dependência externa opcional (`git`, `uv`, `node`/`npx` de um MCP) em vez
+/// de deixar a ferramenta falhar com um erro de shell confuso tipo "comando
+/// não encontrado" — achado testando ao vivo, T17: usuário só com o Cerne
+/// Code instalado, sem `uv`, teria batido nisso sem entender o motivo.
 #[cfg(windows)]
-fn command_exists(name: &str) -> bool {
+pub(crate) fn command_exists(name: &str) -> bool {
+    use std::os::windows::process::CommandExt;
     // `where` é o equivalente Windows do `which`
     std::process::Command::new("where")
         .arg(name)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
 }
 
 #[cfg(not(windows))]
-fn command_exists(name: &str) -> bool {
+pub(crate) fn command_exists(name: &str) -> bool {
     std::process::Command::new("which")
         .arg(name)
         .stdout(std::process::Stdio::null())
@@ -114,6 +121,43 @@ pub fn apply_creation_flags(cmd: &mut tokio::process::Command) {
 #[cfg(not(windows))]
 pub fn apply_creation_flags(_cmd: &mut tokio::process::Command) {
     // No-op em Unix
+}
+
+/// Mesma ideia de `apply_creation_flags`, só que pra `std::process::Command`
+/// (usado por chamadas síncronas curtas, ex: `git.rs`) em vez de
+/// `tokio::process::Command`.
+#[cfg(windows)]
+pub fn apply_std_creation_flags(cmd: &mut std::process::Command) {
+    use std::os::windows::process::CommandExt;
+    cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+}
+
+#[cfg(not(windows))]
+pub fn apply_std_creation_flags(_cmd: &mut std::process::Command) {
+    // No-op em Unix
+}
+
+/// Mata um processo e toda a árvore de filhos dele, de forma síncrona e
+/// bloqueante — usado em contextos que não são async (ex: handler de saída
+/// do Tauri). No Windows, `taskkill /PID <pid> /T /F` mata a árvore inteira;
+/// `Child::start_kill()`/`kill_on_drop` sozinhos só matam o processo direto
+/// (achado documentado em `agent/background.rs::stop`). Ignora falha de
+/// propósito — o caso mais comum é o processo já ter morrido sozinho.
+pub fn kill_pid_tree_blocking(pid: u32) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(0x08000000) // CREATE_NO_WINDOW
+            .output();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid.to_string()])
+            .output();
+    }
 }
 
 /// Configura um `tokio::process::Command` com o shell detectado e o comando

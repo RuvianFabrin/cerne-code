@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 const KEYRING_SERVICE: &str = "cerne";
 const KEYRING_USER: &str = "openrouter_api_key";
+const KEYRING_USER_BACKUP_GIT_TOKEN: &str = "backup_git_token";
 
 fn config_path(app_data_dir: &PathBuf) -> PathBuf {
     app_data_dir.join("config.json")
@@ -32,6 +33,40 @@ pub fn save_model_favorites(app_data_dir: &PathBuf, favorites: &ModelFavorites) 
     std::fs::create_dir_all(app_data_dir)?;
     let path = model_favorites_path(app_data_dir);
     let text = serde_json::to_string_pretty(favorites)?;
+    std::fs::write(path, text)?;
+    Ok(())
+}
+
+/// Mapa "provider_key::model_id" -> tamanho de contexto configurado manualmente
+/// pelo usuário — pedido do usuário (2026-08-18): "ao colocar o contexto de um
+/// LLM por API, que salve para que independente da API, venha o mesmo
+/// contexto cadastrado em outras sessões". Antes disso `Session.context_length`
+/// só existia por SESSÃO (ver `sessions.rs`) — trocar de sessão com o MESMO
+/// modelo perdia o ajuste manual. `provider_key` usa a mesma convenção de
+/// `ModelFavorites` acima ("openrouter"/"llama_cpp:{fork}"/"custom:{id}"/etc)
+/// pra distinguir conexões diferentes que podem ter o mesmo nome de modelo
+/// significando coisas diferentes (fork local vs. rota de API).
+type ModelContextOverrides = HashMap<String, u32>;
+
+fn model_context_overrides_path(app_data_dir: &PathBuf) -> PathBuf {
+    app_data_dir.join("model_context_overrides.json")
+}
+
+pub fn load_model_context_overrides(app_data_dir: &PathBuf) -> ModelContextOverrides {
+    let path = model_context_overrides_path(app_data_dir);
+    match std::fs::read_to_string(&path) {
+        Ok(text) => serde_json::from_str(&text).unwrap_or_default(),
+        Err(_) => ModelContextOverrides::default(),
+    }
+}
+
+pub fn save_model_context_overrides(
+    app_data_dir: &PathBuf,
+    overrides: &ModelContextOverrides,
+) -> Result<()> {
+    std::fs::create_dir_all(app_data_dir)?;
+    let path = model_context_overrides_path(app_data_dir);
+    let text = serde_json::to_string_pretty(overrides)?;
     std::fs::write(path, text)?;
     Ok(())
 }
@@ -84,6 +119,38 @@ pub fn clear_openrouter_key() -> Result<()> {
     }
 }
 
+/// Token pro backup de sessões via git (pedido do usuário, 2026-08-18) —
+/// mesmo cofre de credenciais do SO que a chave do OpenRouter já usa, nunca
+/// gravado em texto puro (nem no `.git/config` — ver `git::authenticated_url`,
+/// que só injeta na URL do argumento de cada chamada, nunca no remoto salvo).
+pub fn set_backup_git_token(token: &str) -> Result<()> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER_BACKUP_GIT_TOKEN)?;
+    entry.set_password(token)?;
+    Ok(())
+}
+
+pub fn get_backup_git_token() -> Option<String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER_BACKUP_GIT_TOKEN).ok()?;
+    entry.get_password().ok()
+}
+
+pub fn has_backup_git_token() -> bool {
+    get_backup_git_token().is_some()
+}
+
+pub fn backup_git_token_preview() -> Option<String> {
+    get_backup_git_token().map(|k| mask_key(&k))
+}
+
+pub fn clear_backup_git_token() -> Result<()> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER_BACKUP_GIT_TOKEN)?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Mostra os 6 primeiros e os 4 últimos caracteres, com "…" no meio — dá pra
 /// reconhecer a chave (prefixo do provider + sufixo distintivo) sem revelar
 /// o suficiente pra alguém copiar e usar.
@@ -114,5 +181,29 @@ mod tests {
         // Chave curta demais pra sobrar meio escondido de verdade - esconde
         // tudo em vez de vazar quase o valor inteiro.
         assert_eq!(mask_key("short-key"), "•••••••••");
+    }
+
+    fn scratch_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cerne-config-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn model_context_overrides_roundtrip_and_default_empty() {
+        let dir = scratch_dir();
+        assert!(load_model_context_overrides(&dir).is_empty());
+
+        let mut overrides = load_model_context_overrides(&dir);
+        overrides.insert("openrouter::anthropic/claude-3.5-sonnet".to_string(), 200_000);
+        save_model_context_overrides(&dir, &overrides).unwrap();
+
+        let reloaded = load_model_context_overrides(&dir);
+        assert_eq!(
+            reloaded.get("openrouter::anthropic/claude-3.5-sonnet"),
+            Some(&200_000)
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

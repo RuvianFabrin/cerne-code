@@ -58,11 +58,20 @@ pub fn create_session(
         // no composer quando precisar. Antes, providers cloud ficavam em Auto
         // e modelos locais em Off; agora é uniforme: Off pra todos.
         reasoning_effort: Some(ReasoningEffort::Off),
-        enabled_mcp_servers: None,
+        // Fase E3 do roteiro de Agentes/Skills: sessão nova nasce com TODOS
+        // os MCPs desabilitados (Some(vec![]), não None) — o usuário liga
+        // explicitamente pelo modal "MCPs" do composer os que quiser usar
+        // nessa sessão. `None` continua significando "todos habilitados"
+        // pra sessões já existentes antes dessa mudança (retrocompatível —
+        // esse default só afeta sessão criada a partir de agora).
+        enabled_mcp_servers: Some(Vec::new()),
         fable_method: false,
+        persona_id: None,
         total_prompt_tokens: 0,
         total_completion_tokens: 0,
         total_requests: 0,
+        folder_id: None,
+        parent_session_id: None,
     };
     let dir = session_dir(app_data_dir, &id);
     std::fs::create_dir_all(&dir)?;
@@ -122,6 +131,25 @@ pub fn update_execution_mode(
     Ok(session)
 }
 
+/// Fase G: marca `id` como criada por `parent_session_id` — chamado logo
+/// depois de `create_session` (mesmo padrão do `folder_id`/T29, que também
+/// seta um campo extra num segundo passo em vez de inflar ainda mais a
+/// assinatura de `create_session`, já com 8 parâmetros).
+pub fn update_parent_session_id(
+    app_data_dir: &PathBuf,
+    id: &str,
+    parent_session_id: Option<String>,
+) -> Result<Session> {
+    let mut session = get_session(app_data_dir, id)?;
+    session.parent_session_id = parent_session_id;
+    let dir = session_dir(app_data_dir, id);
+    std::fs::write(
+        dir.join("session.json"),
+        serde_json::to_string_pretty(&session)?,
+    )?;
+    Ok(session)
+}
+
 pub fn update_title(app_data_dir: &PathBuf, id: &str, title: String) -> Result<Session> {
     let mut session = get_session(app_data_dir, id)?;
     session.title = title;
@@ -172,6 +200,24 @@ pub fn update_extra_read_paths(
     Ok(session)
 }
 
+/// Fase D1 do roteiro de Agentes/Skills: troca a pasta de trabalho de uma
+/// sessão já existente — antes só dava pra definir `project_root` na
+/// criação da sessão (`create_session`), sem jeito de mudar depois.
+pub fn update_project_root(
+    app_data_dir: &PathBuf,
+    id: &str,
+    project_root: Option<String>,
+) -> Result<Session> {
+    let mut session = get_session(app_data_dir, id)?;
+    session.project_root = project_root;
+    let dir = session_dir(app_data_dir, id);
+    std::fs::write(
+        dir.join("session.json"),
+        serde_json::to_string_pretty(&session)?,
+    )?;
+    Ok(session)
+}
+
 pub fn update_reasoning_effort(
     app_data_dir: &PathBuf,
     id: &str,
@@ -190,6 +236,30 @@ pub fn update_reasoning_effort(
 pub fn update_fable_method(app_data_dir: &PathBuf, id: &str, enabled: bool) -> Result<Session> {
     let mut session = get_session(app_data_dir, id)?;
     session.fable_method = enabled;
+    let dir = session_dir(app_data_dir, id);
+    std::fs::write(
+        dir.join("session.json"),
+        serde_json::to_string_pretty(&session)?,
+    )?;
+    Ok(session)
+}
+
+pub fn update_persona(app_data_dir: &PathBuf, id: &str, persona_id: Option<String>) -> Result<Session> {
+    let mut session = get_session(app_data_dir, id)?;
+    session.persona_id = persona_id;
+    let dir = session_dir(app_data_dir, id);
+    std::fs::write(
+        dir.join("session.json"),
+        serde_json::to_string_pretty(&session)?,
+    )?;
+    Ok(session)
+}
+
+/// T29 — move a sessão pra outra pasta da barra lateral (ou pra raiz, com
+/// `folder_id: None`).
+pub fn update_folder(app_data_dir: &PathBuf, id: &str, folder_id: Option<String>) -> Result<Session> {
+    let mut session = get_session(app_data_dir, id)?;
+    session.folder_id = folder_id;
     let dir = session_dir(app_data_dir, id);
     std::fs::write(
         dir.join("session.json"),
@@ -304,6 +374,79 @@ mod tests {
         let reloaded = get_session(&dir, &session.id).unwrap();
         assert_eq!(reloaded.title, "titulo novo");
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn new_sessions_have_no_parent_session_id_by_default() {
+        let dir = scratch_dir();
+        let session = create_session(
+            &dir,
+            "sessao normal".to_string(),
+            ProviderKind::Ollama,
+            "qwen3.5".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(session.parent_session_id, None);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn update_parent_session_id_persists_and_roundtrips() {
+        // Fase G: marca uma sessao como "criada por" outra (orquestrada).
+        let dir = scratch_dir();
+        let parent = create_session(
+            &dir,
+            "sessao pai".to_string(),
+            ProviderKind::Ollama,
+            "qwen3.5".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let child = create_session(
+            &dir,
+            "sessao orquestrada".to_string(),
+            ProviderKind::Ollama,
+            "qwen3.5".to_string(),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let updated =
+            update_parent_session_id(&dir, &child.id, Some(parent.id.clone())).unwrap();
+        assert_eq!(updated.parent_session_id, Some(parent.id.clone()));
+
+        let reloaded = get_session(&dir, &child.id).unwrap();
+        assert_eq!(reloaded.parent_session_id, Some(parent.id));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn old_session_without_parent_session_id_field_still_deserializes() {
+        let dir = scratch_dir();
+        let id = uuid::Uuid::new_v4().to_string();
+        let dir_path = dir.join("sessions").join(&id);
+        std::fs::create_dir_all(&dir_path).unwrap();
+        std::fs::write(
+            dir_path.join("session.json"),
+            format!(
+                r#"{{"id":"{id}","title":"antiga","created_at":"2024-01-01T00:00:00Z","provider":"ollama","model":"qwen3.5","project_root":null,"extra_read_paths":[]}}"#
+            ),
+        )
+        .unwrap();
+        let loaded = get_session(&dir, &id).unwrap();
+        assert_eq!(loaded.parent_session_id, None);
         std::fs::remove_dir_all(&dir).ok();
     }
 

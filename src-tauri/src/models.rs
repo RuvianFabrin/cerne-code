@@ -154,6 +154,19 @@ impl ProviderKind {
             _ => None,
         }
     }
+
+    /// Roda num processo/GPU da própria máquina do usuário (llama.cpp/
+    /// Ollama/LM Studio) — mesmos três já tratados como "local" em
+    /// `default_reasoning_effort` acima. Usado pela Fase A4 do roteiro de
+    /// Agentes/Skills pra decidir fila sequencial (local, uma GPU só, uma
+    /// coisa por vez) vs. execução paralela (API, sem essa limitação de
+    /// hardware compartilhado — mas com custo/rate-limit em troca).
+    pub fn is_local(self) -> bool {
+        matches!(
+            self,
+            ProviderKind::LlamaCpp | ProviderKind::Ollama | ProviderKind::LmStudio
+        )
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -192,6 +205,102 @@ pub struct AppConfig {
     /// que "Custom" sozinho não diz qual das conexões configuradas usar.
     #[serde(default)]
     pub active_custom_provider_id: Option<String>,
+    /// Qual conexão usa pra "ler em voz alta" (TTS) — por padrão OpenRouter
+    /// (já usa a mesma chave do resto do app), mas o usuário pode trocar pra
+    /// qualquer provider já configurado (local ou com API key), já que o
+    /// endpoint de áudio (`/audio/speech`) é OpenAI-compatible e pode existir
+    /// em outras conexões custom também.
+    #[serde(default = "default_tts_provider")]
+    pub tts_provider: ProviderKind,
+    #[serde(default)]
+    pub tts_llama_fork: Option<String>,
+    #[serde(default)]
+    pub tts_custom_provider_id: Option<String>,
+    #[serde(default = "default_tts_model")]
+    pub tts_model: String,
+    /// Vozes não são universais entre modelos/providers de TTS — deixa
+    /// configurável (ver `audio::DEFAULT_TTS_VOICE`) em vez de fixo no
+    /// código, já que trocar de modelo quase sempre exige trocar de voz
+    /// junto.
+    #[serde(default = "default_tts_voice")]
+    pub tts_voice: String,
+    /// Quando ligado (default), detecta o idioma do texto e troca a voz
+    /// automaticamente — só tem efeito com o modelo Kokoro (única conexão
+    /// que o app sabe mapear idioma→voz, ver `audio::resolve_voice`).
+    /// Pedido do usuário, 2026-08-19: ler em inglês quando o texto é em
+    /// inglês, em português quando é português, etc.
+    #[serde(default = "default_true")]
+    pub tts_auto_language: bool,
+    /// Mesma ideia que `tts_provider`, mas pro microfone (STT,
+    /// `/audio/transcriptions`).
+    #[serde(default = "default_stt_provider")]
+    pub stt_provider: ProviderKind,
+    #[serde(default)]
+    pub stt_llama_fork: Option<String>,
+    #[serde(default)]
+    pub stt_custom_provider_id: Option<String>,
+    #[serde(default = "default_stt_model")]
+    pub stt_model: String,
+    /// Qual "motor" fala/transcreve — o padrão continua sendo qualquer
+    /// endpoint OpenAI-compatible (`tts_provider`/`stt_provider` acima,
+    /// OpenRouter/custom/local). `Voicebox` troca pra falar com um app
+    /// Voicebox (https://github.com/jamiepine/voicebox) já rodando local na
+    /// máquina do usuário — TTS/STT 100% local, sem chave, sem rede — via
+    /// `voicebox.rs` (wire format próprio, incompatível com o OpenAI). Cada
+    /// um (TTS/STT) tem o próprio backend porque o usuário pode querer só
+    /// um dos dois local (ex: ler local, mas transcrever via Whisper cloud).
+    #[serde(default)]
+    pub tts_backend: VoiceBackend,
+    #[serde(default)]
+    pub stt_backend: VoiceBackend,
+    #[serde(default = "default_voicebox_base_url")]
+    pub voicebox_base_url: String,
+    /// Nome ou id do perfil de voz já criado no Voicebox (ver
+    /// `voicebox::synthesize_speech`) — vazio deixa o Voicebox cair no
+    /// binding/perfil padrão dele, se existir algum.
+    #[serde(default)]
+    pub voicebox_tts_profile: String,
+    /// Dica de idioma (código ISO 639-1, ex: "pt") pro Whisper do Voicebox
+    /// na transcrição — vazio deixa auto-detectar. Pedido do usuário,
+    /// 2026-08-20: STT em português via Voicebox.
+    #[serde(default)]
+    pub voicebox_stt_language: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceBackend {
+    #[default]
+    OpenaiCompatible,
+    Voicebox,
+}
+
+fn default_tts_provider() -> ProviderKind {
+    ProviderKind::Openrouter
+}
+
+fn default_stt_provider() -> ProviderKind {
+    ProviderKind::Openrouter
+}
+
+fn default_voicebox_base_url() -> String {
+    crate::voicebox::DEFAULT_BASE_URL.to_string()
+}
+
+fn default_tts_model() -> String {
+    crate::audio::DEFAULT_TTS_MODEL.to_string()
+}
+
+fn default_tts_voice() -> String {
+    crate::audio::DEFAULT_TTS_VOICE.to_string()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_stt_model() -> String {
+    crate::audio::DEFAULT_STT_MODEL.to_string()
 }
 
 impl Default for AppConfig {
@@ -205,6 +314,21 @@ impl Default for AppConfig {
             lmstudio_base_url: "http://127.0.0.1:1234/v1".to_string(),
             active_llama_fork: "turboquant".to_string(),
             active_custom_provider_id: None,
+            tts_provider: default_tts_provider(),
+            tts_llama_fork: None,
+            tts_custom_provider_id: None,
+            tts_model: default_tts_model(),
+            tts_voice: default_tts_voice(),
+            tts_auto_language: true,
+            stt_provider: default_stt_provider(),
+            stt_llama_fork: None,
+            stt_custom_provider_id: None,
+            stt_model: default_stt_model(),
+            tts_backend: VoiceBackend::default(),
+            stt_backend: VoiceBackend::default(),
+            voicebox_base_url: default_voicebox_base_url(),
+            voicebox_tts_profile: String::new(),
+            voicebox_stt_language: String::new(),
         }
     }
 }
@@ -342,6 +466,11 @@ pub struct Session {
     /// ícone do composer — em modelos grandes só infla o prompt à toa.
     #[serde(default)]
     pub fable_method: bool,
+    /// Persona ativa (prompt pronto cadastrado pelo usuário, ver `personas.rs`)
+    /// injetada no system prompt desta sessão. `None` = nenhuma persona
+    /// selecionada (comportamento padrão, prompt base do Cerne apenas).
+    #[serde(default)]
+    pub persona_id: Option<String>,
     /// Tokens reais acumulados na sessão (entrada + saída + requisições).
     /// Atualizados após cada chamada ao modelo, persistidos no session.json.
     #[serde(default)]
@@ -350,6 +479,31 @@ pub struct Session {
     pub total_completion_tokens: u32,
     #[serde(default)]
     pub total_requests: u32,
+    /// Pasta (ver `folders.rs`) que agrupa esta sessão na barra lateral.
+    /// `None` = solta na raiz (comportamento de toda sessão criada antes
+    /// dessa feature existir, T29).
+    #[serde(default)]
+    pub folder_id: Option<String>,
+    /// Id da sessão que criou esta (Fase G: sessões paralelas orquestradas,
+    /// via `start_agent_session`) — `None` pra qualquer sessão criada
+    /// normalmente pelo usuário. Marca "sessão orquestrada" pra UI mostrar
+    /// de onde veio e pro toolset dela excluir `start_agent_session`/
+    /// `check_agent_session`/`list_agent_sessions` (guarda de profundidade:
+    /// nível único, mesmo espírito do guard que `task` já tem).
+    #[serde(default)]
+    pub parent_session_id: Option<String>,
+}
+
+/// Pasta pra organizar sessões na barra lateral (T29). Só 2 níveis: uma
+/// pasta de raiz (`parent_id: None`) pode conter sessões e subpastas; uma
+/// subpasta (`parent_id: Some(..)`) só pode conter sessões — ver validação
+/// em `folders::create_folder`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Folder {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub parent_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -372,6 +526,13 @@ pub enum ReasoningEffort {
     /// daí a lentidão). O campo enviado no wire depende do provider, porque
     /// cada um desliga de um jeito (ver `providers::chat_stream`).
     Off,
+    /// Liga o raciocínio de forma explícita — só faz sentido pra providers
+    /// locais (LlamaCpp/LmStudio/Ollama), que não têm graduação low/medium/
+    /// high real (llama.cpp trata `reasoning_effort` como binário: liga ou
+    /// desliga via `chat_template_kwargs.enable_thinking`). A UI só oferece
+    /// essa opção quando o provider é local; pra providers de API (Openrouter/
+    /// Custom) usa-se Low/Medium/High, que têm graduação de verdade.
+    On,
     Low,
     Medium,
     High,
@@ -430,6 +591,55 @@ pub struct TaskItem {
     /// (que fica em `detail`), como um terminal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// Preenchido so pra chamadas de `task`/`verify_completion`/
+    /// `run_pipeline` — o id da `AgentExecution` (ver abaixo) que essa
+    /// chamada disparou. A UI usa isso pra saber que esse item pode ser
+    /// expandido pra mostrar os passos internos da execucao (que ficam em
+    /// `AgentExecution.steps`, nao aqui — esse `TaskItem` representa so a
+    /// chamada de fora, nao os passos de dentro).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_id: Option<String>,
+}
+
+/// Uma execução isolada de agente/skill (`task`/`verify_completion` hoje —
+/// ver `agent/subagent.rs`/`agent/verifier.rs`), rastreada por UUID pra
+/// permitir reconstruir a árvore de chamadas (agente A chama skill B chama
+/// agente C) sem perder a referência de quem chamou quem — Fase A1 do
+/// roteiro de Agentes/Skills (`PLANOS/13_roteiro_agentes_skills_fases.md`).
+/// Vive num registro em memória (`AppState.agent_executions`), não
+/// persistido: é só pra UI consultar "o que está rodando agora" enquanto o
+/// app está aberto, não é histórico de longo prazo (isso já existe via
+/// `TaskItem`/mensagens da sessão).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentExecution {
+    pub id: String,
+    /// `execution_id` de quem chamou esta execução, se houver — hoje sempre
+    /// `None` na prática: a guarda de profundidade estrutural (sub-agente
+    /// não tem a tool `task`/`verify_completion` no seu toolset) impede que
+    /// uma execução chame outra, então só o loop principal da sessão (que
+    /// não é ele mesmo uma "execução" rastreada) inicia `task`/
+    /// `verify_completion`. O campo já existe pronto pra quando isso mudar.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
+    pub session_id: String,
+    /// "task" | "verify_completion" — qual ferramenta disparou esta execução.
+    pub kind: String,
+    /// Descrição curta pra UI (a `description` passada pro `task`, ou um
+    /// rótulo fixo tipo "verificador" pro `verify_completion`).
+    pub name: String,
+    pub status: String, // "running" | "done" | "failed"
+    pub started_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finished_at_ms: Option<u64>,
+    /// Passos (chamadas de ferramenta) que essa execução deu por dentro —
+    /// antes só existiam como evento efêmero de UI (`agent:tool_call`/
+    /// `agent:tool_result`), perdidos assim que o turno terminava; agora
+    /// ficam registrados aqui pra sobreviver ao fim do turno enquanto o app
+    /// continua aberto (achado testando ao vivo, 2026-08-16: usuário queria
+    /// continuar vendo o que rodou dentro de um `task`/pipeline depois de
+    /// terminado, não só enquanto rodava).
+    #[serde(default)]
+    pub steps: Vec<TaskItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

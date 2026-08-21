@@ -20,6 +20,10 @@ pub enum SearchProviderKind {
     Brave,
     Tavily,
     Searxng,
+    Serper,
+    Exa,
+    GoogleCse,
+    Bing,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,6 +32,16 @@ pub struct SearchConfig {
     pub provider: SearchProviderKind,
     #[serde(default = "default_searxng_url")]
     pub searxng_url: String,
+    /// Search Engine ID ("cx") do Google Programmable Search — não é
+    /// segredo (é so um identificador do motor configurado no console do
+    /// Google), então fica junto do resto do config, não no keyring.
+    #[serde(default)]
+    pub google_cse_id: String,
+    /// Endpoint da Bing/Azure AI Search — configuravel porque recursos do
+    /// Azure ganham um endpoint proprio por regiao/recurso, diferente do
+    /// dominio fixo `api.bing.microsoft.com` da API classica.
+    #[serde(default = "default_bing_endpoint")]
+    pub bing_endpoint: String,
 }
 
 impl Default for SearchConfig {
@@ -35,12 +49,18 @@ impl Default for SearchConfig {
         Self {
             provider: SearchProviderKind::default(),
             searxng_url: default_searxng_url(),
+            google_cse_id: String::new(),
+            bing_endpoint: default_bing_endpoint(),
         }
     }
 }
 
 fn default_searxng_url() -> String {
     "http://127.0.0.1:8888".to_string()
+}
+
+fn default_bing_endpoint() -> String {
+    "https://api.bing.microsoft.com/v7.0/search".to_string()
 }
 
 /// Um resultado de busca já normalizado — cada provider (`websearch.rs`)
@@ -59,8 +79,14 @@ pub struct SearchResultItem {
 pub struct SearchConfigView {
     pub provider: SearchProviderKind,
     pub searxng_url: String,
+    pub google_cse_id: String,
+    pub bing_endpoint: String,
     pub has_brave_key: bool,
     pub has_tavily_key: bool,
+    pub has_serper_key: bool,
+    pub has_exa_key: bool,
+    pub has_google_key: bool,
+    pub has_bing_key: bool,
 }
 
 pub fn view(app_data_dir: &Path) -> SearchConfigView {
@@ -68,8 +94,14 @@ pub fn view(app_data_dir: &Path) -> SearchConfigView {
     SearchConfigView {
         provider: cfg.provider,
         searxng_url: cfg.searxng_url,
+        google_cse_id: cfg.google_cse_id,
+        bing_endpoint: cfg.bing_endpoint,
         has_brave_key: has_key(SearchProviderKind::Brave),
         has_tavily_key: has_key(SearchProviderKind::Tavily),
+        has_serper_key: has_key(SearchProviderKind::Serper),
+        has_exa_key: has_key(SearchProviderKind::Exa),
+        has_google_key: has_key(SearchProviderKind::GoogleCse),
+        has_bing_key: has_key(SearchProviderKind::Bing),
     }
 }
 
@@ -95,6 +127,10 @@ fn keyring_user(provider: SearchProviderKind) -> &'static str {
     match provider {
         SearchProviderKind::Brave => "search_brave_api_key",
         SearchProviderKind::Tavily => "search_tavily_api_key",
+        SearchProviderKind::Serper => "search_serper_api_key",
+        SearchProviderKind::Exa => "search_exa_api_key",
+        SearchProviderKind::GoogleCse => "search_google_api_key",
+        SearchProviderKind::Bing => "search_bing_api_key",
         SearchProviderKind::Auto | SearchProviderKind::Searxng => "search_unused",
     }
 }
@@ -150,6 +186,8 @@ mod tests {
             &SearchConfig {
                 provider: SearchProviderKind::Brave,
                 searxng_url: "http://example:9999".to_string(),
+                google_cse_id: String::new(),
+                bing_endpoint: default_bing_endpoint(),
             },
         )
         .unwrap();
@@ -166,6 +204,20 @@ mod tests {
         let loaded = load_config(&dir);
         assert_eq!(loaded.provider, SearchProviderKind::Tavily);
         assert_eq!(loaded.searxng_url, "http://127.0.0.1:8888");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn old_config_without_new_provider_fields_still_deserializes() {
+        let dir = scratch_dir();
+        std::fs::write(
+            search_config_path(&dir),
+            r#"{"provider":"brave","searxng_url":"http://127.0.0.1:8888"}"#,
+        )
+        .unwrap();
+        let loaded = load_config(&dir);
+        assert_eq!(loaded.google_cse_id, "");
+        assert_eq!(loaded.bing_endpoint, "https://api.bing.microsoft.com/v7.0/search");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
