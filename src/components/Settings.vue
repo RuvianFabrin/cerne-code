@@ -1,16 +1,38 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { open } from "@tauri-apps/plugin-dialog";
-import { api, type CustomProviderConfig, type McpServerConfig, type ProviderKind, type SearchProviderKind, type SkillMeta } from "../api";
+import { open, save } from "@tauri-apps/plugin-dialog";
+import { useSessionStore } from "../stores/session";
+import Dialog from "primevue/dialog";
+import Accordion from "primevue/accordion";
+import AccordionPanel from "primevue/accordionpanel";
+import AccordionHeader from "primevue/accordionheader";
+import AccordionContent from "primevue/accordioncontent";
+import {
+  api,
+  type CustomProviderConfig,
+  type McpServerConfig,
+  type McpToolInfo,
+  type ProviderKind,
+  type SearchProviderKind,
+  type SearchConfigView,
+} from "../api";
 import { PROVIDER_KINDS, providerLabel, useProviderStore } from "../stores/provider";
 import { SUPPORTED_LOCALES, setLocale, type LocaleCode } from "../i18n";
 import LlamaForkRow from "./LlamaForkRow.vue";
 import ModelBrowserDialog from "./ModelBrowserDialog.vue";
-import SkillEditorModal from "./SkillEditorModal.vue";
+import { MCP_CONNECTORS, type McpConnector } from "../content/mcpConnectors";
+
+// Fase F do roteiro (14_backlog_pendente.md): Settings deixa de ser uma
+// view inteira alternada em App.vue e vira modal, como Ajuda/Sobre já são
+// — assim o usuário não perde o que estava digitando no composer ao abrir
+// as configurações.
+const props = defineProps<{ visible: boolean }>();
+const emit = defineEmits<{ "update:visible": [value: boolean] }>();
 
 const { t, locale } = useI18n();
 const providerStore = useProviderStore();
+const sessionStore = useSessionStore();
 const openrouterKeyInput = ref("");
 const editingOpenrouterKey = ref(false);
 
@@ -37,6 +59,39 @@ const modelBrowser = ref({
   customProviderId: "",
   title: "",
 });
+
+// Seleção de conexão pra voz (TTS/STT, seção "Voz" abaixo) — mesmas
+// conexões já configuradas em qualquer outro lugar do app (OpenRouter,
+// llama.cpp, Ollama, LM Studio, custom), a pedido do usuário
+// ("permitir o usuario mudar em configurações, inclusive usando outros
+// provedores pré configurados"). Default nasce em OpenRouter
+// (`AppConfig::default`, backend) porque é a única conexão que já vem com
+// endpoint de áudio testado.
+const voiceProviderOptions = computed(() => PROVIDER_KINDS.map((kind) => ({ kind, label: providerLabel(kind) })));
+
+function setTtsProvider(kind: ProviderKind) {
+  if (!providerStore.config) return;
+  providerStore.config.tts_provider = kind;
+  if (kind === "llama_cpp" && !providerStore.config.tts_llama_fork) {
+    providerStore.config.tts_llama_fork = providerStore.forks[0]?.id ?? null;
+  }
+  if (kind === "custom" && !providerStore.config.tts_custom_provider_id) {
+    providerStore.config.tts_custom_provider_id = providerStore.customProviders[0]?.id ?? null;
+  }
+  providerStore.saveConfig();
+}
+
+function setSttProvider(kind: ProviderKind) {
+  if (!providerStore.config) return;
+  providerStore.config.stt_provider = kind;
+  if (kind === "llama_cpp" && !providerStore.config.stt_llama_fork) {
+    providerStore.config.stt_llama_fork = providerStore.forks[0]?.id ?? null;
+  }
+  if (kind === "custom" && !providerStore.config.stt_custom_provider_id) {
+    providerStore.config.stt_custom_provider_id = providerStore.customProviders[0]?.id ?? null;
+  }
+  providerStore.saveConfig();
+}
 
 function openModelBrowser(kind: ProviderKind, title: string, forkId = "", customProviderId = "") {
   modelBrowser.value = { visible: true, kind, forkId, customProviderId, title };
@@ -160,25 +215,19 @@ async function removeCustomProvider(id: string) {
   if (editingCustomId.value === id) resetCustomForm();
 }
 
-const skills = ref<SkillMeta[]>([]);
-const skillModalVisible = ref(false);
-const skillModalTarget = ref<SkillMeta | null>(null);
-
-async function loadSkills() {
-  skills.value = await api.listSkills(null);
-}
-
-function openSkillModal(skill: SkillMeta | null) {
-  skillModalTarget.value = skill;
-  skillModalVisible.value = true;
-}
-
 const mcpServers = ref<McpServerConfig[]>([]);
 const newMcpName = ref("");
 const newMcpCommand = ref("");
 const newMcpArgs = ref("");
 const newMcpEnv = ref("");
+// Servidor remoto (HTTP streamable, pedido do usuário 2026-08-18 — a maioria
+// dos MCPs de produto SaaS hoje é hospedada, não um pacote npm local) usa
+// url+token em vez de comando/args/env.
+const newMcpIsRemote = ref(false);
+const newMcpUrl = ref("");
+const newMcpBearerToken = ref("");
 const mcpError = ref("");
+const mcpConnectorsExpanded = ref(false);
 // null = criando um servidor novo; preenchido = editando um já existente (o
 // campo nome vira somente-leitura, já que é a chave que identifica o
 // servidor — trocar o nome aqui criaria um servidor novo em vez de editar).
@@ -186,7 +235,7 @@ const editingMcpName = ref<string | null>(null);
 
 type McpTestStatus = "idle" | "testing" | "success" | "error";
 const mcpTestStatus = ref<McpTestStatus>("idle");
-const mcpTestTools = ref<string[]>([]);
+const mcpTestTools = ref<McpToolInfo[]>([]);
 const mcpTestError = ref("");
 
 async function loadMcpServers() {
@@ -215,13 +264,28 @@ function serializeEnvLines(env: Record<string, string>): string {
 
 function buildServerFromForm(): McpServerConfig | null {
   const name = (editingMcpName.value ?? newMcpName.value).trim();
-  if (!name || !newMcpCommand.value.trim()) return null;
+  if (!name) return null;
   const existing = mcpServers.value.find((s) => s.name === name);
+  if (newMcpIsRemote.value) {
+    if (!newMcpUrl.value.trim()) return null;
+    return {
+      name,
+      command: "",
+      args: [],
+      env: {},
+      url: newMcpUrl.value.trim(),
+      bearer_token: newMcpBearerToken.value.trim() || null,
+      enabled: existing?.enabled ?? true,
+    };
+  }
+  if (!newMcpCommand.value.trim()) return null;
   return {
     name,
     command: newMcpCommand.value.trim(),
     args: newMcpArgs.value.trim().length > 0 ? newMcpArgs.value.trim().split(/\s+/) : [],
     env: parseEnvLines(newMcpEnv.value),
+    url: null,
+    bearer_token: null,
     enabled: existing?.enabled ?? true,
   };
 }
@@ -232,6 +296,36 @@ function resetMcpForm() {
   newMcpCommand.value = "";
   newMcpArgs.value = "";
   newMcpEnv.value = "";
+  newMcpIsRemote.value = false;
+  newMcpUrl.value = "";
+  newMcpBearerToken.value = "";
+  mcpTestStatus.value = "idle";
+  mcpTestTools.value = [];
+  mcpTestError.value = "";
+}
+
+// Preenche o formulário de adicionar (NÃO salva sozinho) a partir de um
+// conector pré-curado — usuário ainda revisa/completa chaves e clica
+// "Adicionar" ele mesmo, mesmo espírito do preview obrigatório do import de
+// skill por URL (nunca "instala direto").
+function useMcpConnector(connector: McpConnector) {
+  editingMcpName.value = null;
+  newMcpName.value = connector.id;
+  if (connector.url) {
+    newMcpIsRemote.value = true;
+    newMcpUrl.value = connector.url;
+    newMcpBearerToken.value = "";
+    newMcpCommand.value = "";
+    newMcpArgs.value = "";
+    newMcpEnv.value = "";
+  } else {
+    newMcpIsRemote.value = false;
+    newMcpUrl.value = "";
+    newMcpBearerToken.value = "";
+    newMcpCommand.value = connector.command;
+    newMcpArgs.value = connector.args.join(" ");
+    newMcpEnv.value = connector.envKeys.map((k) => `${k}=`).join("\n");
+  }
   mcpTestStatus.value = "idle";
   mcpTestTools.value = [];
   mcpTestError.value = "";
@@ -240,6 +334,9 @@ function resetMcpForm() {
 function startEditMcpServer(server: McpServerConfig) {
   editingMcpName.value = server.name;
   newMcpName.value = server.name;
+  newMcpIsRemote.value = !!server.url;
+  newMcpUrl.value = server.url ?? "";
+  newMcpBearerToken.value = server.bearer_token ?? "";
   newMcpCommand.value = server.command;
   newMcpArgs.value = server.args.join(" ");
   newMcpEnv.value = serializeEnvLines(server.env);
@@ -295,25 +392,61 @@ const SEARCH_PROVIDER_OPTIONS = computed<{ value: SearchProviderKind; label: str
   { value: "brave", label: "Brave Search API" },
   { value: "tavily", label: "Tavily" },
   { value: "searxng", label: t("settings.searchSearxng") },
+  { value: "serper", label: "Serper.dev" },
+  { value: "exa", label: "Exa" },
+  { value: "google_cse", label: "Google Custom Search" },
+  { value: "bing", label: "Bing / Azure AI Search" },
 ]);
+
+// Providers que so precisam de chave de API (mesmo campo/fluxo de Brave/Tavily).
+const SIMPLE_KEY_PROVIDERS: SearchProviderKind[] = ["brave", "tavily", "serper", "exa"];
 
 const searchProvider = ref<SearchProviderKind>("auto");
 const searchSearxngUrl = ref("http://127.0.0.1:8888");
+const searchGoogleCseId = ref("");
+const searchBingEndpoint = ref("https://api.bing.microsoft.com/v7.0/search");
 const searchApiKeyInput = ref("");
 const searchHasBraveKey = ref(false);
 const searchHasTavilyKey = ref(false);
+const searchHasSerperKey = ref(false);
+const searchHasExaKey = ref(false);
+const searchHasGoogleKey = ref(false);
+const searchHasBingKey = ref(false);
 const searchError = ref("");
 type SearchTestStatus = "idle" | "testing" | "success" | "error";
 const searchTestStatus = ref<SearchTestStatus>("idle");
 const searchTestCount = ref(0);
 const searchTestError = ref("");
 
+const searchHasKeyMap = computed<Partial<Record<SearchProviderKind, boolean>>>(() => ({
+  brave: searchHasBraveKey.value,
+  tavily: searchHasTavilyKey.value,
+  serper: searchHasSerperKey.value,
+  exa: searchHasExaKey.value,
+  google_cse: searchHasGoogleKey.value,
+  bing: searchHasBingKey.value,
+}));
+const searchProviderHasKey = computed(() => searchHasKeyMap.value[searchProvider.value] ?? false);
+const searchProviderNeedsKey = computed(
+  () => SIMPLE_KEY_PROVIDERS.includes(searchProvider.value) || searchProvider.value === "google_cse" || searchProvider.value === "bing",
+);
+
+function applySearchConfigView(cfg: SearchConfigView) {
+  searchHasBraveKey.value = cfg.has_brave_key;
+  searchHasTavilyKey.value = cfg.has_tavily_key;
+  searchHasSerperKey.value = cfg.has_serper_key;
+  searchHasExaKey.value = cfg.has_exa_key;
+  searchHasGoogleKey.value = cfg.has_google_key;
+  searchHasBingKey.value = cfg.has_bing_key;
+}
+
 async function loadSearchConfig() {
   const cfg = await api.getSearchConfig();
   searchProvider.value = cfg.provider;
   searchSearxngUrl.value = cfg.searxng_url;
-  searchHasBraveKey.value = cfg.has_brave_key;
-  searchHasTavilyKey.value = cfg.has_tavily_key;
+  searchGoogleCseId.value = cfg.google_cse_id;
+  searchBingEndpoint.value = cfg.bing_endpoint;
+  applySearchConfigView(cfg);
   searchApiKeyInput.value = "";
   searchTestStatus.value = "idle";
 }
@@ -326,6 +459,8 @@ async function testSearchProvider() {
       searchProvider.value,
       searchApiKeyInput.value.trim() || undefined,
       searchSearxngUrl.value.trim() || undefined,
+      searchGoogleCseId.value.trim() || undefined,
+      searchBingEndpoint.value.trim() || undefined,
     );
     searchTestStatus.value = "success";
   } catch (e) {
@@ -341,9 +476,10 @@ async function saveSearchConfig() {
       searchProvider.value,
       searchSearxngUrl.value.trim(),
       searchApiKeyInput.value.trim() || undefined,
+      searchGoogleCseId.value.trim() || undefined,
+      searchBingEndpoint.value.trim() || undefined,
     );
-    searchHasBraveKey.value = cfg.has_brave_key;
-    searchHasTavilyKey.value = cfg.has_tavily_key;
+    applySearchConfigView(cfg);
     searchApiKeyInput.value = "";
   } catch (e) {
     searchError.value = String(e);
@@ -352,15 +488,30 @@ async function saveSearchConfig() {
 
 async function clearSearchApiKey() {
   const cfg = await api.clearSearchApiKey(searchProvider.value);
-  searchHasBraveKey.value = cfg.has_brave_key;
-  searchHasTavilyKey.value = cfg.has_tavily_key;
+  applySearchConfigView(cfg);
 }
 
 onMounted(() => {
-  loadSkills();
   loadMcpServers();
   loadSearchConfig();
+  loadGitBackupStatus();
+  loadMemoryContent();
 });
+
+// Achado testando ao vivo (2026-08-18): `onMounted` só roda a primeira vez
+// que o modal é criado — reabrir Configurações depois disso NUNCA recarrega
+// nada, então "Memória entre sessões" ficava mostrando o valor de quando o
+// app abriu, mesmo depois do LLM gravar um fato novo via `remember` numa
+// sessão de chat enquanto o modal estava fechado. Diferente de MCP/busca/
+// backup git (que só mudam através deste próprio modal), a memória pode ser
+// escrita de FORA — precisa recarregar toda vez que o modal reabre, não só
+// na primeira montagem.
+watch(
+  () => props.visible,
+  (v) => {
+    if (v) loadMemoryContent();
+  },
+);
 
 async function saveKey() {
   if (!openrouterKeyInput.value.trim()) return;
@@ -369,43 +520,224 @@ async function saveKey() {
   editingOpenrouterKey.value = false;
 }
 
+// Backup de sessão como .zip (PLANOS/14_backlog_pendente.md, "backup/exportar
+// sessão"). Comando faz a leitura/escrita no disco — frontend só escolhe o
+// caminho (dialog nativo) e mostra o resultado.
+const backupStatus = ref("");
+const backupError = ref("");
+
+async function exportCurrentSession() {
+  const session = sessionStore.currentSession;
+  if (!session) return;
+  backupStatus.value = "";
+  backupError.value = "";
+  const destPath = await save({
+    defaultPath: `${session.title.replace(/[\\/:*?"<>|]/g, "_")}.zip`,
+    filters: [{ name: "Zip", extensions: ["zip"] }],
+  });
+  if (!destPath) return;
+  try {
+    const result = await api.exportSessionsBackup([session.id], destPath);
+    backupStatus.value = t("settings.backupExportSuccess", { count: result.exported });
+  } catch (e) {
+    backupError.value = String(e);
+  }
+}
+
+async function exportAllSessions() {
+  backupStatus.value = "";
+  backupError.value = "";
+  const destPath = await save({
+    defaultPath: "cerne-sessoes.zip",
+    filters: [{ name: "Zip", extensions: ["zip"] }],
+  });
+  if (!destPath) return;
+  try {
+    const result = await api.exportSessionsBackup([], destPath);
+    backupStatus.value = t("settings.backupExportSuccess", { count: result.exported });
+  } catch (e) {
+    backupError.value = String(e);
+  }
+}
+
+// Backup/sincronização via git — alternativa ao .zip pra quem quer manter
+// as sessões versionadas num remoto próprio (github/gitlab privado, etc.),
+// sem precisar exportar/importar manualmente toda vez. Repo fica em
+// <app_data_dir>/sessions (não o app_data_dir inteiro — ver comentário em
+// git.rs sobre por quê). Cerne não gerencia credencial nenhuma: autenticação
+// com o remoto é o git/SO do usuário (credential helper, SSH agent) que já
+// resolve, igual um `git push` normal no terminal resolveria.
+const gitBackupIsRepo = ref(false);
+const gitBackupRemote = ref<string | null>(null);
+const gitBackupRemoteInput = ref("");
+const gitBackupSyncing = ref(false);
+const gitBackupResult = ref("");
+const gitBackupError = ref("");
+// Identidade local (nome/email) + token — pedido do usuário (2026-08-18)
+// depois de travar tentando sincronizar sem nenhum dos dois configurado: o
+// git precisa de identidade pra commitar, e sem token o pull/push num
+// remoto https fica esperando credencial que nunca vem (agora com timeout
+// no backend, mas melhor nem chegar lá).
+const gitBackupNameInput = ref("");
+const gitBackupEmailInput = ref("");
+const gitBackupHasIdentity = ref(false);
+const gitBackupHasToken = ref(false);
+const gitBackupTokenPreview = ref<string | null>(null);
+const gitBackupTokenInput = ref("");
+const gitBackupEditingToken = ref(false);
+
+async function loadGitBackupStatus() {
+  try {
+    const status = await api.backupGitStatus();
+    gitBackupIsRepo.value = status.is_repo;
+    gitBackupRemote.value = status.remote;
+    gitBackupRemoteInput.value = status.remote ?? "";
+    gitBackupNameInput.value = status.identity_name ?? "";
+    gitBackupEmailInput.value = status.identity_email ?? "";
+    gitBackupHasIdentity.value = !!(status.identity_name && status.identity_email);
+    gitBackupHasToken.value = status.has_token;
+    gitBackupTokenPreview.value = status.token_preview;
+  } catch {
+    // silencioso — só some a seção de status, não impede o resto de Configurações.
+  }
+}
+
+async function saveGitBackupIdentity() {
+  if (!gitBackupNameInput.value.trim() || !gitBackupEmailInput.value.trim()) return;
+  gitBackupError.value = "";
+  try {
+    await api.backupGitSetIdentity(gitBackupNameInput.value.trim(), gitBackupEmailInput.value.trim());
+    await loadGitBackupStatus();
+  } catch (e) {
+    gitBackupError.value = String(e);
+  }
+}
+
+async function saveGitBackupToken() {
+  if (!gitBackupTokenInput.value.trim()) return;
+  gitBackupError.value = "";
+  try {
+    await api.setBackupGitToken(gitBackupTokenInput.value.trim());
+    gitBackupTokenInput.value = "";
+    gitBackupEditingToken.value = false;
+    await loadGitBackupStatus();
+  } catch (e) {
+    gitBackupError.value = String(e);
+  }
+}
+
+async function clearGitBackupToken() {
+  gitBackupError.value = "";
+  try {
+    await api.clearBackupGitToken();
+    await loadGitBackupStatus();
+  } catch (e) {
+    gitBackupError.value = String(e);
+  }
+}
+
+async function initGitBackup() {
+  gitBackupError.value = "";
+  try {
+    await api.backupGitInit();
+    await loadGitBackupStatus();
+  } catch (e) {
+    gitBackupError.value = String(e);
+  }
+}
+
+async function saveGitBackupRemote() {
+  if (!gitBackupRemoteInput.value.trim()) return;
+  gitBackupError.value = "";
+  try {
+    await api.backupGitSetRemote(gitBackupRemoteInput.value.trim());
+    await loadGitBackupStatus();
+  } catch (e) {
+    gitBackupError.value = String(e);
+  }
+}
+
+async function syncGitBackup() {
+  gitBackupSyncing.value = true;
+  gitBackupResult.value = "";
+  gitBackupError.value = "";
+  try {
+    gitBackupResult.value = await api.backupGitSync();
+  } catch (e) {
+    gitBackupError.value = String(e);
+  } finally {
+    gitBackupSyncing.value = false;
+  }
+}
+
+// Memória entre sessões (inspirado no Hermes Agent) — o LLM grava fatos
+// duráveis via a tool `remember` (só acrescenta), mas o usuário pode editar
+// o arquivo inteiro livremente aqui (corrigir/apagar uma entrada).
+const memoryContent = ref("");
+const memorySaved = ref(false);
+
+async function loadMemoryContent() {
+  try {
+    memoryContent.value = await api.getMemory();
+  } catch {
+    memoryContent.value = "";
+  }
+}
+
+async function saveMemoryContent() {
+  await api.setMemory(memoryContent.value);
+  memorySaved.value = true;
+  setTimeout(() => (memorySaved.value = false), 2000);
+}
+
+async function importSessionsBackup() {
+  backupStatus.value = "";
+  backupError.value = "";
+  const sourcePath = await open({
+    multiple: false,
+    filters: [{ name: "Zip", extensions: ["zip"] }],
+  });
+  if (typeof sourcePath !== "string") return;
+  try {
+    const result = await api.importSessionsBackup(sourcePath);
+    backupStatus.value = t("settings.backupImportSuccess", {
+      imported: result.imported.length,
+      skipped: result.skipped_invalid.length,
+    });
+    await sessionStore.loadSessions();
+  } catch (e) {
+    backupError.value = String(e);
+  }
+}
+
 </script>
 
 <template>
+  <Dialog
+    :visible="visible"
+    @update:visible="(v) => emit('update:visible', v)"
+    modal
+    maximizable
+    :header="$t('settings.title')"
+    :style="{ width: '860px' }"
+    class="settings-dialog"
+  >
   <div class="settings">
     <div class="settings-inner">
-      <h1>{{ $t("settings.title") }}</h1>
-
-      <section>
-        <h2>{{ $t("settings.language") }}</h2>
+      <Accordion multiple>
+      <AccordionPanel value="language">
+        <AccordionHeader>{{ $t("settings.language") }}</AccordionHeader>
+        <AccordionContent>
         <p class="hint">{{ $t("settings.languageHint") }}</p>
         <select :value="locale" class="text-input" @change="onLocaleChange(($event.target as HTMLSelectElement).value)">
           <option v-for="l in SUPPORTED_LOCALES" :key="l.code" :value="l.code">{{ l.label }}</option>
         </select>
-      </section>
+        </AccordionContent>
+      </AccordionPanel>
 
-      <section>
-        <h2>{{ $t("settings.activeProvider") }}</h2>
-        <p class="hint">{{ $t("settings.activeProviderHint") }}</p>
-        <div class="provider-grid">
-          <button
-            v-for="kind in PROVIDER_KINDS"
-            :key="kind"
-            class="provider-card"
-            :class="{ active: providerStore.config?.active_provider === kind }"
-            @click="providerStore.setActiveProvider(kind as any)"
-          >
-            {{ providerLabel(kind) }}
-            <span v-if="providerStore.config?.active_provider === kind" class="active-badge">
-              <span class="msi">check_circle</span>
-              {{ $t("settings.activeProviderBadge") }}
-            </span>
-          </button>
-        </div>
-      </section>
-
-      <section>
-        <h2>OpenRouter</h2>
+      <AccordionPanel value="openrouter">
+        <AccordionHeader>OpenRouter</AccordionHeader>
+        <AccordionContent>
         <p class="hint">{{ $t("settings.apiKeyVaultHint") }}</p>
         <div v-if="providerStore.hasOpenrouterKey && !editingOpenrouterKey" class="key-status-row">
           <span class="key-status-chip">
@@ -426,10 +758,12 @@ async function saveKey() {
           <span class="msi">search</span>
           {{ $t("settings.viewModels") }}
         </button>
-      </section>
+        </AccordionContent>
+      </AccordionPanel>
 
-      <section>
-        <h2>{{ $t("settings.llamaCppLocal") }}</h2>
+      <AccordionPanel value="llama-cpp-local">
+        <AccordionHeader>{{ $t("settings.llamaCppLocal") }}</AccordionHeader>
+        <AccordionContent>
         <p class="hint" v-html="$t('settings.llamaCppHint')"></p>
         <div class="fork-list">
           <LlamaForkRow
@@ -459,10 +793,12 @@ async function saveKey() {
           <button class="btn-primary" @click="addFork">{{ $t("settings.addFork") }}</button>
         </div>
         <p v-if="forkError" class="error-text">{{ forkError }}</p>
-      </section>
+        </AccordionContent>
+      </AccordionPanel>
 
-      <section>
-        <h2>{{ $t("settings.customProviders") }}</h2>
+      <AccordionPanel value="custom-providers">
+        <AccordionHeader>{{ $t("settings.customProviders") }}</AccordionHeader>
+        <AccordionContent>
         <p class="hint" v-html="$t('settings.customProvidersHint')"></p>
         <div class="skill-list">
           <div v-for="provider in providerStore.customProviders" :key="provider.id" class="skill-row mcp-row">
@@ -525,33 +861,12 @@ async function saveKey() {
           <p v-if="customTestStatus === 'error'" class="error-text">{{ customTestError }}</p>
         </div>
         <p v-if="customError" class="error-text">{{ customError }}</p>
-      </section>
+        </AccordionContent>
+      </AccordionPanel>
 
-      <section>
-        <h2>{{ $t("settings.skills") }}</h2>
-        <p class="hint" v-html="$t('settings.skillsHint')"></p>
-        <div class="skill-list">
-          <div v-for="skill in skills" :key="skill.dir" class="skill-row mcp-row">
-            <div class="skill-info">
-              <span class="skill-name">{{ skill.name }}</span>
-              <span class="skill-desc">{{ skill.description }}</span>
-            </div>
-            <div class="mcp-actions">
-              <button class="btn-secondary" @click="openSkillModal(skill)">{{ $t("settings.edit") }}</button>
-            </div>
-          </div>
-          <p v-if="skills.length === 0" class="hint">{{ $t("settings.noSkillsYet") }}</p>
-        </div>
-        <div class="skill-new">
-          <button class="btn-primary" @click="openSkillModal(null)">{{ $t("settings.createSkill") }}</button>
-          <button class="btn-secondary" @click="api.openSkillsFolder()">{{ $t("settings.openSkillsFolder") }}</button>
-        </div>
-      </section>
-
-      <SkillEditorModal v-model:visible="skillModalVisible" :skill="skillModalTarget" @saved="loadSkills" />
-
-      <section>
-        <h2>{{ $t("settings.mcpServers") }}</h2>
+      <AccordionPanel value="mcp-servers">
+        <AccordionHeader>{{ $t("settings.mcpServers") }}</AccordionHeader>
+        <AccordionContent>
         <p class="hint">
           {{ $t("settings.mcpHintBefore") }}
           <code>mcp__{{ '{servidor}' }}__{{ '{tool}' }}</code>{{ $t("settings.mcpHintAfter") }}
@@ -561,8 +876,11 @@ async function saveKey() {
         <div class="skill-list">
           <div v-for="server in mcpServers" :key="server.name" class="skill-row mcp-row">
             <div class="skill-info">
-              <span class="skill-name">{{ server.name }}</span>
-              <span class="skill-desc">{{ server.command }} {{ server.args.join(" ") }}</span>
+              <span class="skill-name">
+                {{ server.name }}
+                <span v-if="server.url" class="asp-scope-badge">{{ $t("settings.mcpRemoteBadge") }}</span>
+              </span>
+              <span class="skill-desc">{{ server.url ? server.url : `${server.command} ${server.args.join(" ")}` }}</span>
             </div>
             <div class="mcp-actions">
               <button class="btn-secondary" @click="startEditMcpServer(server)">{{ $t("settings.edit") }}</button>
@@ -574,6 +892,25 @@ async function saveKey() {
           </div>
           <p v-if="mcpServers.length === 0" class="hint">{{ $t("settings.noMcpServersYet") }}</p>
         </div>
+        <button class="btn-secondary asp-new" @click="mcpConnectorsExpanded = !mcpConnectorsExpanded">
+          {{ mcpConnectorsExpanded ? $t("settings.hideMcpConnectors") : $t("settings.showMcpConnectors") }}
+        </button>
+        <div v-if="mcpConnectorsExpanded" class="skill-list mcp-connectors-list">
+          <div v-for="connector in MCP_CONNECTORS" :key="connector.id" class="skill-row mcp-row">
+            <span v-if="connector.icon.kind === 'svg'" class="mcp-connector-icon" :style="{ color: connector.icon.color }">
+              <svg :viewBox="connector.icon.viewBox" xmlns="http://www.w3.org/2000/svg"><path :d="connector.icon.path" fill="currentColor" /></svg>
+            </span>
+            <span v-else class="mcp-connector-icon mcp-connector-icon-material msi">{{ connector.icon.name }}</span>
+            <div class="skill-info">
+              <span class="skill-name">{{ connector.name }}</span>
+              <span class="skill-desc">{{ connector.description }}</span>
+            </div>
+            <div class="mcp-actions">
+              <a :href="connector.docsUrl" target="_blank" rel="noopener" class="btn-secondary mcp-docs-link">{{ $t("settings.mcpConnectorDocs") }}</a>
+              <button class="btn-secondary" @click="useMcpConnector(connector)">{{ $t("settings.mcpConnectorUse") }}</button>
+            </div>
+          </div>
+        </div>
         <div class="mcp-form">
           <div class="mcp-form-row">
             <input
@@ -583,15 +920,27 @@ async function saveKey() {
               :disabled="!!editingMcpName"
               v-tooltip.top="editingMcpName ? $t('settings.nameCannotChange') : ''"
             />
-            <input v-model="newMcpCommand" class="text-input" placeholder="comando (ex: npx)" />
+            <label class="mcp-remote-toggle">
+              <input type="checkbox" v-model="newMcpIsRemote" />
+              {{ $t("settings.mcpRemoteToggle") }}
+            </label>
           </div>
-          <input v-model="newMcpArgs" class="text-input" placeholder="argumentos (ex: -y @escopo/pacote)" />
-          <textarea
-            v-model="newMcpEnv"
-            class="text-input mcp-env-input"
-            rows="2"
-            :placeholder="$t('settings.envVarsPlaceholder')"
-          />
+          <template v-if="newMcpIsRemote">
+            <input v-model="newMcpUrl" class="text-input" placeholder="https://mcp.exemplo.com/mcp" />
+            <input v-model="newMcpBearerToken" type="password" class="text-input" :placeholder="$t('settings.mcpBearerTokenPlaceholder')" />
+          </template>
+          <template v-else>
+            <div class="mcp-form-row">
+              <input v-model="newMcpCommand" class="text-input" placeholder="comando (ex: npx)" />
+            </div>
+            <input v-model="newMcpArgs" class="text-input" placeholder="argumentos (ex: -y @escopo/pacote)" />
+            <textarea
+              v-model="newMcpEnv"
+              class="text-input mcp-env-input"
+              rows="2"
+              :placeholder="$t('settings.envVarsPlaceholder')"
+            />
+          </template>
           <div class="mcp-form-actions">
             <button class="btn-secondary" :disabled="mcpTestStatus === 'testing'" @click="testMcpServer">
               {{ mcpTestStatus === "testing" ? $t("settings.testing") : $t("settings.testConnection") }}
@@ -601,15 +950,120 @@ async function saveKey() {
           </div>
           <p v-if="mcpTestStatus === 'success'" class="mcp-test-success">
             <span class="msi">check_circle</span>
-            {{ $t("settings.connectedToolsFound", { count: mcpTestTools.length, list: mcpTestTools.length ? ": " + mcpTestTools.join(", ") : "" }) }}
+            {{ $t("settings.connectedToolsFound", { count: mcpTestTools.length, list: mcpTestTools.length ? ": " + mcpTestTools.map((t) => t.name).join(", ") : "" }) }}
           </p>
           <p v-if="mcpTestStatus === 'error'" class="error-text">{{ mcpTestError }}</p>
         </div>
         <p v-if="mcpError" class="error-text">{{ mcpError }}</p>
-      </section>
+        </AccordionContent>
+      </AccordionPanel>
 
-      <section>
-        <h2>{{ $t("settings.webSearch") }}</h2>
+      <AccordionPanel value="memory">
+        <AccordionHeader>{{ $t("settings.memoryTitle") }}</AccordionHeader>
+        <AccordionContent>
+        <p class="hint">{{ $t("settings.memoryHint") }}</p>
+        <textarea
+          v-model="memoryContent"
+          class="text-input memory-textarea"
+          rows="6"
+          :placeholder="$t('settings.memoryPlaceholder')"
+        />
+        <div class="mcp-form-actions">
+          <button class="btn-primary" @click="saveMemoryContent">{{ $t("sidebar.save") }}</button>
+          <span v-if="memorySaved" class="mcp-test-success">
+            <span class="msi">check_circle</span>
+            {{ $t("settings.memorySaved") }}
+          </span>
+        </div>
+        </AccordionContent>
+      </AccordionPanel>
+
+      <!-- Escondido a pedido do usuário (2026-08-20), antes de subir o Cerne
+           Code — backup .zip e backup via git ainda não foram confirmados
+           testando (ver PLANOS/Testar.md, itens 1 e 2). Código intacto,
+           só a UI fica invisível até serem confirmados; então é só tirar
+           esse `v-if="false"`. -->
+      <AccordionPanel v-if="false" value="backup">
+        <AccordionHeader>{{ $t("settings.backupTitle") }}</AccordionHeader>
+        <AccordionContent>
+        <p class="hint">{{ $t("settings.backupHint") }}</p>
+        <div class="mcp-form-actions">
+          <button v-if="sessionStore.currentSession" class="btn-secondary" @click="exportCurrentSession">
+            {{ $t("settings.backupExportCurrent") }}
+          </button>
+          <button class="btn-secondary" @click="exportAllSessions">{{ $t("settings.backupExportAll") }}</button>
+          <button class="btn-primary" @click="importSessionsBackup">{{ $t("settings.backupImport") }}</button>
+        </div>
+        <p v-if="backupStatus" class="mcp-test-success">
+          <span class="msi">check_circle</span>
+          {{ backupStatus }}
+        </p>
+        <p v-if="backupError" class="error-text">{{ backupError }}</p>
+
+        <div class="git-backup-block">
+          <p class="hint">{{ $t("settings.gitBackupHint") }}</p>
+          <button v-if="!gitBackupIsRepo" class="btn-secondary" @click="initGitBackup">
+            {{ $t("settings.gitBackupInit") }}
+          </button>
+          <template v-else>
+            <div class="mcp-form-row">
+              <input
+                v-model="gitBackupRemoteInput"
+                class="text-input"
+                :placeholder="$t('settings.gitBackupRemotePlaceholder')"
+              />
+              <button class="btn-secondary" @click="saveGitBackupRemote">{{ $t("settings.gitBackupSetRemote") }}</button>
+            </div>
+            <p v-if="gitBackupRemote" class="hint">{{ $t("settings.gitBackupCurrentRemote", { url: gitBackupRemote }) }}</p>
+
+            <p class="hint">{{ $t("settings.gitBackupIdentityHint") }}</p>
+            <div class="mcp-form-row">
+              <input
+                v-model="gitBackupNameInput"
+                class="text-input"
+                :placeholder="$t('settings.gitBackupNamePlaceholder')"
+              />
+              <input
+                v-model="gitBackupEmailInput"
+                class="text-input"
+                :placeholder="$t('settings.gitBackupEmailPlaceholder')"
+              />
+              <button class="btn-secondary" @click="saveGitBackupIdentity">{{ $t("sidebar.save") }}</button>
+            </div>
+            <p v-if="gitBackupHasIdentity" class="hint">
+              {{ $t("settings.gitBackupCurrentIdentity", { name: gitBackupNameInput, email: gitBackupEmailInput }) }}
+            </p>
+
+            <p class="hint">{{ $t("settings.gitBackupTokenHint") }}</p>
+            <div v-if="gitBackupHasToken && !gitBackupEditingToken" class="key-status-row">
+              <span class="key-status-chip">
+                <span class="msi">check_circle</span>
+                <span class="key-preview">{{ gitBackupTokenPreview }}</span>
+              </span>
+              <button class="btn-secondary" @click="gitBackupEditingToken = true">{{ $t("settings.changeKey") }}</button>
+              <button class="btn-secondary" @click="clearGitBackupToken">{{ $t("settings.removeKey") }}</button>
+            </div>
+            <div v-else class="key-row">
+              <input v-model="gitBackupTokenInput" type="password" :placeholder="$t('settings.gitBackupTokenPlaceholder')" class="text-input" />
+              <button class="btn-primary" @click="saveGitBackupToken">{{ $t("sidebar.save") }}</button>
+            </div>
+
+            <button class="btn-primary" :disabled="gitBackupSyncing" @click="syncGitBackup">
+              {{ gitBackupSyncing ? $t("settings.gitBackupSyncing") : $t("settings.gitBackupSync") }}
+            </button>
+          </template>
+          <p v-if="gitBackupResult" class="mcp-test-success">
+            <span class="msi">check_circle</span>
+            {{ gitBackupResult }}
+          </p>
+          <p v-if="gitBackupError" class="error-text">{{ gitBackupError }}</p>
+        </div>
+        </AccordionContent>
+      </AccordionPanel>
+
+      <AccordionPanel value="web-search">
+        <AccordionHeader>{{ $t("settings.webSearch") }}</AccordionHeader>
+        <AccordionContent>
         <p class="hint" v-html="$t('settings.webSearchHint')"></p>
         <div class="field">
           <label>Provider</label>
@@ -617,23 +1071,23 @@ async function saveKey() {
             <option v-for="opt in SEARCH_PROVIDER_OPTIONS" :key="opt.value" :value="opt.value">{{ opt.label }}</option>
           </select>
         </div>
-        <div v-if="searchProvider === 'brave' || searchProvider === 'tavily'" class="field">
+        <div v-if="searchProvider === 'google_cse'" class="field">
+          <label>{{ $t("settings.googleCseId") }}</label>
+          <input v-model="searchGoogleCseId" class="text-input" placeholder="ex: 017576662512468239146:omuauf_lfve" />
+        </div>
+        <div v-if="searchProvider === 'bing'" class="field">
+          <label>{{ $t("settings.bingEndpoint") }}</label>
+          <input v-model="searchBingEndpoint" class="text-input" placeholder="https://api.bing.microsoft.com/v7.0/search" />
+        </div>
+        <div v-if="searchProviderNeedsKey" class="field">
           <label>{{ $t("settings.apiKey") }}</label>
           <input
             v-model="searchApiKeyInput"
             type="password"
             class="text-input"
-            :placeholder="
-              (searchProvider === 'brave' ? searchHasBraveKey : searchHasTavilyKey)
-                ? $t('settings.keyAlreadyConfigured')
-                : $t('settings.apiKeyPlaceholder')
-            "
+            :placeholder="searchProviderHasKey ? $t('settings.keyAlreadyConfigured') : $t('settings.apiKeyPlaceholder')"
           />
-          <button
-            v-if="(searchProvider === 'brave' && searchHasBraveKey) || (searchProvider === 'tavily' && searchHasTavilyKey)"
-            class="btn-secondary"
-            @click="clearSearchApiKey"
-          >
+          <button v-if="searchProviderHasKey" class="btn-secondary" @click="clearSearchApiKey">
             {{ $t("settings.removeKey") }}
           </button>
         </div>
@@ -653,10 +1107,12 @@ async function saveKey() {
         </p>
         <p v-if="searchTestStatus === 'error'" class="error-text">{{ searchTestError }}</p>
         <p v-if="searchError" class="error-text">{{ searchError }}</p>
-      </section>
+        </AccordionContent>
+      </AccordionPanel>
 
-      <section v-if="providerStore.config">
-        <h2>{{ $t("settings.localEndpoints") }}</h2>
+      <AccordionPanel v-if="providerStore.config" value="local-endpoints">
+        <AccordionHeader>{{ $t("settings.localEndpoints") }}</AccordionHeader>
+        <AccordionContent>
         <div class="field">
           <label>Ollama</label>
           <div class="endpoint-row">
@@ -675,17 +1131,112 @@ async function saveKey() {
           <label>{{ $t("settings.llamaCppRouter") }}</label>
           <input v-model="providerStore.config.llama_cpp_base_url" class="text-input" @change="providerStore.saveConfig" />
         </div>
-      </section>
+        </AccordionContent>
+      </AccordionPanel>
 
-      <section>
-        <h2>{{ $t("settings.aboutTitle") }}</h2>
-        <p class="hint">{{ $t("settings.aboutIntro") }}</p>
-        <ul class="about-tools">
-          <li v-for="(tool, i) in $tm('settings.aboutTools')" :key="i" class="about-tool">
-            {{ $rt(tool) }}
-          </li>
-        </ul>
-      </section>
+      <AccordionPanel v-if="providerStore.config" value="voice">
+        <AccordionHeader>{{ $t("settings.voiceTitle") }}</AccordionHeader>
+        <AccordionContent>
+        <p class="hint">{{ $t("settings.voiceHint") }}</p>
+
+        <h3 class="subhead">{{ $t("settings.voiceTts") }}</h3>
+        <div class="field">
+          <label>{{ $t("settings.voiceBackend") }}</label>
+          <select v-model="providerStore.config.tts_backend" @change="providerStore.saveConfig" class="text-input">
+            <option value="openai_compatible">{{ $t("settings.voiceBackendOpenai") }}</option>
+            <option value="voicebox">{{ $t("settings.voiceBackendVoicebox") }}</option>
+          </select>
+        </div>
+
+        <template v-if="providerStore.config.tts_backend === 'voicebox'">
+          <div class="field">
+            <label>{{ $t("settings.voiceboxUrl") }}</label>
+            <input v-model="providerStore.config.voicebox_base_url" class="text-input" @change="providerStore.saveConfig" />
+          </div>
+          <div class="field">
+            <label>{{ $t("settings.voiceboxProfile") }}</label>
+            <input v-model="providerStore.config.voicebox_tts_profile" class="text-input" @change="providerStore.saveConfig" :placeholder="$t('settings.voiceboxProfilePlaceholder')" />
+          </div>
+        </template>
+        <template v-else>
+          <div class="field">
+            <label>{{ $t("providerPicker.connection") }}</label>
+            <select :value="providerStore.config.tts_provider" @change="setTtsProvider(($event.target as HTMLSelectElement).value as ProviderKind)" class="text-input">
+              <option v-for="opt in voiceProviderOptions" :key="opt.kind" :value="opt.kind">{{ opt.label }}</option>
+            </select>
+          </div>
+          <div v-if="providerStore.config.tts_provider === 'llama_cpp'" class="field">
+            <label>Fork</label>
+            <select v-model="providerStore.config.tts_llama_fork" @change="providerStore.saveConfig" class="text-input">
+              <option v-for="f in providerStore.forks" :key="f.id" :value="f.id">{{ f.label }}</option>
+            </select>
+          </div>
+          <div v-if="providerStore.config.tts_provider === 'custom'" class="field">
+            <label>{{ $t("providerPicker.connection") }}</label>
+            <select v-model="providerStore.config.tts_custom_provider_id" @change="providerStore.saveConfig" class="text-input">
+              <option v-for="p in providerStore.customProviders" :key="p.id" :value="p.id">{{ p.label }}</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>{{ $t("settings.voiceModel") }}</label>
+            <input v-model="providerStore.config.tts_model" class="text-input" @change="providerStore.saveConfig" />
+          </div>
+          <div class="field">
+            <label>{{ $t("settings.voiceVoice") }}</label>
+            <input v-model="providerStore.config.tts_voice" class="text-input" @change="providerStore.saveConfig" :placeholder="$t('settings.voiceVoicePlaceholder')" />
+          </div>
+        </template>
+        <label class="checkbox-row">
+          <input type="checkbox" v-model="providerStore.config.tts_auto_language" @change="providerStore.saveConfig" />
+          {{ $t("settings.voiceAutoLanguage") }}
+        </label>
+
+        <h3 class="subhead">{{ $t("settings.voiceStt") }}</h3>
+        <div class="field">
+          <label>{{ $t("settings.voiceBackend") }}</label>
+          <select v-model="providerStore.config.stt_backend" @change="providerStore.saveConfig" class="text-input">
+            <option value="openai_compatible">{{ $t("settings.voiceBackendOpenai") }}</option>
+            <option value="voicebox">{{ $t("settings.voiceBackendVoicebox") }}</option>
+          </select>
+        </div>
+
+        <template v-if="providerStore.config.stt_backend === 'voicebox'">
+          <div class="field">
+            <label>{{ $t("settings.voiceboxUrl") }}</label>
+            <input v-model="providerStore.config.voicebox_base_url" class="text-input" @change="providerStore.saveConfig" />
+          </div>
+          <div class="field">
+            <label>{{ $t("settings.voiceboxSttLanguage") }}</label>
+            <input v-model="providerStore.config.voicebox_stt_language" class="text-input" @change="providerStore.saveConfig" :placeholder="$t('settings.voiceboxSttLanguagePlaceholder')" />
+          </div>
+        </template>
+        <template v-else>
+          <div class="field">
+            <label>{{ $t("providerPicker.connection") }}</label>
+            <select :value="providerStore.config.stt_provider" @change="setSttProvider(($event.target as HTMLSelectElement).value as ProviderKind)" class="text-input">
+              <option v-for="opt in voiceProviderOptions" :key="opt.kind" :value="opt.kind">{{ opt.label }}</option>
+            </select>
+          </div>
+          <div v-if="providerStore.config.stt_provider === 'llama_cpp'" class="field">
+            <label>Fork</label>
+            <select v-model="providerStore.config.stt_llama_fork" @change="providerStore.saveConfig" class="text-input">
+              <option v-for="f in providerStore.forks" :key="f.id" :value="f.id">{{ f.label }}</option>
+            </select>
+          </div>
+          <div v-if="providerStore.config.stt_provider === 'custom'" class="field">
+            <label>{{ $t("providerPicker.connection") }}</label>
+            <select v-model="providerStore.config.stt_custom_provider_id" @change="providerStore.saveConfig" class="text-input">
+              <option v-for="p in providerStore.customProviders" :key="p.id" :value="p.id">{{ p.label }}</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>{{ $t("settings.voiceModel") }}</label>
+            <input v-model="providerStore.config.stt_model" class="text-input" @change="providerStore.saveConfig" />
+          </div>
+        </template>
+        </AccordionContent>
+      </AccordionPanel>
+      </Accordion>
     </div>
 
     <ModelBrowserDialog
@@ -696,6 +1247,7 @@ async function saveKey() {
       :title="modelBrowser.title"
     />
   </div>
+  </Dialog>
 </template>
 
 <style scoped>
@@ -738,16 +1290,29 @@ h1 {
   margin: 0 0 24px;
 }
 
-h2 {
-  font-size: 14px;
-  font-weight: 700;
-  margin: 0 0 4px;
+/* Cada seção de Configurações (OpenRouter, llama.cpp local, ...) virou um
+   painel de acordeão, todos fechados por padrão — pedido do usuário
+   (2026-08-20): "traz tudo fechado para dar uma organizada nessa design",
+   a tela tinha crescido demais (11 seções sempre abertas, scroll gigante). */
+:deep(.p-accordionpanel) {
+  border-bottom: var(--cerne-border);
 }
 
-section {
-  margin-bottom: 28px;
-  padding-bottom: 24px;
-  border-bottom: var(--cerne-border);
+:deep(.p-accordionpanel:last-child) {
+  border-bottom: none;
+}
+
+:deep(.p-accordionheader) {
+  font-size: 14px;
+  font-weight: 700;
+  padding: 14px 4px;
+  background: transparent;
+  border: none;
+  color: #18181b;
+}
+
+:deep(.p-accordioncontent-content) {
+  padding: 0 4px 24px;
 }
 
 .hint {
@@ -757,46 +1322,11 @@ section {
   margin: 0 0 12px;
 }
 
-.provider-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-}
-
-.provider-card {
-  border: var(--cerne-border);
-  border-radius: 10px;
-  padding: 12px;
-  background: #ffffff;
-  cursor: pointer;
+.subhead {
   font-size: 13px;
   font-weight: 600;
   color: #3f3f46;
-  text-align: left;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.provider-card.active {
-  border-color: #16a34a;
-  background: #f0fdf4;
-  color: #18181b;
-}
-
-.active-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 11px;
-  font-weight: 700;
-  color: #16a34a;
-  white-space: nowrap;
-}
-
-.active-badge .msi {
-  font-size: 15px;
+  margin: 16px 0 8px;
 }
 
 .key-row {
@@ -862,6 +1392,37 @@ section {
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+}
+
+.memory-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  margin-bottom: 8px;
+  font-family: inherit;
+}
+
+.git-backup-block {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: var(--cerne-border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.git-backup-block > button {
+  align-self: flex-start;
+}
+
+.mcp-docs-link {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.mcp-connectors-list {
+  margin-bottom: 12px;
 }
 
 .fork-list {
@@ -934,14 +1495,33 @@ section {
 .mcp-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
 }
 
 .mcp-actions {
   display: flex;
   gap: 6px;
   flex-shrink: 0;
+  margin-left: auto;
+}
+
+.mcp-connector-icon {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mcp-connector-icon svg {
+  width: 20px;
+  height: 20px;
+}
+
+.mcp-connector-icon-material {
+  font-size: 20px;
+  color: #71717a;
 }
 
 .skill-info {
@@ -988,6 +1568,18 @@ section {
   color: #71717a;
 }
 
+.persona-info {
+  min-width: 0;
+}
+
+.persona-content-preview {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  white-space: pre-line;
+}
+
 .skill-new {
   display: flex;
   gap: 8px;
@@ -1010,6 +1602,17 @@ section {
   resize: vertical;
   font-family: ui-monospace, monospace;
   line-height: 1.5;
+}
+
+.mcp-remote-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #3f3f46;
+  white-space: nowrap;
+  cursor: pointer;
 }
 
 .mcp-form-actions {
@@ -1044,21 +1647,4 @@ label {
   color: #52525b;
 }
 
-.about-tools {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.about-tool {
-  font-size: 13px;
-  color: #3f3f46;
-  padding: 8px 12px;
-  border: var(--cerne-border);
-  border-radius: 8px;
-  background: #fafafa;
-}
 </style>

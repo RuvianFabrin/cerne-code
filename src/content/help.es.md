@@ -37,6 +37,27 @@ Cada servidor configurado en Configuración → Servidores MCP se agrega automá
 
 Una skill es un archivo `SKILL.md` con instrucciones que el agente carga bajo demanda vía `load_skill`, en vez de tener que reexplicar el mismo proceso en cada conversación. Al inicio de cada sesión, el agente recibe solo el catálogo (nombre + descripción) de cada skill disponible — el cuerpo completo solo se lee si el agente decide llamar a `load_skill(nombre)`. Crea y edita skills en Configuración → Skills.
 
+## Personas
+
+Una Persona es un "modo" de toda la sesión — diferente de una skill (que el agente carga solo en un
+momento puntual de la conversación), la Persona vale desde el primer mensaje hasta que la cambies o
+la apagues. Regístrala en Configuración → Personas: un nombre, un texto de instrucción (`content`,
+inyectado como parte del system prompt) y, opcionalmente, una lista de herramientas y skills que esa
+persona puede usar (vacío = sin restricción). Actívala desde el selector de persona en el composer.
+
+**Ejemplo — Tutor de Inglés** (cópialo y adáptalo, Cerne no viene con ninguna persona precargada):
+
+> Nombre: `Tutor de Inglés`
+>
+> Contenido: "Eres un tutor de inglés paciente y alentador. Al inicio de la conversación, pregunta el
+> nivel del usuario (A1-A2 básico, B1-B2 intermedio, C1-C2 avanzado) y qué quiere practicar
+> (conversación, gramática, vocabulario laboral, simulación de entrevista) — luego adapta todo a eso.
+> Cuando el usuario se equivoque, corrígelo con amabilidad, explica por qué está mal, y sugiere la
+> forma correcta — nunca señales el error sin explicarlo. Usa `web_search` si necesitas confirmar el
+> uso natural de una expresión en contexto real."
+>
+> Herramientas: solo `web_search` (esta persona no necesita acceso a archivos/comandos).
+
 ## Modo Manual vs Automático
 
 Cada sesión tiene un modo de ejecución, elegido en el selector junto al botón "+" del composer:

@@ -37,6 +37,27 @@ Every server configured in Settings → MCP Servers is automatically added to th
 
 A skill is a `SKILL.md` file with instructions that the agent loads on demand via `load_skill`, instead of needing to re-explain the same process in every conversation. At the start of each session, the agent only receives the catalog (name + description) of each available skill — the full body is only read if the agent decides to call `load_skill(name)`. Create and edit skills in Settings → Skills.
 
+## Personas
+
+A Persona is a whole-session "mode" — different from a skill (which the agent loads by itself at a
+specific moment of the conversation), a Persona applies from the first message until you switch or
+turn it off. Register it in Settings → Personas: a name, an instruction text (`content`, injected as
+part of the system prompt), and optionally an allowlist of tools and skills that persona can use
+(empty = no restriction). Activate it from the persona picker in the composer.
+
+**Example — English Tutor** (copy and adapt it, Cerne doesn't ship with any pre-registered persona):
+
+> Name: `English Tutor`
+>
+> Content: "You are a patient, encouraging English tutor. At the start of the conversation, ask the
+> user's level (A1-A2 beginner, B1-B2 intermediate, C1-C2 advanced) and what they want to practice
+> (conversation, grammar, work vocabulary, interview simulation) — then adapt everything to that.
+> When the user makes a mistake, correct it gently, explain why it's wrong, and suggest the correct
+> form — never just point out the error without explaining. Use `web_search` if you need to confirm
+> how an expression is naturally used in real context."
+>
+> Tools: only `web_search` (this persona doesn't need file/command access).
+
 ## Manual vs Automatic mode
 
 Every session has an execution mode, chosen in the selector next to the "+" button in the composer:

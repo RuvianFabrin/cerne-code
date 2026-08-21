@@ -41,10 +41,10 @@ function folderName(path: string) {
   <button
     class="extra-paths-btn"
     :class="{ active: (sessionStore.currentSession?.extra_read_paths.length ?? 0) > 0 }"
-    v-tooltip.top="$t('extraReadPaths.tooltip')"
     @click="toggle"
   >
     <span class="msi">folder_open</span>
+    <span class="extra-paths-label">{{ $t("extraReadPaths.title") }}</span>
     <span v-if="sessionStore.currentSession?.extra_read_paths.length" class="count-badge">
       {{ sessionStore.currentSession.extra_read_paths.length }}
     </span>
@@ -85,43 +85,55 @@ function folderName(path: string) {
 </template>
 
 <style scoped>
+/* Botão vive dentro do menu "+" do composer (ComposerBar.vue) — pedido do
+   usuário (2026-08-20): "Coloca as 'Pastas extra' no '+'". Estilo próprio
+   (não reaproveita `.plus-menu-item` de ComposerBar.vue — CSS `scoped` não
+   atravessa componentes) espelhando visualmente as outras linhas do menu. */
 .extra-paths-btn {
-  position: relative;
-  border: var(--cerne-border);
-  background: #ffffff;
-  border-radius: 8px;
-  width: 30px;
-  height: 30px;
   display: flex;
   align-items: center;
-  justify-content: center;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  padding: 8px;
   cursor: pointer;
-  color: #52525b;
-  flex-shrink: 0;
+  color: #3f3f46;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  text-align: left;
+  width: 100%;
 }
 
-.extra-paths-btn.active {
-  color: #18181b;
-  border-color: #a1a1aa;
+.extra-paths-btn:hover {
+  background: #f4f4f5;
 }
 
 .extra-paths-btn .msi {
-  font-size: 16px;
+  font-size: 17px;
+  color: #71717a;
+  flex-shrink: 0;
+}
+
+.extra-paths-label {
+  flex: 1;
+  min-width: 0;
 }
 
 .count-badge {
-  position: absolute;
-  top: -4px;
-  right: -4px;
-  background: #18181b;
-  color: #ffffff;
-  font-size: 9px;
+  font-size: 11px;
   font-weight: 700;
-  line-height: 1;
+  color: #71717a;
+  background: #f4f4f5;
   border-radius: 999px;
-  padding: 2px 4px;
-  min-width: 12px;
-  text-align: center;
+  padding: 2px 8px;
+  flex-shrink: 0;
+}
+
+.extra-paths-btn.active .count-badge {
+  color: #6d28d9;
+  background: #ede9fe;
 }
 
 .extra-paths-panel {

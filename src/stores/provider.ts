@@ -28,6 +28,21 @@ function modelsCacheKey(kind: ProviderKind, forkId?: string, customProviderId?: 
   return kind;
 }
 
+// Chave pro tamanho de contexto lembrado por modelo (pedido do usuário,
+// 2026-08-18: "que salve para que independente da API, venha o mesmo
+// contexto cadastrado em outras sessões") — reaproveita a mesma convenção
+// de conexão de `modelsCacheKey` (distingue fork/custom provider, já que o
+// mesmo nome de modelo pode significar coisas diferentes em conexões
+// diferentes), só adicionando o id do modelo em si.
+export function modelContextOverrideKey(
+  kind: ProviderKind,
+  model: string,
+  forkId?: string,
+  customProviderId?: string,
+): string {
+  return `${modelsCacheKey(kind, forkId, customProviderId)}::${model}`;
+}
+
 // Quantos modelos mostrar no dropdown de modelo quando NÃO há favoritos —
 // o OpenRouter tem centenas e renderizar todos no Select pesa; 100 mantém a
 // busca útil sem travar. Com favoritos marcados, o dropdown mostra só eles.
@@ -125,29 +140,24 @@ export const useProviderStore = defineStore("provider", {
       }
       return all.slice(0, MODEL_DROPDOWN_LIMIT);
     },
-    async setActiveProvider(kind: ProviderKind) {
+    // Grava provider+modelo (+ fork/custom provider quando aplicável) numa
+    // única escrita — usado toda vez que o usuário escolhe um modelo em
+    // QUALQUER sessão (não só em Configurações), pra "último modelo
+    // escolhido" virar o default de sessão nova de verdade (pedido do
+    // usuário: "quando eu escolher um modelo LLM, salvar global"). Substitui
+    // os setters antigos por provider/modelo/fork/custom provider
+    // separados (setActiveProvider/setActiveModel/setActiveLlamaFork/
+    // setActiveCustomProvider) — quase nenhum deles era chamado de verdade
+    // fora da seção "Provider ativo" de Configurações, removida junto (o
+    // usuário achou esse default sem sentido: o modelo escolhido é que
+    // deveria mandar, não uma marcação manual separada).
+    async setActiveSelection(kind: ProviderKind, modelId: string, forkId?: string, customProviderId?: string) {
       if (!this.config) return;
       this.config.active_provider = kind;
-      this.config.active_model = null;
+      this.config.active_model = modelId;
+      if (kind === "llama_cpp" && forkId) this.config.active_llama_fork = forkId;
+      if (kind === "custom" && customProviderId) this.config.active_custom_provider_id = customProviderId;
       await api.setConfig(this.config);
-      await this.refreshModels(kind, undefined, this.config.active_custom_provider_id ?? undefined);
-    },
-    async setActiveModel(id: string) {
-      if (!this.config) return;
-      this.config.active_model = id;
-      await api.setConfig(this.config);
-    },
-    async setActiveLlamaFork(forkId: string) {
-      if (!this.config) return;
-      this.config.active_llama_fork = forkId;
-      await api.setConfig(this.config);
-      await this.refreshModels("llama_cpp", forkId);
-    },
-    async setActiveCustomProvider(id: string) {
-      if (!this.config) return;
-      this.config.active_custom_provider_id = id;
-      await api.setConfig(this.config);
-      await this.refreshModels("custom", undefined, id);
     },
     async saveOpenrouterKey(key: string) {
       await api.setOpenrouterKey(key);

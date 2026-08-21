@@ -90,14 +90,13 @@ function cancel() {
       v-if="!editing"
       class="context-gauge"
       :class="level"
+      :aria-label="label"
       v-tooltip.top="tooltip"
       @click="startEdit"
     >
-      <span class="msi">data_usage</span>
       <span class="gauge-track">
         <span class="gauge-fill" :style="{ width: percent + '%' }" />
       </span>
-      <span class="gauge-label">{{ label }}</span>
     </button>
     <div v-else class="context-edit">
       <input
@@ -140,11 +139,7 @@ function cancel() {
 .context-gauge {
   display: flex;
   align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  font-weight: 600;
-  color: #71717a;
-  padding: 4px 8px;
+  padding: 4px;
   border: var(--cerne-border);
   border-radius: 999px;
   background: #fafafa;
@@ -157,12 +152,8 @@ function cancel() {
   border-color: #a1a1aa;
 }
 
-.context-gauge .msi {
-  font-size: 14px;
-}
-
 .gauge-track {
-  width: 44px;
+  width: 64px;
   height: 4px;
   border-radius: 999px;
   background: #e4e4e7;
@@ -187,11 +178,6 @@ function cancel() {
 
 .context-gauge.high {
   color: #dc2626;
-}
-
-.gauge-label {
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
 }
 
 .context-edit {

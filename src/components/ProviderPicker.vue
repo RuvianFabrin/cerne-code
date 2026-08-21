@@ -14,12 +14,14 @@ const props = defineProps<{
   fork: string;
   customProviderId: string;
   model: string | null;
-  /** Quando true, mostra só um resumo (provider + modelo) depois de
-   * escolhido, com um botão pra expandir de volta e reselecionar — usado no
-   * composer de uma sessão já criada, pra não ocupar espaço com um seletor
-   * que raramente muda turno a turno. A tela de nova sessão passa `false`
-   * (padrão), onde a escolha é o próprio propósito da tela. */
-  collapsible?: boolean;
+  /** Só true quando usado no topbar do chat (`ComposerBar.vue`) — esse
+   * contexto já tem seu PRÓPRIO ícone de visão (`vision-icon-btn`, Fase E4,
+   * com cache em localStorage) que chama o mesmo `api.testVision` por
+   * baixo; sem essa flag os dois apareciam lado a lado duplicados (achado
+   * testando ao vivo, 2026-08-17). Não tem mais nada a ver com "colapsar" —
+   * o modo resumido/recolhido foi removido a pedido do usuário
+   * (2026-08-20), o seletor agora fica sempre expandido. */
+  hideVisionTest?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -30,9 +32,6 @@ const emit = defineEmits<{
 }>();
 
 const providerStore = useProviderStore();
-// Só começa colapsado se já tem um modelo escolhido — numa sessão nova ainda
-// sem modelo, faz sentido já abrir expandido pra escolher.
-const expanded = ref(!props.collapsible || !props.model);
 
 const providerOptions = computed(() => PROVIDER_KINDS.map((kind) => ({
   kind,
@@ -56,15 +55,7 @@ const modelOptions = computed(() => {
 });
 const modelsLoading = computed(() => providerStore.modelsLoadingFor(props.provider, props.fork, props.customProviderId));
 
-const modelLabel = computed(() => modelOptions.value.find((m) => m.id === props.model)?.label ?? props.model);
-
-// No resumo colapsado, um provider customizado mostra o rótulo da conexão
-// escolhida (ex: "Claude") em vez do genérico "Customizado" — mesma clareza
-// de "fornecedor + modelo" que os providers embutidos já têm.
-const providerSummaryLabel = computed(() => {
-  if (props.provider !== "custom") return providerLabel(props.provider);
-  return customProviderOptions.value.find((p) => p.id === props.customProviderId)?.label ?? providerLabel("custom");
-});
+const currentModelInfo = computed(() => modelOptions.value.find((m) => m.id === props.model));
 
 function setProvider(kind: ProviderKind) {
   emit("update:provider", kind);
@@ -83,21 +74,11 @@ function setCustomProviderId(id: string) {
 
 function setModel(id: string) {
   emit("update:model", id);
-  if (props.collapsible) expanded.value = false;
 }
 
 function refresh(kind: ProviderKind, forkId: string, customProviderId: string) {
   providerStore.refreshModels(kind, forkId, customProviderId);
   providerStore.loadFavorites(kind, forkId, customProviderId);
-}
-
-function isFavorite(id: string): boolean {
-  return providerStore.isFavorite(props.provider, id, props.fork, props.customProviderId);
-}
-
-function toggleCurrentFavorite() {
-  if (!props.model) return;
-  providerStore.toggleFavorite(props.provider, props.model, props.fork, props.customProviderId);
 }
 
 watch(
@@ -107,6 +88,12 @@ watch(
 
 onMounted(() => refresh(props.provider, props.fork, props.customProviderId));
 
+// Só existe pra tela de Nova Sessão (`hideVisionTest` falso/ausente) — o
+// topbar do chat já criado (`hideVisionTest=true`, `ComposerBar.vue`) tem
+// seu PRÓPRIO ícone de visão (`vision-icon-btn`, Fase E4, com cache em
+// localStorage) que chama o mesmo `api.testVision` por baixo. Os dois
+// ficavam lado a lado duplicados antes disso — achado testando ao vivo,
+// 2026-08-17 (usuário viu "2 ícones de visão" e estranhou, com razão).
 const visionStatus = ref<"idle" | "checking" | "yes" | "no" | "error">("idle");
 const visionError = ref("");
 
@@ -131,13 +118,7 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
 </script>
 
 <template>
-  <button v-if="collapsible && !expanded" class="picker-summary" @click="expanded = true">
-    <span class="summary-provider">{{ providerSummaryLabel }}</span>
-    <span class="summary-sep">·</span>
-    <span class="summary-model">{{ modelLabel ?? $t("providerPicker.pickModel") }}</span>
-    <span class="msi">expand_more</span>
-  </button>
-  <div v-else class="picker-row">
+  <div class="picker-row">
     <Select
       :modelValue="provider"
       @update:modelValue="setProvider"
@@ -182,22 +163,34 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
     >
       <template #option="{ option }">
         <div class="model-option">
-          <span class="msi model-option-star" :class="{ on: isFavorite(option.id) }">star</span>
           <span class="model-option-label">{{ option.label }}</span>
+          <span v-if="option.supports_vision" class="cap-badge vision" v-tooltip.top="$t('modelBrowser.acceptsImage')">
+            <span class="msi">image</span>
+          </span>
+          <span v-if="option.supports_tools" class="cap-badge tools" v-tooltip.top="$t('modelBrowser.supportsTools')">
+            <span class="msi">build</span>
+          </span>
+          <span v-if="option.supports_audio" class="cap-badge audio" v-tooltip.top="$t('modelBrowser.acceptsAudio')">
+            <span class="msi">mic</span>
+          </span>
         </div>
       </template>
     </Select>
+    <span v-if="currentModelInfo?.supports_vision" class="cap-badge vision" v-tooltip.top="$t('modelBrowser.acceptsImage')">
+      <span class="msi">image</span>
+    </span>
+    <span v-if="currentModelInfo?.supports_tools" class="cap-badge tools" v-tooltip.top="$t('modelBrowser.supportsTools')">
+      <span class="msi">build</span>
+    </span>
+    <span v-if="currentModelInfo?.supports_audio" class="cap-badge audio" v-tooltip.top="$t('modelBrowser.acceptsAudio')">
+      <span class="msi">mic</span>
+    </span>
+    <!-- Some quando `hideVisionTest` — o composer já tem seu próprio ícone
+         de visão (ComposerBar.vue::vision-icon-btn, Fase E4); mostrar os
+         dois juntos duplicava a mesma checagem lado a lado (achado testando
+         ao vivo, 2026-08-17). -->
     <button
-      v-if="model"
-      class="fav-btn"
-      :class="{ active: isFavorite(model) }"
-      v-tooltip.top="isFavorite(model) ? $t('providerPicker.removeFavorite') : $t('providerPicker.markFavorite')"
-      @click="toggleCurrentFavorite"
-    >
-      <span class="msi">{{ isFavorite(model) ? "star" : "star_border" }}</span>
-    </button>
-    <button
-      v-if="model && provider !== 'llama_cpp'"
+      v-if="model && provider !== 'llama_cpp' && !hideVisionTest"
       class="vision-btn"
       :class="visionStatus"
       :disabled="visionStatus === 'checking'"
@@ -209,9 +202,6 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
       <span v-else-if="visionStatus === 'no'">🚫</span>
       <span v-else-if="visionStatus === 'error'">⚠️</span>
       <span v-else class="msi">visibility</span>
-    </button>
-    <button v-if="collapsible && model" class="collapse-btn" v-tooltip.top="$t('sidebar.collapse')" @click="expanded = false">
-      <span class="msi">expand_less</span>
     </button>
   </div>
 </template>
@@ -242,7 +232,7 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
 }
 
 .model-select {
-  width: 220px;
+  width: 340px;
   flex-shrink: 2;
 }
 
@@ -258,62 +248,6 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.picker-summary {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  border: var(--cerne-border);
-  background: #ffffff;
-  border-radius: 8px;
-  padding: 5px 8px;
-  font-size: 12px;
-  font-weight: 500;
-  color: #3f3f46;
-  cursor: pointer;
-  max-width: 260px;
-}
-
-.picker-summary .msi {
-  font-size: 15px;
-  color: #a1a1aa;
-  flex-shrink: 0;
-}
-
-.summary-provider {
-  color: #71717a;
-  flex-shrink: 0;
-}
-
-.summary-sep {
-  color: #d4d4d8;
-  flex-shrink: 0;
-}
-
-.summary-model {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  min-width: 0;
-}
-
-.collapse-btn {
-  border: var(--cerne-border);
-  background: #ffffff;
-  border-radius: 8px;
-  width: 26px;
-  height: 26px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  color: #71717a;
-  flex-shrink: 0;
-}
-
-.collapse-btn .msi {
-  font-size: 16px;
 }
 
 .vision-btn {
@@ -358,36 +292,6 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
   font-size: 16px;
 }
 
-.fav-btn {
-  border: var(--cerne-border);
-  background: #ffffff;
-  border-radius: 8px;
-  width: 26px;
-  height: 26px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  color: #a1a1aa;
-  flex-shrink: 0;
-  transition: all 0.15s ease;
-}
-
-.fav-btn:hover {
-  color: #f59e0b;
-  background: #fffbeb;
-}
-
-.fav-btn.active {
-  color: #f59e0b;
-  border-color: #fcd34d;
-  background: #fffbeb;
-}
-
-.fav-btn .msi {
-  font-size: 17px;
-}
-
 .model-option {
   display: flex;
   align-items: center;
@@ -395,20 +299,29 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
   min-width: 0;
 }
 
-.model-option-star {
-  font-size: 15px;
-  color: #e4e4e7;
-  flex-shrink: 0;
-}
-
-.model-option-star.on {
-  color: #f59e0b;
-}
-
 .model-option-label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+}
+
+.cap-badge {
+  display: inline-flex;
+  align-items: center;
+  color: #2563eb;
+  flex-shrink: 0;
+}
+
+.cap-badge.tools {
+  color: #16a34a;
+}
+
+.cap-badge.audio {
+  color: #9333ea;
+}
+
+.cap-badge .msi {
+  font-size: 14px;
 }
 </style>

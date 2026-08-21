@@ -8,6 +8,7 @@ const TOOL_NAMES = [
   "web_search",
   "web_fetch",
   "load_skill",
+  "read_skill_details",
   "ask",
   "read_file",
   "list_dir",
@@ -35,6 +36,12 @@ const TOOL_NAMES = [
   "computer_use_get_window_state",
   "computer_use_click_element",
   "create_excel",
+  "create_word",
+  "create_pdf",
+  "create_pptx",
+  "create_python_tool",
+  "update_python_tool",
+  "run_pipeline",
 ] as const;
 
 export function toolNameFromLabel(rawLabel: string): string {

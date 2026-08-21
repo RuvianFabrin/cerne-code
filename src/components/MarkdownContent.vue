@@ -1,11 +1,35 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
 import { renderMarkdown } from "../markdown";
 import { api } from "../api";
 
 const props = defineProps<{ content: string; dark?: boolean }>();
 
-const html = computed(() => renderMarkdown(props.content));
+// Durante streaming, chat:token chega token a token (as vezes dezenas de
+// vezes por segundo com modelos locais rapidos) e cada delta reatribuia
+// `content`, disparando markdown-it + highlight.js + DOMPurify inteiros de
+// novo sobre o texto acumulado — trabalho sincrono na thread principal que
+// cresce com o tamanho da mensagem e travava a UI (cliques/scroll sem
+// resposta) em respostas longas. Aqui o conteudo exibido so e atualizado no
+// máximo uma vez por frame (rAF), pegando sempre o valor mais recente.
+const displayContent = ref(props.content);
+let rafId: number | null = null;
+watch(
+  () => props.content,
+  () => {
+    if (rafId !== null) return;
+    rafId = requestAnimationFrame(() => {
+      displayContent.value = props.content;
+      rafId = null;
+    });
+  },
+  { immediate: true },
+);
+onBeforeUnmount(() => {
+  if (rafId !== null) cancelAnimationFrame(rafId);
+});
+
+const html = computed(() => renderMarkdown(displayContent.value));
 const bodyRef = ref<HTMLElement | null>(null);
 
 // Links de resposta em markdown vao pro navegador padrao do SO em vez de

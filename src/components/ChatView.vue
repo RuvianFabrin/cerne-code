@@ -8,6 +8,9 @@ import ComposerBar from "./ComposerBar.vue";
 import DiffReview from "./DiffReview.vue";
 import AskCard from "./AskCard.vue";
 import PermissionCard from "./PermissionCard.vue";
+import AgentsSkillsPlanCard from "./AgentsSkillsPlanCard.vue";
+import BackgroundJobsPanel from "./BackgroundJobsPanel.vue";
+import AgentExecutionsPanel from "./AgentExecutionsPanel.vue";
 import TaskStepGroup from "./TaskStepGroup.vue";
 import TodoCard from "./TodoCard.vue";
 import { formatElapsed, formatTokens } from "../taskLabels";
@@ -62,7 +65,8 @@ type TimelineItem =
   | { kind: "message"; key: string; message: ChatMessage }
   | { kind: "steps"; key: string; tasks: TaskItem[] }
   | { kind: "todo"; key: string; todos: import("../api").TodoItem[] }
-  | { kind: "stats"; key: string; stats: TurnStats };
+  | { kind: "stats"; key: string; stats: TurnStats }
+  | { kind: "background-note"; key: string; message: ChatMessage };
 
 const timeline = computed<TimelineItem[]>(() => {
   const items: TimelineItem[] = [];
@@ -98,6 +102,14 @@ const timeline = computed<TimelineItem[]>(() => {
       if (hasText) {
         items.push({ kind: "message", key: `m-${i}`, message: m });
       }
+    } else if (m.role === "system" && m.name === "background_job_done") {
+      // T14: nota de conclusão de job em segundo plano — role "system" pra
+      // não entrar na conversa como se o usuário/agente tivesse "dito"
+      // aquilo, mas com um marcador (`name`) pra diferenciar do system
+      // prompt real (que também é role "system", mas nunca deveria
+      // aparecer aqui — só essa mensagem específica é intencionalmente
+      // visível).
+      items.push({ kind: "background-note", key: `bn-${i}`, message: m });
     }
   });
   if (userTurn > 0 && stats[userTurn]) {
@@ -106,8 +118,52 @@ const timeline = computed<TimelineItem[]>(() => {
   return items;
 });
 
+// Marcador por mensagem do usuário na lateral do chat — pedido do usuário
+// (2026-08-20, viu algo parecido na própria interface do Claude Code e
+// perguntou se dava pra fazer aqui também). Uma tracinho por mensagem SUA
+// (não do assistente), distribuídos uniformemente numa faixa fina fixada
+// na borda esquerda; clicar rola até aquela mensagem. `messageEls` guarda
+// o elemento DOM raiz de cada `MessageBubble` (via template ref funcional —
+// `.$el` funciona mesmo sem `defineExpose`, é propriedade nativa do Vue,
+// não um binding exposto pelo componente) indexado pela `key` do item na
+// timeline, pra não precisar de outro array/estado duplicado.
+const userMessageMarkers = computed(() =>
+  timeline.value.filter((item): item is Extract<TimelineItem, { kind: "message" }> => item.kind === "message" && item.message.role === "user"),
+);
+const messageEls = new Map<string, HTMLElement>();
+function registerMessageEl(key: string, el: unknown) {
+  if (!el) {
+    messageEls.delete(key);
+    return;
+  }
+  const domEl = (el as { $el?: HTMLElement }).$el ?? (el as HTMLElement);
+  if (domEl instanceof HTMLElement) messageEls.set(key, domEl);
+}
+function scrollToMessage(key: string) {
+  messageEls.get(key)?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+// 2026-08-17, pedido do usuário: avisar quando `git` não está instalado
+// nesta máquina, já que o visualizador de diff de repositório (T42) depende
+// dele — só mostra quando de fato importa (sessão tem pasta de projeto),
+// não em toda sessão de chat puro.
+const showGitWarning = computed(
+  () =>
+    sessionStore.gitAvailable === false &&
+    !!sessionStore.currentSession?.project_root &&
+    !sessionStore.gitWarningDismissed,
+);
+
 const statusLabel = computed(() => {
+  // Fase 3: enquanto um pipeline Dev→QA→Analista está rodando, a etapa/round
+  // atual é mais informativa que "pensando"/"rodando ferramenta" genérico —
+  // tem prioridade sobre o resto enquanto `pipelineStatus` estiver setado.
+  if (sessionStore.pipelineStatus) {
+    const p = sessionStore.pipelineStatus;
+    return t(`chat.pipelineStep.${p.step}`, { round: p.round, maxRounds: p.max_rounds });
+  }
   if (sessionStore.status === "starting_server") return t("chat.startingServer");
+  if (sessionStore.status === "compacting") return t("chat.compactingContext");
   if (sessionStore.status === "thinking") {
     // Nem todo provider/modelo transmite tokens de raciocínio visíveis
     // (thinkingText) — sem isso, "Pensando..." parado por minutos parece
@@ -178,10 +234,39 @@ watch(
   <template v-else>
     <div class="chat-layout">
       <div class="chat-column">
-        <div class="chat-scroll" ref="scrollRef" @scroll="onChatScroll">
-          <div class="chat-inner">
+        <!-- Alvos de Teleport pro toolbar que hoje mora em ComposerBar.vue
+             (seletor de modelo/visão à esquerda; navegar arquivos/diff à
+             direita) — pedido do usuário (2026-08-20): tirar esses controles
+             de dentro da caixa do composer e subir pro topo da área de chat.
+             A lógica/estado continuam 100% em ComposerBar.vue, só a posição
+             visual muda (CSS scoped viaja junto com o Teleport). -->
+        <div class="chat-topbar">
+          <div id="chat-topbar-left" class="topbar-left"></div>
+          <div id="chat-topbar-right" class="topbar-right"></div>
+        </div>
+        <div class="chat-scroll-wrap">
+          <!-- Marcador por mensagem sua, na borda esquerda — clique rola até
+               a mensagem (pedido do usuário, 2026-08-20). Pilha compacta
+               (gap fixo, um logo abaixo do outro), não espalhada
+               proporcionalmente pela altura toda — achado testando ao vivo:
+               espalhado deixava as marcações longe umas das outras sem
+               motivo, com poucas mensagens quase saindo da tela. Só aparece
+               com 2+ mensagens (com 1 só não tem o que navegar). -->
+          <div v-if="userMessageMarkers.length > 1" class="message-markers">
+            <button
+              v-for="item in userMessageMarkers"
+              :key="item.key"
+              class="message-marker"
+              v-tooltip.right="(item.message.display_content ?? item.message.content).slice(0, 80)"
+              @click="scrollToMessage(item.key)"
+            />
+          </div>
+          <div class="chat-scroll" ref="scrollRef" @scroll="onChatScroll">
+            <div class="chat-inner">
             <template v-for="item in timeline" :key="item.key">
-              <MessageBubble v-if="item.kind === 'message'" :message="item.message" />
+              <div v-if="item.kind === 'message'" :ref="item.message.role === 'user' ? (el) => registerMessageEl(item.key, el) : undefined">
+                <MessageBubble :message="item.message" />
+              </div>
               <TaskStepGroup v-else-if="item.kind === 'steps'" :tasks="item.tasks" />
               <TodoCard v-else-if="item.kind === 'todo'" :todos="item.todos" />
               <div v-else-if="item.kind === 'stats'" class="turn-stats">
@@ -189,6 +274,9 @@ watch(
                 {{ formatElapsed(item.stats.elapsed_ms) }}
                 <span class="stats-sep">·</span>
                 {{ $t("chat.tokens", { count: formatTokens(item.stats.prompt_tokens + item.stats.completion_tokens) }) }}
+              </div>
+              <div v-else-if="item.kind === 'background-note'" class="background-note">
+                <MarkdownContent :content="item.message.display_content ?? item.message.content" />
               </div>
             </template>
             <!-- Blocos do turno em andamento, na ordem real em que texto e
@@ -212,6 +300,14 @@ watch(
               </div>
               <button class="warning-dismiss" @click="sessionStore.showComputerUseWarning = false">{{ $t("chat.gotIt") }}</button>
             </div>
+            <div v-if="showGitWarning" class="computer-use-warning">
+              <span class="msi">warning</span>
+              <div class="warning-text">
+                <strong>{{ $t("chat.gitMissingWarningTitle") }}</strong>
+                <p>{{ $t("chat.gitMissingWarningBody") }}</p>
+              </div>
+              <button class="warning-dismiss" @click="sessionStore.gitWarningDismissed = true">{{ $t("chat.gotIt") }}</button>
+            </div>
             <div v-if="statusLabel" class="status-line">
               <span class="msi spin">progress_activity</span>
               {{ statusLabel }}
@@ -226,6 +322,7 @@ watch(
             </div>
             <p v-if="sessionStore.error" class="error-line">{{ sessionStore.error }}</p>
           </div>
+          </div>
         </div>
         <div class="composer-wrap">
           <button v-if="showJumpToBottom" class="jump-to-bottom" @click="jumpToBottom" :title="$t('chat.jumpToBottom')">
@@ -238,9 +335,18 @@ watch(
           <div v-if="sessionStore.pendingEdits.length > 0" class="pending-edits-anchor">
             <DiffReview v-for="edit in sessionStore.pendingEdits" :key="edit.id" :edit="edit" />
           </div>
+          <AgentsSkillsPlanCard />
           <PermissionCard />
           <AskCard />
           <ComposerBar />
+        </div>
+        <!-- T40: painéis de status (jobs em segundo plano, execuções de
+             agente/skill) ficam FORA do fluxo do composer, numa área
+             flutuante — dentro do composer-wrap eles empilhavam e cobriam
+             o chat quando havia vários de uma vez. -->
+        <div class="floating-status">
+          <BackgroundJobsPanel />
+          <AgentExecutionsPanel />
         </div>
       </div>
     </div>
@@ -266,6 +372,49 @@ watch(
   flex: 1;
   display: flex;
   min-height: 0;
+  position: relative;
+}
+
+.message-markers {
+  position: absolute;
+  left: 4px;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  z-index: 15;
+}
+
+.message-marker {
+  width: 10px;
+  height: 3px;
+  border: none;
+  border-radius: 999px;
+  background: #d4d4d8;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.message-marker:hover {
+  background: #6366f1;
+  width: 16px;
+}
+
+/* T40: painéis de status flutuantes (background jobs, execuções de
+   agente/skill) — canto superior direito, fora do fluxo do composer. */
+.floating-status {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: min(320px, calc(100vw - 32px));
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+  align-items: flex-end;
 }
 
 .chat-column {
@@ -275,24 +424,53 @@ watch(
   flex-direction: column;
 }
 
+.chat-scroll-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .chat-scroll {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   scroll-padding-bottom: 24px;
 }
 
 .chat-inner {
-  max-width: 820px;
+  max-width: 960px;
   margin: 0 auto;
   padding: 24px 24px 24px;
 }
 
 .composer-wrap {
   position: relative;
-  max-width: 820px;
+  max-width: 960px;
   width: 100%;
   margin: 0 auto;
   padding: 0 24px 20px;
+}
+
+.chat-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  max-width: 960px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 12px 24px;
+  border-bottom: var(--cerne-border);
+}
+
+.topbar-left,
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
 .jump-to-bottom {
@@ -382,6 +560,21 @@ watch(
   font-weight: 400;
   color: #dc2626;
   padding: 6px 2px;
+}
+
+/* T14: nota de conclusão de job em segundo plano, injetada sozinha no
+   histórico — precisa ser claramente diferente de uma bolha de chat normal
+   (não foi "dito" por ninguém), então vira um card discreto em vez de um
+   balão de mensagem. */
+.background-note {
+  max-width: 72ch;
+  border: 1px dashed #d4d4d8;
+  border-radius: 10px;
+  padding: 8px 12px;
+  margin: 6px 0;
+  font-size: 13px;
+  color: #3f3f46;
+  background: #fafafa;
 }
 
 .compaction-note {

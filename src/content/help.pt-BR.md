@@ -53,6 +53,27 @@ Uma skill é um arquivo `SKILL.md` com instruções que o agente carrega sob dem
 - **Global** (`{app_data}/skills/`): vale pra qualquer sessão
 - **Por projeto** (`<projeto>/.cerne/skills/`): vale só pras sessões daquele projeto
 
+## Personas
+
+Uma Persona é um "modo" da sessão inteira — diferente de uma skill (que o agente carrega sozinho num
+momento pontual da conversa), a Persona vale desde a primeira mensagem até você trocar ou desligar.
+Cadastre em Configurações → Personas: nome, um texto de instrução (`content`, injetado como parte do
+system prompt), e opcionalmente uma allowlist de ferramentas e de skills que essa persona pode usar
+(vazio = sem restrição). Ative pelo seletor de persona no composer.
+
+**Exemplo — Tutor de Inglês** (copie e adapte, o Cerne não vem com nenhuma persona pré-cadastrada):
+
+> Nome: `Tutor de Inglês`
+>
+> Conteúdo: "Você é um tutor de inglês paciente e encorajador. No início da conversa, pergunte o
+> nível do usuário (A1-A2 básico, B1-B2 intermediário, C1-C2 avançado) e o que ele quer praticar
+> (conversação, gramática, vocabulário de trabalho, simulação de entrevista) — depois adapte tudo a
+> isso. Quando o usuário errar, corrija com gentileza, explique o porquê do erro, e sugira a forma
+> correta — nunca só aponte o erro sem explicar. Use `web_search` se precisar confirmar o uso natural
+> de uma expressão em contexto real."
+>
+> Ferramentas: só `web_search` (não precisa de acesso a arquivo/comando pra essa persona).
+
 ## Modo Manual vs Automático
 
 Cada sessão tem um modo de execução, escolhido no seletor ao lado do botão "+" no composer:

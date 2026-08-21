@@ -4,6 +4,10 @@ import {
   onAgentDone,
   onAgentError,
   onAgentStatus,
+  onPipelineStatus,
+  onBackgroundDone,
+  onSessionCreated,
+  onAgentsSkillsPlan,
   onAskQuestion,
   onChatToken,
   onThinkingToken,
@@ -13,24 +17,56 @@ import {
   onPendingEdit,
   onPermissionRequest,
   onToolCall,
+  onToolResult,
   onTurnStats,
   onSessionRenamed,
+  type AgentsSkillsPlan,
   type AskQuestion,
   type ChatMessage,
   type ContextUsage,
   type ExecutionMode,
+  type Folder,
   type PendingEdit,
   type PermissionRequest,
+  type Persona,
+  type PipelineStatus,
   type ProviderKind,
   type Session,
+  type SkillMeta,
   type TaskItem,
   type TodoItem,
   type TurnStats,
 } from "../api";
+import { modelContextOverrideKey } from "./provider";
+
+interface ReloadData {
+  session: Session;
+  messages: ChatMessage[];
+  tasks: TaskItem[];
+  pendingEdits: PendingEdit[];
+  contextUsage: ContextUsage | null;
+}
 
 export const useSessionStore = defineStore("session", {
   state: () => ({
     sessions: [] as Session[],
+    folders: [] as Folder[],
+    // Ids de sessão com turno rodando AGORA, mesmo em background (não só a
+    // sessão aberta) — pedido do usuário (2026-08-18): bolinha piscando na
+    // sidebar indicando processamento enquanto o LLM não termina, útil já
+    // que dá pra ter várias sessões rodando ao mesmo tempo (API roda em
+    // paralelo de verdade; local serializa, mas ainda mostra "processando"
+    // até a fila resolver). Atualizado pelos listeners globais (registrados
+    // uma vez em initListeners, recebem evento de QUALQUER sessão) — nunca
+    // filtrado por currentId, ao contrário da maioria dos outros handlers.
+    processingSessionIds: new Set<string>() as Set<string>,
+    // Compartilhados entre ComposerBar.vue (menu `/`, seletor de persona) e
+    // AgentsSkillsPanel.vue (aba de gerenciamento) — cada um tinha sua
+    // PRÓPRIA cópia local antes, carregada só uma vez ao montar, então uma
+    // persona/skill criada num painel nunca aparecia no outro sem recarregar
+    // a sessão inteira (bug real encontrado testando ao vivo, 2026-08-16).
+    personas: [] as Persona[],
+    skills: [] as SkillMeta[],
     currentId: null as string | null,
     currentSession: null as Session | null,
     currentFork: "turboquant",
@@ -38,9 +74,22 @@ export const useSessionStore = defineStore("session", {
     messages: [] as ChatMessage[],
     tasks: [] as TaskItem[],
     pendingEdits: [] as PendingEdit[],
-    pendingQuestion: null as AskQuestion | null,
-    pendingPermission: null as PermissionRequest | null,
-    status: "idle" as "idle" | "thinking" | "running_tool" | "starting_server",
+    // Por SESSÃO (não um valor único) — bug real encontrado testando ao
+    // vivo, 2026-08-20: o usuário tinha uma sessão em modo Manual esperando
+    // aprovação de uma tool call, trocou pra outra sessão, e a pergunta
+    // ficou PERDIDA pra sempre (o handler antigo só guardava o pedido se
+    // fosse da sessão atualmente aberta — `if (x.session_id !== currentId)
+    // return`, descartando o resto). A sessão em background ficava travada
+    // esperando uma resposta que nunca chegaria (o canal oneshot no backend
+    // não tem timeout), com a bolinha de "processando" piscando pra sempre
+    // porque o turno de fato nunca termina. Agora todo pedido é guardado
+    // por `session_id`; os getters abaixo (`pendingQuestion` etc.) só
+    // projetam o da sessão atual — voltar pra sessão A mostra o pedido dela
+    // certinho, em vez de ele ter sumido.
+    pendingQuestionBySession: {} as Record<string, AskQuestion>,
+    pendingPermissionBySession: {} as Record<string, PermissionRequest>,
+    pendingAgentsSkillsPlanBySession: {} as Record<string, AgentsSkillsPlan>,
+    status: "idle" as "idle" | "thinking" | "running_tool" | "starting_server" | "compacting",
     streamingText: "",
     // Espelha texto e chamadas de ferramenta do turno em andamento na ORDEM
     // real em que aconteceram (texto, ferramenta, texto, ferramenta...) —
@@ -54,6 +103,9 @@ export const useSessionStore = defineStore("session", {
     thinkingText: "",
     todoSnapshots: [] as { turn: number; todos: TodoItem[] }[],
     activeToolLabel: "",
+    // Fase 3: progresso do pipeline determinístico Dev→QA→Analista, quando
+    // `run_pipeline` está rodando nesta sessão — null fora de um pipeline.
+    pipelineStatus: null as PipelineStatus | null,
     listenersReady: false,
     error: "",
     contextUsage: null as ContextUsage | null,
@@ -61,11 +113,32 @@ export const useSessionStore = defineStore("session", {
     draftText: "",
     computerUseWarned: false,
     showComputerUseWarning: false,
+    // Checado uma vez no início do app (2026-08-17, pedido do usuário) —
+    // `null` = ainda não checou. Aviso mostrado (ChatView.vue) só quando a
+    // sessão atual tem `project_root` e `git` não foi encontrado, já que é
+    // aí que o visualizador de diff de repositório (T42) depende dele.
+    gitAvailable: null as boolean | null,
+    gitWarningDismissed: false,
     screenshotCount: 0,
     thinkingStartedAt: null as number | null,
     turnStartedAt: null as number | null,
     turnStats: {} as Record<number, TurnStats>,
   }),
+  getters: {
+    // Projeção da sessão ATUAL sobre os mapas por-sessão acima — mantém a
+    // mesma API (`sessionStore.pendingQuestion` etc.) que `AskCard.vue`/
+    // `PermissionCard.vue`/`AgentsSkillsPlanCard.vue`/`ChatView.vue` já
+    // usavam, sem precisar mexer neles.
+    pendingQuestion(state): AskQuestion | null {
+      return (state.currentId && state.pendingQuestionBySession[state.currentId]) || null;
+    },
+    pendingPermission(state): PermissionRequest | null {
+      return (state.currentId && state.pendingPermissionBySession[state.currentId]) || null;
+    },
+    pendingAgentsSkillsPlan(state): AgentsSkillsPlan | null {
+      return (state.currentId && state.pendingAgentsSkillsPlanBySession[state.currentId]) || null;
+    },
+  },
   actions: {
     async initListeners() {
       if (this.listenersReady) return;
@@ -95,34 +168,65 @@ export const useSessionStore = defineStore("session", {
       });
 
       await onAgentStatus((sessionId, status) => {
+        if (status === "thinking" || status === "starting_server" || status === "compacting") {
+          this.processingSessionIds.add(sessionId);
+        } else {
+          this.processingSessionIds.delete(sessionId);
+        }
         if (sessionId !== this.currentId) return;
-        if (status === "thinking" || status === "starting_server") {
+        if (status === "thinking" || status === "starting_server" || status === "compacting") {
           this.status = status;
           if (status === "thinking" && !this.thinkingStartedAt) {
             this.thinkingStartedAt = Date.now();
           }
-          const lastRunning = [...this.tasks].reverse().find((t: TaskItem) => t.status === "running");
-          if (lastRunning) lastRunning.status = "done";
         } else {
           this.status = "idle";
           this.thinkingStartedAt = null;
         }
       });
 
-      await onToolCall((sessionId, tool, args) => {
+      await onPipelineStatus((status) => {
+        if (status.session_id !== this.currentId) return;
+        this.pipelineStatus = status;
+      });
+
+      // T14: quando um job em segundo plano termina, o backend já injeta a
+      // nota no historico salvo em disco sozinho — só falta recarregar as
+      // mensagens da sessão aberta pra ela aparecer sem precisar trocar de
+      // sessão e voltar (bug encontrado testando ao vivo, 2026-08-16).
+      await onBackgroundDone((e) => {
+        if (e.session_id !== this.currentId) return;
+        this.reloadCurrent();
+      });
+
+      // Fase G: sessão orquestrada criada pelo backend (fora do fluxo normal
+      // de criação) — só insere na lista local em vez de recarregar tudo via
+      // `loadSessions()`, mais barato e não perde a posição de scroll/estado
+      // da sidebar.
+      await onSessionCreated((session) => {
+        if (!this.sessions.some((s) => s.id === session.id)) {
+          this.sessions = [session, ...this.sessions];
+        }
+      });
+
+      await onToolCall((payload) => {
+        const { session_id: sessionId, id, tool, args, command, file_path } = payload;
+        this.processingSessionIds.add(sessionId);
         if (sessionId !== this.currentId) return;
         this.status = "running_tool";
         this.thinkingStartedAt = null;
         this.activeToolLabel = `${tool}(${args.slice(0, 60)})`;
         const userTurns = this.messages.filter((m) => m.role === "user").length;
         const task: TaskItem = {
-          id: `live-${Date.now()}`,
+          id,
           label: `${tool}(${args.slice(0, 80)})`,
           status: "running" as const,
           detail: null,
           turn: userTurns,
           started_at_ms: Date.now(),
           duration_ms: null,
+          command,
+          file_path,
         };
         this.tasks = [...this.tasks, task];
         const lastBlock = this.liveBlocks[this.liveBlocks.length - 1];
@@ -142,6 +246,25 @@ export const useSessionStore = defineStore("session", {
         }
       });
 
+      await onToolResult((payload) => {
+        const { session_id: sessionId, id, status, detail, additions, deletions, duration_ms } = payload;
+        if (sessionId !== this.currentId) return;
+        const applyResult = (t: TaskItem) => {
+          t.status = status;
+          t.detail = detail;
+          t.additions = additions;
+          t.deletions = deletions;
+          t.duration_ms = duration_ms;
+        };
+        const task = this.tasks.find((t: TaskItem) => t.id === id);
+        if (task) applyResult(task);
+        for (const block of this.liveBlocks) {
+          if (block.kind !== "tools") continue;
+          const liveTask = block.tasks.find((t: TaskItem) => t.id === id);
+          if (liveTask) applyResult(liveTask);
+        }
+      });
+
       await onPendingEdit((edit) => {
         if (edit.session_id !== this.currentId) return;
         this.pendingEdits.push(edit);
@@ -153,28 +276,48 @@ export const useSessionStore = defineStore("session", {
       });
 
       await onAskQuestion((question) => {
+        this.pendingQuestionBySession[question.session_id] = question;
         if (question.session_id !== this.currentId) return;
-        this.pendingQuestion = question;
         this.status = "idle";
       });
 
       await onPermissionRequest((request) => {
-        if (request.session_id !== this.currentId) return;
-        this.pendingPermission = request;
+        this.pendingPermissionBySession[request.session_id] = request;
+      });
+
+      await onAgentsSkillsPlan((plan) => {
+        this.pendingAgentsSkillsPlanBySession[plan.session_id] = plan;
       });
 
       await onAgentDone(async (sessionId) => {
+        this.processingSessionIds.delete(sessionId);
+        delete this.pendingPermissionBySession[sessionId];
+        delete this.pendingAgentsSkillsPlanBySession[sessionId];
         if (sessionId !== this.currentId) return;
+        // Busca tudo ANTES de mexer em qualquer estado — limpar
+        // streamingText/liveBlocks logo de cara (como era antes) deixava um
+        // buraco visual entre o texto "ao vivo" sumir e o histórico
+        // persistido ainda não ter chegado (5 chamadas sequenciais ao
+        // backend), um flash rápido de tela vazia toda vez que um turno
+        // terminava (achado testando ao vivo, 2026-08-17). Buscando em
+        // paralelo e só then aplicando tudo de uma vez (mesmo tick), o
+        // Vue troca o "ao vivo" pelo "persistido" numa render só, sem
+        // buraco no meio.
+        const reload = this.currentId ? await this.fetchReloadData(this.currentId) : null;
+        if (sessionId !== this.currentId) return; // trocou de sessão enquanto buscava
         this.status = "idle";
-        this.streamingText = "";
-        this.liveBlocks = [];
         this.thinkingText = "";
         this.activeToolLabel = "";
-        this.pendingPermission = null;
-        await this.reloadCurrent();
+        this.pipelineStatus = null;
+        if (reload) this.applyReloadData(reload);
+        this.streamingText = "";
+        this.liveBlocks = [];
       });
 
       await onAgentError((sessionId, message) => {
+        this.processingSessionIds.delete(sessionId);
+        delete this.pendingPermissionBySession[sessionId];
+        delete this.pendingAgentsSkillsPlanBySession[sessionId];
         if (sessionId !== this.currentId) return;
         if (this.streamingText.trim()) {
           this.messages.push({
@@ -192,7 +335,6 @@ export const useSessionStore = defineStore("session", {
         this.liveBlocks = [];
         this.thinkingText = "";
         this.error = message;
-        this.pendingPermission = null;
       });
 
       await onContextUsage((usage) => {
@@ -224,6 +366,69 @@ export const useSessionStore = defineStore("session", {
       this.sessions = await api.listSessions();
     },
 
+    async loadFolders() {
+      this.folders = await api.listFolders();
+    },
+
+    async loadPersonas() {
+      try {
+        this.personas = await api.listPersonas();
+      } catch {
+        this.personas = [];
+      }
+    },
+
+    async checkGitAvailable() {
+      try {
+        this.gitAvailable = await api.checkCommandAvailable("git");
+      } catch {
+        this.gitAvailable = null;
+      }
+    },
+
+    async loadSkills(projectRoot: string | null) {
+      try {
+        this.skills = await api.listSkills(projectRoot);
+      } catch {
+        this.skills = [];
+      }
+    },
+
+    async createFolder(name: string, parentId: string | null) {
+      const folder = await api.createFolder(name, parentId);
+      this.folders.push(folder);
+      return folder;
+    },
+
+    async renameFolder(id: string, name: string) {
+      if (!name.trim()) return;
+      const updated = await api.renameFolder(id, name.trim());
+      const idx = this.folders.findIndex((f) => f.id === id);
+      if (idx !== -1) this.folders[idx] = updated;
+    },
+
+    async deleteFolder(id: string) {
+      const orphanedSubfolderIds = await api.deleteFolder(id);
+      this.folders = this.folders.filter((f) => f.id !== id);
+      for (const subId of orphanedSubfolderIds) {
+        const sub = this.folders.find((f) => f.id === subId);
+        if (sub) sub.parent_id = null;
+      }
+      // Sessões que estavam nessa pasta (ou nas subpastas dela, já órfãs
+      // acima) voltam pra raiz — backend não mexe em `Session.folder_id` das
+      // subpastas devoradas, só das sessões que apontavam direto pra `id`.
+      for (const s of this.sessions) {
+        if (s.folder_id === id) s.folder_id = null;
+      }
+    },
+
+    async moveSessionToFolder(sessionId: string, folderId: string | null) {
+      const updated = await api.updateSessionFolder(sessionId, folderId);
+      if (this.currentId === sessionId) this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === sessionId);
+      if (idx !== -1) this.sessions[idx] = updated;
+    },
+
     async createSession(
       title: string,
       provider: ProviderKind,
@@ -249,25 +454,47 @@ export const useSessionStore = defineStore("session", {
       this.status = "idle";
       this.error = "";
       this.lastCompactionNote = "";
-      this.pendingQuestion = null;
       this.computerUseWarned = false;
       this.showComputerUseWarning = false;
       this.screenshotCount = 0;
       this.thinkingStartedAt = null;
       this.turnStartedAt = null;
       this.turnStats = {};
+      this.pipelineStatus = null;
       await this.reloadCurrent();
+      await this.applyRememberedContextLength();
+    },
+
+    // Busca os 5 pedaços do estado de uma sessão em PARALELO (em vez de 5
+    // `await` sequenciais) — separado de `applyReloadData` pra quem precisa
+    // buscar primeiro e só trocar o estado depois num momento preciso
+    // (`onAgentDone` acima, pra não deixar um buraco visual entre limpar o
+    // streaming e o histórico persistido chegar).
+    async fetchReloadData(sessionId: string): Promise<ReloadData> {
+      const [session, messages, tasks, pendingEdits, contextUsage] = await Promise.all([
+        api.getSession(sessionId),
+        api.getSessionMessages(sessionId),
+        api.getSessionTasks(sessionId),
+        api.listPendingEdits(sessionId),
+        api.getSessionContextUsage(sessionId),
+      ]);
+      return { session, messages, tasks, pendingEdits, contextUsage };
+    },
+
+    applyReloadData(data: ReloadData) {
+      this.currentSession = data.session;
+      if (data.session.llama_fork) this.currentFork = data.session.llama_fork;
+      if (data.session.custom_provider_id) this.currentCustomProviderId = data.session.custom_provider_id;
+      this.messages = data.messages;
+      this.tasks = data.tasks;
+      this.pendingEdits = data.pendingEdits;
+      this.contextUsage = data.contextUsage;
     },
 
     async reloadCurrent() {
       if (!this.currentId) return;
-      this.currentSession = await api.getSession(this.currentId);
-      if (this.currentSession.llama_fork) this.currentFork = this.currentSession.llama_fork;
-      if (this.currentSession.custom_provider_id) this.currentCustomProviderId = this.currentSession.custom_provider_id;
-      this.messages = await api.getSessionMessages(this.currentId);
-      this.tasks = await api.getSessionTasks(this.currentId);
-      this.pendingEdits = await api.listPendingEdits(this.currentId);
-      this.contextUsage = await api.getSessionContextUsage(this.currentId);
+      const data = await this.fetchReloadData(this.currentId);
+      this.applyReloadData(data);
     },
 
     /** The only way to actually change what an existing session sends to —
@@ -334,16 +561,30 @@ export const useSessionStore = defineStore("session", {
     },
 
     async answerQuestion(answer: string) {
-      if (!this.pendingQuestion) return;
+      if (!this.currentId || !this.pendingQuestion) return;
       await api.answerAsk(this.pendingQuestion.id, answer);
-      this.pendingQuestion = null;
+      delete this.pendingQuestionBySession[this.currentId];
       this.status = "thinking";
     },
 
+    async updateProjectRoot(projectRoot: string | null) {
+      if (!this.currentId) return;
+      const updated = await api.updateSessionProjectRoot(this.currentId, projectRoot);
+      this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === updated.id);
+      if (idx !== -1) this.sessions[idx] = updated;
+    },
+
     async answerPermission(approved: boolean) {
-      if (!this.pendingPermission) return;
+      if (!this.currentId || !this.pendingPermission) return;
       await api.answerPermission(this.pendingPermission.id, approved);
-      this.pendingPermission = null;
+      delete this.pendingPermissionBySession[this.currentId];
+    },
+
+    async answerAgentsSkillsPlan(approved: boolean) {
+      if (!this.currentId || !this.pendingAgentsSkillsPlan) return;
+      await api.answerAgentsSkillsPlan(this.pendingAgentsSkillsPlan.id, approved);
+      delete this.pendingAgentsSkillsPlanBySession[this.currentId];
     },
 
     /** "manual" (toda tool call pausa pedindo aprovação) ou "auto" (roda
@@ -367,17 +608,55 @@ export const useSessionStore = defineStore("session", {
 
     /** Override manual do tamanho de contexto — usado quando o provider
      * (geralmente customizado) não expõe isso via API e a sessão fica presa
-     * no fallback de 8192. `null` volta pra resolução automática. */
+     * no fallback de 8192. `null` volta pra resolução automática.
+     *
+     * Também grava (ou limpa) o mesmo valor como "lembrado" pro modelo desta
+     * sessão (`model_context_overrides.json`, chaveado por conexão+modelo) —
+     * pedido do usuário (2026-08-18): configurar o contexto de um modelo uma
+     * vez deve valer em QUALQUER sessão futura com o mesmo modelo, não só a
+     * atual. `applyRememberedContextLength` (chamada ao entrar numa sessão)
+     * é quem lê esse valor de volta. */
     async updateContextLength(contextLength: number | null) {
-      if (!this.currentId) return;
+      if (!this.currentId || !this.currentSession) return;
       const updated = await api.updateSessionContextLength(this.currentId, contextLength);
+      this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === updated.id);
+      if (idx !== -1) this.sessions[idx] = updated;
+      this.contextUsage = await api.getSessionContextUsage(updated.id);
+
+      const key = modelContextOverrideKey(
+        updated.provider,
+        updated.model,
+        updated.llama_fork ?? undefined,
+        updated.custom_provider_id ?? undefined,
+      );
+      await api.setModelContextOverride(key, contextLength);
+    },
+
+    /** Aplica o contexto lembrado pro modelo desta sessão, se ainda não tiver
+     * um valor próprio — chamada ao entrar numa sessão (nova ou existente)
+     * pra "vir preenchido" sem o usuário precisar reconfigurar toda vez.
+     * Nunca sobrescreve um `context_length` que a sessão já tenha (respeita
+     * override específico dessa sessão, se algum dia divergir do lembrado). */
+    async applyRememberedContextLength() {
+      if (!this.currentSession || this.currentSession.context_length != null) return;
+      const session = this.currentSession;
+      const key = modelContextOverrideKey(
+        session.provider,
+        session.model,
+        session.llama_fork ?? undefined,
+        session.custom_provider_id ?? undefined,
+      );
+      const remembered = await api.getModelContextOverride(key).catch(() => null);
+      if (remembered == null || !this.currentId || this.currentId !== session.id) return;
+      const updated = await api.updateSessionContextLength(this.currentId, remembered);
       this.currentSession = updated;
       const idx = this.sessions.findIndex((s) => s.id === updated.id);
       if (idx !== -1) this.sessions[idx] = updated;
       this.contextUsage = await api.getSessionContextUsage(updated.id);
     },
 
-    async updateReasoningEffort(effort: "off" | "low" | "medium" | "high" | null) {
+    async updateReasoningEffort(effort: "off" | "on" | "low" | "medium" | "high" | null) {
       if (!this.currentId) return;
       const updated = await api.updateSessionReasoningEffort(this.currentId, effort);
       this.currentSession = updated;
@@ -388,6 +667,14 @@ export const useSessionStore = defineStore("session", {
     async updateFableMethod(enabled: boolean) {
       if (!this.currentId) return;
       const updated = await api.updateSessionFableMethod(this.currentId, enabled);
+      this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === updated.id);
+      if (idx !== -1) this.sessions[idx] = updated;
+    },
+
+    async updatePersona(personaId: string | null) {
+      if (!this.currentId) return;
+      const updated = await api.updateSessionPersona(this.currentId, personaId);
       this.currentSession = updated;
       const idx = this.sessions.findIndex((s) => s.id === updated.id);
       if (idx !== -1) this.sessions[idx] = updated;

@@ -1,9 +1,50 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from "vue";
-import type { TaskItem } from "../api";
+import { useI18n } from "vue-i18n";
+import { api, type TaskItem, type AgentExecution } from "../api";
 import { friendlyStepLabel, toolNameFromLabel, formatElapsed } from "../taskLabels";
+import { splitDiffDetail, diffLines } from "../diffUtils";
+
+const { t } = useI18n();
 
 defineProps<{ tasks: TaskItem[] }>();
+
+// Fase 3/T14 (achado testando ao vivo, 2026-08-16): os passos internos de
+// `task`/`verify_completion`/`run_pipeline` (o que o sub-agente/QA/Analista
+// fez por dentro) só existiam como evento efêmero de UI — sumiam assim que
+// o turno terminava. Agora ficam gravados em `AgentExecution.steps`
+// (backend), buscados sob demanda aqui quando o usuário expande o item —
+// mesmo espírito "auditoria disponível, mas escondida até pedir" do resto
+// do componente (IN/OUT, diff).
+const allExecutions = ref<AgentExecution[]>([]);
+const loadingExecutions = ref<Set<string>>(new Set());
+
+async function ensureExecutionLoaded(executionId: string) {
+  if (loadingExecutions.value.has(executionId)) return;
+  loadingExecutions.value.add(executionId);
+  try {
+    allExecutions.value = await api.listAgentExecutions();
+  } finally {
+    loadingExecutions.value.delete(executionId);
+  }
+}
+
+function executionById(id: string): AgentExecution | undefined {
+  return allExecutions.value.find((e) => e.id === id);
+}
+
+// Pipeline não roda ferramenta nenhuma sozinho (`steps` dele fica sempre
+// vazio) — quem tem passos de verdade são as execuções filhas (dev/qa/
+// analista por round, ligadas via `parent_id`).
+function childExecutions(id: string): AgentExecution[] {
+  return allExecutions.value
+    .filter((e) => e.parent_id === id)
+    .sort((a, b) => a.started_at_ms - b.started_at_ms);
+}
+
+function executionStatusLabel(status: AgentExecution["status"]): string {
+  return t(`agentExecutions.status.${status}`);
+}
 
 const now = ref(Date.now());
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -29,8 +70,12 @@ function toggleSet(set: typeof expanded, id: string) {
   set.value = new Set(set.value);
 }
 
-function toggle(id: string) {
-  toggleSet(expanded, id);
+function toggle(t: TaskItem) {
+  const wasExpanded = expanded.value.has(t.id);
+  toggleSet(expanded, t.id);
+  if (!wasExpanded && t.execution_id) {
+    ensureExecutionLoaded(t.execution_id);
+  }
 }
 
 function toggleIn(id: string) {
@@ -57,8 +102,24 @@ function previewText(text: string | null | undefined, isExpanded: boolean): stri
   return lines.slice(0, PREVIEW_LINES).join("\n");
 }
 
+// Enquanto a tool call ainda está rodando, `detail`/`command`/etc chegam aos
+// poucos via eventos (`agent:tool_call` dá o "IN" na hora, `agent:tool_result`
+// dá o "OUT" quando termina) — sem precisar recarregar a sessão inteira pra
+// ver o resultado. Esse placeholder cobre o intervalo entre os dois.
+function outText(task: TaskItem, isExpanded: boolean): string {
+  if (task.detail == null && task.status === "running") {
+    return t("taskStep.processing");
+  }
+  return previewText(task.detail, isExpanded);
+}
+
+// So o backend preenche `command` pra chamadas de `run_command` (ver
+// `extract_command_text` em agent/mod.rs) — checar só esse campo, em vez de
+// tentar reconhecer o nome da ferramenta a partir do label, também funciona
+// pra passos de sub-agente/verificador (label vem com prefixo tipo
+// "↳ sub-agente (...): run_command").
 function isCommandTool(t: TaskItem): boolean {
-  return toolNameFromLabel(t.label) === "run_command" && !!t.command;
+  return !!t.command;
 }
 
 const statusIcon: Record<string, string> = {
@@ -109,34 +170,8 @@ function isWriteTool(task: TaskItem): boolean {
   return ["write_file", "edit_file", "ast_edit"].includes(name);
 }
 
-// t.detail pras ferramentas de escrita vem como "<frase>. Diff:\n<diff
-// unificado>" (ver agent/tools.rs) — separa a frase (nota) do diff de
-// verdade, que a gente colore linha a linha em vez de jogar tudo cru
-// num bloco de texto so.
-function splitDiffDetail(detail: string | null | undefined): { note: string; diffText: string } {
-  const raw = detail ?? "";
-  const marker = "Diff:\n";
-  const idx = raw.indexOf(marker);
-  if (idx === -1) return { note: raw, diffText: "" };
-  return { note: raw.slice(0, idx + "Diff:".length), diffText: raw.slice(idx + marker.length) };
-}
-
-type DiffLineKind = "add" | "del" | "hunk" | "header" | "context";
-
-function diffLines(detail: string | null | undefined): { kind: DiffLineKind; text: string }[] {
-  const { diffText } = splitDiffDetail(detail);
-  if (!diffText) return [];
-  return diffText
-    .split("\n")
-    .filter((line, idx, arr) => !(line === "" && idx === arr.length - 1))
-    .map((line) => {
-      if (line.startsWith("+++") || line.startsWith("---")) return { kind: "header" as const, text: line };
-      if (line.startsWith("@@")) return { kind: "hunk" as const, text: line };
-      if (line.startsWith("+")) return { kind: "add" as const, text: line };
-      if (line.startsWith("-")) return { kind: "del" as const, text: line };
-      return { kind: "context" as const, text: line };
-    });
-}
+// splitDiffDetail/diffLines: ver src/diffUtils.ts (compartilhado com
+// RepoDiffViewer.vue, Fase D1 do roteiro de Agentes/Skills).
 </script>
 
 <template>
@@ -145,7 +180,7 @@ function diffLines(detail: string | null | undefined): { kind: DiffLineKind; tex
       <div
         class="step-row"
         :class="{ clickable: !isCommandTool(t) }"
-        @click="!isCommandTool(t) && toggle(t.id)"
+        @click="!isCommandTool(t) && toggle(t)"
       >
         <span class="msi status" :class="t.status">{{ statusIcon[t.status] ?? "schedule" }}</span>
         <span v-if="taskElapsed(t)" class="step-elapsed">({{ taskElapsed(t) }})</span>
@@ -175,7 +210,7 @@ function diffLines(detail: string | null | undefined): { kind: DiffLineKind; tex
         </div>
         <div class="cmd-block">
           <div class="cmd-block-label">OUT</div>
-          <pre class="cmd-box">{{ previewText(t.detail, expandedOut.has(t.id)) }}</pre>
+          <pre class="cmd-box" :class="{ 'cmd-box-pending': t.detail == null && t.status === 'running' }">{{ outText(t, expandedOut.has(t.id)) }}</pre>
           <button v-if="linesInfo(t.detail).hasMore" class="cmd-more" @click.stop="toggleOut(t.id)">
             {{
               expandedOut.has(t.id)
@@ -186,14 +221,39 @@ function diffLines(detail: string | null | undefined): { kind: DiffLineKind; tex
         </div>
       </div>
       <div v-else-if="isWriteTool(t) && expanded.has(t.id)" class="step-detail diff-detail">
-        <div class="step-detail-label">{{ splitDiffDetail(t.detail).note }}</div>
-        <div class="diff-box">
-          <div v-for="(line, idx) in diffLines(t.detail)" :key="idx" class="diff-line" :class="`diff-${line.kind}`">{{ line.text || " " }}</div>
-        </div>
+        <template v-if="t.detail == null && t.status === 'running'">
+          <div class="step-detail-label">{{ $t("taskStep.processing") }}</div>
+        </template>
+        <template v-else>
+          <div class="step-detail-label">{{ splitDiffDetail(t.detail).note }}</div>
+          <div class="diff-box">
+            <div v-for="(line, idx) in diffLines(t.detail)" :key="idx" class="diff-line" :class="`diff-${line.kind}`">{{ line.text || " " }}</div>
+          </div>
+        </template>
       </div>
       <div v-else-if="expanded.has(t.id)" class="step-detail">
-        <div class="step-detail-label">{{ t.label }}</div>
+        <div class="step-detail-label">{{ friendlyStepLabel(t.label) }}</div>
         <div v-if="t.detail" class="step-detail-body">{{ t.detail }}</div>
+        <div v-else-if="t.status === 'running'" class="step-detail-body step-detail-pending">{{ $t("taskStep.processing") }}</div>
+        <div v-if="t.execution_id" class="nested-execution">
+          <p v-if="loadingExecutions.has(t.execution_id)" class="hint">{{ $t("taskStep.processing") }}</p>
+          <template v-else-if="executionById(t.execution_id)">
+            <!-- Pipeline: etapas filhas (dev/qa/analista por round), cada -->
+            <!-- uma com seus próprios passos aninhados. -->
+            <div v-for="child in childExecutions(t.execution_id)" :key="child.id" class="nested-exec-group">
+              <div class="nested-exec-header">
+                <span class="msi status" :class="child.status">{{ statusIcon[child.status] ?? "schedule" }}</span>
+                {{ child.name }} — {{ executionStatusLabel(child.status) }}
+              </div>
+              <TaskStepGroup :tasks="child.steps" />
+            </div>
+            <!-- task/verify_completion direto: passos da própria execução. -->
+            <TaskStepGroup
+              v-if="executionById(t.execution_id)!.steps.length > 0"
+              :tasks="executionById(t.execution_id)!.steps"
+            />
+          </template>
+        </div>
       </div>
     </template>
   </div>
@@ -355,6 +415,59 @@ function diffLines(detail: string | null | undefined): { kind: DiffLineKind; tex
   overflow-wrap: break-word;
   max-height: 240px;
   overflow-y: auto;
+}
+
+.cmd-box-pending,
+.step-detail-pending {
+  font-style: italic;
+  color: #a1a1aa;
+}
+
+.nested-execution {
+  margin-top: 6px;
+}
+
+.nested-execution .hint {
+  font-size: 11px;
+  font-style: italic;
+  color: #a1a1aa;
+}
+
+.nested-exec-group {
+  margin-bottom: 4px;
+  padding: 4px 0 4px 8px;
+  border-left: 2px solid #e4e4e7;
+}
+
+.nested-exec-group:last-child {
+  margin-bottom: 0;
+}
+
+.nested-exec-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #52525b;
+}
+
+.nested-exec-header .status {
+  font-size: 13px;
+  color: #a1a1aa;
+}
+
+.nested-exec-header .status.done {
+  color: #16a34a;
+}
+
+.nested-exec-header .status.failed {
+  color: #dc2626;
+}
+
+.nested-exec-header .status.running {
+  color: #3f3f46;
+  animation: spin 1s linear infinite;
 }
 
 .diff-detail {

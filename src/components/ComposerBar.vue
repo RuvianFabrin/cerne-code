@@ -3,16 +3,34 @@ import { computed, nextTick, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import { open } from "@tauri-apps/plugin-dialog";
 import Select from "primevue/select";
+import Dialog from "primevue/dialog";
+import Popover from "primevue/popover";
 import { api } from "../api";
 import { useSessionStore } from "../stores/session";
+import { useProviderStore } from "../stores/provider";
 import ProviderPicker from "./ProviderPicker.vue";
 import ContextGauge from "./ContextGauge.vue";
 import StatusDot from "./StatusDot.vue";
 import ExtraReadPaths from "./ExtraReadPaths.vue";
+import FileBrowser from "./FileBrowser.vue";
+import RepoDiffViewer from "./RepoDiffViewer.vue";
 import { useLlamaHealth } from "../composables/useLlamaHealth";
-import type { ExecutionMode, McpServerConfig, ProviderKind } from "../api";
+import type { ExecutionMode, McpServerConfig, McpToolInfo, ProviderKind } from "../api";
+import { READY_PROMPTS, type ReadyPrompt } from "../content/prompts";
 
 const { t } = useI18n();
+
+const fileBrowserVisible = ref(false);
+const repoDiffVisible = ref(false);
+
+// "+" virou um menu (Popover) agrupando anexar arquivo/persona/Método
+// Fable/MCP — pedido do usuário (2026-08-20), esses ficavam soltos no
+// rodapé do composer poluindo a barra. Mesmo padrão de Popover já usado em
+// ExtraReadPaths.vue.
+const plusMenuRef = ref<InstanceType<typeof Popover> | null>(null);
+function togglePlusMenu(event: Event) {
+  plusMenuRef.value?.toggle(event);
+}
 
 const mcpServers = ref<McpServerConfig[]>([]);
 async function loadMcpServers() {
@@ -23,6 +41,12 @@ async function loadMcpServers() {
   }
 }
 loadMcpServers();
+
+const PERSONA_NONE = "__none__";
+
+function onPersonaChange(value: string) {
+  sessionStore.updatePersona(value === PERSONA_NONE ? null : value);
+}
 
 const enabledMcpNames = computed(() => {
   const session = sessionStore.currentSession;
@@ -41,24 +65,80 @@ function toggleMcpServer(name: string) {
   sessionStore.updateMcpServers(allEnabled ? null : [...current]);
 }
 
+// Fase E3: um único botão "MCPs" abrindo um modal com checkboxes, em vez de
+// um botão por servidor lotando o rodapé do composer quando há muitos
+// configurados.
+const mcpModalVisible = ref(false);
+const enabledMcpCount = computed(() => enabledMcpNames.value.length);
+
+// Pedido do usuário testando ao vivo, 2026-08-17: ver quais ferramentas um
+// MCP da lista realmente oferece (nome + descrição, quando o servidor
+// fornece uma), sem precisar adivinhar pelo nome do servidor sozinho.
+// Reaproveita `api.testMcpServer` (mesma chamada que Configurações já usa
+// pra testar um servidor antes de salvar) — conexão descartável, não entra
+// no pool compartilhado.
+const mcpToolsModalVisible = ref(false);
+const mcpToolsModalServerName = ref("");
+const mcpToolsList = ref<McpToolInfo[]>([]);
+const mcpToolsLoading = ref(false);
+const mcpToolsError = ref("");
+
+async function showMcpTools(server: McpServerConfig) {
+  mcpToolsModalServerName.value = server.name;
+  mcpToolsModalVisible.value = true;
+  mcpToolsLoading.value = true;
+  mcpToolsError.value = "";
+  mcpToolsList.value = [];
+  try {
+    mcpToolsList.value = await api.listMcpServerTools(server);
+  } catch (e) {
+    mcpToolsError.value = String(e);
+  } finally {
+    mcpToolsLoading.value = false;
+  }
+}
+
 const EXECUTION_MODE_OPTIONS = computed<{ value: ExecutionMode; label: string }[]>(() => [
   { value: "yolo", label: "⚡ YOLO" },
   { value: "auto", label: t("composer.modeAuto") },
   { value: "manual", label: t("composer.modeManual") },
 ]);
 
+// Providers locais (llama.cpp/Ollama/LM Studio) não têm graduação real de
+// esforço: o llama.cpp e derivados só entendem raciocínio como liga/desliga
+// (chat_template_kwargs.enable_thinking, ver apply_reasoning no backend).
+// "Baixo/Médio/Alto" contra esses providers eram um placebo — o campo
+// reasoning_effort que a API OpenAI-compat usa pra graduar não é lido por
+// nenhum dos forks/engines locais testados (TurboQuant, ik_llama.cpp,
+// mainline). Providers de API (Openrouter/Custom, que cobre OpenRouter real,
+// ChatGPT, Gemini etc.) têm graduação de verdade, então mantêm as 3 opções.
+const LOCAL_PROVIDER_KINDS = new Set<ProviderKind>(["llama_cpp", "ollama", "lm_studio"]);
+
+const isLocalProvider = computed(() => {
+  const kind = sessionStore.currentSession?.provider;
+  return kind ? LOCAL_PROVIDER_KINDS.has(kind) : false;
+});
+
 const REASONING_EFFORT_OPTIONS = computed<{
-  value: "off" | "auto" | "low" | "medium" | "high";
+  value: "off" | "on" | "auto" | "low" | "medium" | "high";
   label: string;
-}[]>(() => [
-  // Desligado é o default pra modelos locais: "Auto" deixaria o Qwen3/GLM
-  // pensar por conta própria e ficar lento à toa.
-  { value: "off", label: `💤 ${t("composer.reasoningOff")}` },
-  { value: "auto", label: `🧠 ${t("composer.reasoningAuto")}` },
-  { value: "low", label: `🧠 ${t("composer.reasoningLow")}` },
-  { value: "medium", label: `🧠 ${t("composer.reasoningMedium")}` },
-  { value: "high", label: `🧠 ${t("composer.reasoningHigh")}` },
-]);
+}[]>(() => {
+  if (isLocalProvider.value) {
+    return [
+      // Desligado é o default pra modelos locais: "Auto" deixaria o Qwen3/GLM
+      // pensar por conta própria e ficar lento à toa.
+      { value: "off", label: `💤 ${t("composer.reasoningOff")}` },
+      { value: "on", label: `🧠 ${t("composer.reasoningOn")}` },
+    ];
+  }
+  return [
+    { value: "off", label: `💤 ${t("composer.reasoningOff")}` },
+    { value: "auto", label: `🧠 ${t("composer.reasoningAuto")}` },
+    { value: "low", label: `🧠 ${t("composer.reasoningLow")}` },
+    { value: "medium", label: `🧠 ${t("composer.reasoningMedium")}` },
+    { value: "high", label: `🧠 ${t("composer.reasoningHigh")}` },
+  ];
+});
 
 function onExecutionModeChange(mode: ExecutionMode) {
   sessionStore.updateExecutionMode(mode);
@@ -68,9 +148,46 @@ const reasoningEffort = computed(
   () => sessionStore.currentSession?.reasoning_effort ?? "off",
 );
 
-function onReasoningEffortChange(value: "off" | "auto" | "low" | "medium" | "high") {
+function onReasoningEffortChange(value: "off" | "on" | "auto" | "low" | "medium" | "high") {
   sessionStore.updateReasoningEffort(value === "auto" ? null : value);
 }
+
+// Resumo em texto (modelo/modo/raciocínio) que substitui os dois dropdowns
+// que ficavam sempre visíveis no rodapé — pedido do usuário (2026-08-20,
+// inspirado no Claude Code desktop). Os dropdowns de verdade continuam
+// existindo dentro do menu "+"; isso aqui só reflete o valor atual.
+const pendingModelLabel = computed(() => {
+  if (!pendingModel.value) return null;
+  const list = providerStore.modelsFor(pendingProvider.value, pendingFork.value ?? undefined, pendingCustomProviderId.value ?? undefined);
+  return list.find((m) => m.id === pendingModel.value)?.label ?? pendingModel.value;
+});
+
+const executionModeLabel = computed(() => {
+  const mode = sessionStore.currentSession?.execution_mode;
+  if (mode === "yolo") return "YOLO";
+  if (mode === "auto") return t("composer.modeAuto");
+  return t("composer.modeManual");
+});
+
+const reasoningLabel = computed(() => {
+  const labels: Record<string, string> = {
+    off: t("composer.reasoningOff"),
+    on: t("composer.reasoningOn"),
+    auto: t("composer.reasoningAuto"),
+    low: t("composer.reasoningLow"),
+    medium: t("composer.reasoningMedium"),
+    high: t("composer.reasoningHigh"),
+  };
+  return labels[reasoningEffort.value] ?? reasoningEffort.value;
+});
+
+const composerSummary = computed(() =>
+  t("composer.summary", {
+    model: pendingModelLabel.value ?? t("composer.summaryNoModel"),
+    mode: executionModeLabel.value,
+    reasoning: reasoningLabel.value,
+  }),
+);
 
 interface Attachment {
   id: string;
@@ -86,6 +203,25 @@ interface Attachment {
 }
 
 const sessionStore = useSessionStore();
+const providerStore = useProviderStore();
+
+// Fase E2: catálogo de skills pro menu `/` — carregado aqui (reage a troca
+// de pasta/sessão) mas escrito em `sessionStore.skills`, compartilhado com
+// `AgentsSkillsPanel.vue`. Antes cada um tinha sua PRÓPRIA cópia local, e
+// uma skill criada num painel nunca aparecia no outro sem recarregar a
+// sessão inteira (bug real encontrado testando ao vivo, 2026-08-16, mesmo
+// problema que a Persona abaixo tinha).
+watch(
+  () => sessionStore.currentSession?.project_root,
+  (projectRoot) => sessionStore.loadSkills(projectRoot ?? null),
+  { immediate: true },
+);
+
+const personaOptions = computed(() => [
+  { value: PERSONA_NONE, label: t("composer.noPersona") },
+  ...sessionStore.personas.map((p) => ({ value: p.id, label: p.name })),
+]);
+
 const text = ref("");
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const attachments = ref<Attachment[]>([]);
@@ -154,19 +290,71 @@ function attachmentFilters() {
   ];
 }
 
-async function refreshVisionSupport() {
-  if (!sessionStore.currentId) {
-    visionSupported.value = false;
-    return;
-  }
+// Fase E4: cache client-side do resultado de checkVisionSupport, por modelo
+// (nao por sessao) — sem isso, toda vez que o usuario troca de sessao com o
+// MESMO modelo o Cerne testaria visao de novo à toa (chamada extra que
+// custa uma requisicao real ao provider/servidor local). Chave inclui
+// fork/custom_provider_id porque o MESMO nome de modelo pode se comportar
+// diferente entre dois forks locais ou dois providers customizados.
+const VISION_CACHE_KEY = "cerne-vision-support-cache";
+type VisionState = "untested" | "supported" | "unsupported";
+const visionState = ref<VisionState>("untested");
+
+function loadVisionCache(): Record<string, boolean> {
   try {
-    visionSupported.value = await api.checkVisionSupport(sessionStore.currentId);
+    const raw = localStorage.getItem(VISION_CACHE_KEY);
+    return raw ? JSON.parse(raw) : {};
   } catch {
-    visionSupported.value = false;
+    return {};
   }
 }
 
-watch(() => sessionStore.currentSession, refreshVisionSupport, { immediate: true });
+function saveVisionCache(cache: Record<string, boolean>) {
+  try {
+    localStorage.setItem(VISION_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // localStorage indisponivel (modo privado, quota) - cache vira só em memória pra essa sessão do app.
+  }
+}
+
+function visionCacheKey() {
+  const session = sessionStore.currentSession;
+  if (!session) return null;
+  return `${session.provider}::${session.model}::${session.llama_fork ?? session.custom_provider_id ?? ""}`;
+}
+
+async function refreshVisionSupport(force = false) {
+  const sessionId = sessionStore.currentId;
+  const key = visionCacheKey();
+  if (!sessionId || !key) {
+    visionSupported.value = false;
+    visionState.value = "untested";
+    return;
+  }
+  const cache = loadVisionCache();
+  if (!force && key in cache) {
+    visionSupported.value = cache[key];
+    visionState.value = cache[key] ? "supported" : "unsupported";
+    return;
+  }
+  visionState.value = "untested";
+  try {
+    const supported = await api.checkVisionSupport(sessionId);
+    visionSupported.value = supported;
+    visionState.value = supported ? "supported" : "unsupported";
+    cache[key] = supported;
+    saveVisionCache(cache);
+  } catch {
+    visionSupported.value = false;
+    visionState.value = "unsupported";
+  }
+}
+
+watch(() => sessionStore.currentSession, () => refreshVisionSupport(false), { immediate: true });
+
+function retestVisionSupport() {
+  refreshVisionSupport(true);
+}
 
 // Sempre resolve o item de volta pelo array reativo antes de mutar — mutar a
 // referência do objeto que foi guardada ANTES do `push` mexe no objeto cru,
@@ -348,6 +536,67 @@ function onCustomProviderIdChange(id: string) {
 function onModelChange(id: string) {
   pendingModel.value = id;
   sessionStore.updateProviderModel(pendingProvider.value, id, pendingFork.value, pendingCustomProviderId.value);
+  providerStore.setActiveSelection(pendingProvider.value, id, pendingFork.value ?? undefined, pendingCustomProviderId.value ?? undefined);
+}
+
+// Voz — microfone no composer (STT via OpenRouter). Escopo reduzido a
+// pedido do usuário: só grava e transcreve pro texto do composer, NUNCA
+// envia sozinho — o usuário revisa/edita e manda como qualquer mensagem
+// normal, igual o padrão já usado pro import de skill (nunca "faz sozinho").
+type MicState = "idle" | "recording" | "transcribing" | "error";
+const micState = ref<MicState>("idle");
+let mediaRecorder: MediaRecorder | null = null;
+let recordedChunks: Blob[] = [];
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const result = reader.result as string;
+      // FileReader.readAsDataURL devolve "data:<mime>;base64,<dados>" —
+      // só a parte depois da vírgula interessa pro backend.
+      resolve(result.split(",")[1] ?? "");
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function toggleMic() {
+  if (micState.value === "recording") {
+    mediaRecorder?.stop();
+    return;
+  }
+  if (micState.value === "transcribing") return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    recordedChunks = [];
+    mediaRecorder = new MediaRecorder(stream);
+    mediaRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) recordedChunks.push(e.data);
+    };
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach((track) => track.stop());
+      micState.value = "transcribing";
+      try {
+        const blob = new Blob(recordedChunks, { type: "audio/webm" });
+        const base64 = await blobToBase64(blob);
+        const transcribed = await api.sttTranscribe(base64, "webm");
+        if (transcribed.trim()) {
+          text.value = text.value.trim() ? `${text.value.trim()} ${transcribed.trim()}` : transcribed.trim();
+        }
+        micState.value = "idle";
+      } catch {
+        micState.value = "error";
+        setTimeout(() => (micState.value = "idle"), 2500);
+      }
+    };
+    mediaRecorder.start();
+    micState.value = "recording";
+  } catch {
+    micState.value = "error";
+    setTimeout(() => (micState.value = "idle"), 2500);
+  }
 }
 
 const healthTargetFork = computed(() => (pendingProvider.value === "llama_cpp" ? pendingFork.value : null));
@@ -358,6 +607,135 @@ function grow() {
   if (!el) return;
   el.style.height = "auto";
   el.style.height = Math.min(el.scrollHeight, 240) + "px";
+}
+
+// Fase E2: atalho `/` no composer — abre um popover só quando `/` é o
+// PRIMEIRO caractere digitado numa caixa vazia (nunca no meio de texto já
+// digitado, pra não atrapalhar quem cola um caminho tipo "/home/user/...").
+// Fecha sozinho assim que aparece um espaço/quebra de linha (deixa de ser
+// atalho, vira texto normal) ou quando uma opção é escolhida.
+interface SlashItem {
+  kind: "skill" | "persona" | "mcp" | "prompt" | "pipeline";
+  key: string;
+  label: string;
+  sublabel: string;
+  icon: string;
+}
+
+const slashMenuOpen = ref(false);
+const slashActiveIndex = ref(0);
+
+const slashQuery = computed(() => (text.value.startsWith("/") ? text.value.slice(1) : ""));
+
+const slashHasProject = computed(() => !!sessionStore.currentSession?.project_root);
+
+function readyPromptText(p: ReadyPrompt, field: "title" | "toolsLabel" | "full"): string {
+  return t(`readyPrompts.${p.id}.${field}`);
+}
+
+const slashAllItems = computed<SlashItem[]>(() => {
+  const items: SlashItem[] = [];
+  for (const skill of sessionStore.skills) {
+    items.push({
+      kind: "skill",
+      key: skill.dir,
+      label: skill.name,
+      sublabel: skill.description,
+      icon: "auto_awesome",
+    });
+  }
+  for (const persona of sessionStore.personas) {
+    items.push({
+      kind: "persona",
+      key: persona.id,
+      label: persona.name,
+      sublabel: t("composer.slashPersonaSublabel"),
+      icon: "person",
+    });
+  }
+  for (const srv of mcpServers.value) {
+    items.push({
+      kind: "mcp",
+      key: srv.name,
+      label: srv.name,
+      sublabel: enabledMcpNames.value.includes(srv.name)
+        ? t("composer.slashMcpEnabledSublabel")
+        : t("composer.slashMcpDisabledSublabel"),
+      icon: "extension",
+    });
+  }
+  for (const prompt of READY_PROMPTS) {
+    if (prompt.scope === "code" && !slashHasProject.value) continue;
+    if (prompt.scope === "chat" && slashHasProject.value) continue;
+    items.push({
+      kind: "prompt",
+      key: prompt.id,
+      label: readyPromptText(prompt, "title"),
+      sublabel: readyPromptText(prompt, "toolsLabel"),
+      icon: "bolt",
+    });
+  }
+  // Fase 3: pipeline Dev→QA→Analista — só faz sentido com pasta de projeto
+  // associada (run_pipeline exige project_root, mesma restrição de task/
+  // verify_completion).
+  if (slashHasProject.value) {
+    items.push({
+      kind: "pipeline",
+      key: "pipeline",
+      label: t("composer.slashPipelineLabel"),
+      sublabel: t("composer.slashPipelineSublabel"),
+      icon: "conversion_path",
+    });
+  }
+  return items;
+});
+
+const slashItems = computed(() => {
+  const q = slashQuery.value.toLowerCase().trim();
+  if (!q) return slashAllItems.value;
+  return slashAllItems.value.filter(
+    (item) => item.label.toLowerCase().includes(q) || item.sublabel.toLowerCase().includes(q),
+  );
+});
+
+watch(slashItems, () => {
+  slashActiveIndex.value = 0;
+});
+
+function onComposerInput() {
+  grow();
+  const value = text.value;
+  if (value === "/") {
+    slashMenuOpen.value = true;
+    slashActiveIndex.value = 0;
+  } else if (slashMenuOpen.value && (!value.startsWith("/") || /\s/.test(value))) {
+    slashMenuOpen.value = false;
+  }
+}
+
+function selectSlashItem(item: SlashItem) {
+  if (item.kind === "skill") {
+    text.value = t("agentsSkillsPanel.useSkillDraft", { name: item.label });
+  } else if (item.kind === "persona") {
+    onPersonaChange(item.key);
+    text.value = "";
+  } else if (item.kind === "mcp") {
+    toggleMcpServer(item.key);
+    text.value = "";
+  } else if (item.kind === "pipeline") {
+    // Diferente de skill/persona (ação imediata ou pedido genérico), aqui o
+    // usuário ainda precisa descrever o requisito — só prepara a frase e
+    // deixa o cursor pronto pra continuar digitando.
+    text.value = t("composer.slashPipelineDraft");
+  } else {
+    const prompt = READY_PROMPTS.find((p) => p.id === item.key);
+    text.value = prompt ? readyPromptText(prompt, "full") : "";
+  }
+  slashMenuOpen.value = false;
+  nextTick(() => {
+    grow();
+    textareaRef.value?.focus();
+  });
 }
 
 function buildDisplayText(userText: string): string {
@@ -396,6 +774,29 @@ async function submit() {
 }
 
 function onKeydown(e: KeyboardEvent) {
+  if (slashMenuOpen.value) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      slashActiveIndex.value = Math.min(slashActiveIndex.value + 1, slashItems.value.length - 1);
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      slashActiveIndex.value = Math.max(slashActiveIndex.value - 1, 0);
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const item = slashItems.value[slashActiveIndex.value];
+      if (item) selectSlashItem(item);
+      return;
+    }
+    if (e.key === "Escape") {
+      e.preventDefault();
+      slashMenuOpen.value = false;
+      return;
+    }
+  }
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     submit();
@@ -418,10 +819,16 @@ watch(
 
 <template>
   <div class="composer">
-    <div class="composer-toolbar">
+    <!-- `defer` é obrigatório aqui (Vue 3.5+): o alvo (#chat-topbar-left,
+         renderizado por ChatView.vue) monta na MESMA passada síncrona que
+         este componente — sem `defer` o Vue tenta resolver o seletor antes
+         do alvo existir no DOM e falha silenciosamente (achado testando ao
+         vivo, 2026-08-20: "Failed to locate Teleport target" no console,
+         topo do chat ficava vazio). -->
+    <Teleport to="#chat-topbar-left" defer>
       <StatusDot v-if="pendingProvider === 'llama_cpp'" :up="llamaIsUp" />
       <ProviderPicker
-        collapsible
+        hide-vision-test
         :provider="pendingProvider"
         :fork="pendingFork"
         :custom-provider-id="pendingCustomProviderId"
@@ -431,8 +838,34 @@ watch(
         @update:custom-provider-id="onCustomProviderIdChange"
         @update:model="onModelChange"
       />
-      <ExtraReadPaths v-if="sessionStore.currentSession" />
-    </div>
+      <button
+        v-if="sessionStore.currentSession"
+        class="vision-icon-btn"
+        :class="`vision-${visionState}`"
+        v-tooltip.top="$t(`composer.visionState.${visionState}`)"
+        @click="retestVisionSupport"
+      >
+        <span class="msi">{{ visionState === "unsupported" ? "visibility_off" : "visibility" }}</span>
+      </button>
+    </Teleport>
+    <Teleport to="#chat-topbar-right" defer>
+      <button
+        v-if="sessionStore.currentSession"
+        class="file-browser-btn"
+        v-tooltip.top="$t('fileBrowser.tooltip')"
+        @click="fileBrowserVisible = true"
+      >
+        <span class="msi">folder_open</span>
+      </button>
+      <button
+        v-if="sessionStore.currentSession"
+        class="file-browser-btn"
+        v-tooltip.top="$t('repoDiffViewer.tooltip')"
+        @click="repoDiffVisible = true"
+      >
+        <span class="msi">difference</span>
+      </button>
+    </Teleport>
     <div v-if="attachments.length" class="attachments-row">
       <div
         v-for="a in attachments"
@@ -456,70 +889,123 @@ watch(
       <span class="msi spin">progress_activity</span>
       {{ $t("composer.optimizingHint") }}
     </div>
-    <textarea
-      ref="textareaRef"
-      v-model="text"
-      class="composer-input"
-      rows="1"
-      :placeholder="$t('composer.placeholder')"
-      @input="grow"
-      @keydown="onKeydown"
-      @paste="onPaste"
-    />
+    <div class="composer-input-wrap">
+      <textarea
+        ref="textareaRef"
+        v-model="text"
+        class="composer-input"
+        rows="1"
+        :placeholder="$t('composer.placeholder')"
+        @input="onComposerInput"
+        @keydown="onKeydown"
+        @paste="onPaste"
+        @blur="slashMenuOpen = false"
+      />
+      <div v-if="slashMenuOpen" class="slash-menu">
+        <button
+          v-for="(item, idx) in slashItems"
+          :key="`${item.kind}-${item.key}`"
+          class="slash-item"
+          :class="{ active: idx === slashActiveIndex }"
+          @mousedown.prevent="selectSlashItem(item)"
+          @mouseenter="slashActiveIndex = idx"
+        >
+          <span class="msi slash-item-icon">{{ item.icon }}</span>
+          <span class="slash-item-text">
+            <span class="slash-item-label">{{ item.label }}</span>
+            <span class="slash-item-sublabel">{{ item.sublabel }}</span>
+          </span>
+          <span class="slash-item-kind">{{ $t(`composer.slashKind.${item.kind}`) }}</span>
+        </button>
+        <p v-if="slashItems.length === 0" class="slash-empty">{{ $t("composer.slashEmpty") }}</p>
+      </div>
+    </div>
     <div class="composer-footer">
       <div class="footer-left">
-        <button class="attach-btn" v-tooltip.top="$t('composer.attachFile')" @click="addAttachments">
+        <button class="attach-btn" v-tooltip.top="$t('composer.plusMenuTooltip')" @click="togglePlusMenu">
           <span class="msi">add</span>
         </button>
-        <Select
-          v-if="sessionStore.currentSession"
-          :modelValue="sessionStore.currentSession.execution_mode"
-          @update:modelValue="(v) => onExecutionModeChange(v as ExecutionMode)"
-          :options="EXECUTION_MODE_OPTIONS"
-          optionLabel="label"
-          optionValue="value"
-          class="execution-mode-select"
-          size="small"
-          v-tooltip.top="$t('composer.executionModeTooltip')"
-        />
-        <Select
-          v-if="sessionStore.currentSession"
-          :modelValue="reasoningEffort"
-          @update:modelValue="(v) => onReasoningEffortChange(v as 'off' | 'auto' | 'low' | 'medium' | 'high')"
-          :options="REASONING_EFFORT_OPTIONS"
-          optionLabel="label"
-          optionValue="value"
-          class="execution-mode-select"
-          size="small"
-          v-tooltip.top="$t('composer.reasoningTooltip')"
-        />
-        <button
-          v-if="sessionStore.currentSession"
-          class="fable-btn"
-          :class="{ 'fable-on': sessionStore.currentSession.fable_method }"
-          v-tooltip.top="$t('composer.fableTooltip')"
-          @click="
-            sessionStore.updateFableMethod(!sessionStore.currentSession.fable_method)
-          "
-        >
-          <span class="msi">route</span>
-        </button>
-        <div v-if="mcpServers.length > 0" class="mcp-toggle-group">
-          <button
-            v-for="srv in mcpServers"
-            :key="srv.name"
-            class="mcp-toggle-btn"
-            :class="{ 'mcp-on': enabledMcpNames.includes(srv.name) }"
-            v-tooltip.top="`${srv.name}: ${srv.command} ${srv.args.join(' ')}`"
-            @click="toggleMcpServer(srv.name)"
-          >
-            <span class="msi">extension</span>
-            <span class="mcp-label">{{ srv.name }}</span>
-          </button>
-        </div>
+        <Popover ref="plusMenuRef">
+          <div class="plus-menu">
+            <button class="plus-menu-item" @click="addAttachments(); plusMenuRef?.hide()">
+              <span class="msi">attach_file</span>
+              <span class="plus-menu-label">{{ $t("composer.attachFile") }}</span>
+            </button>
+            <ExtraReadPaths v-if="sessionStore.currentSession" />
+            <div v-if="sessionStore.currentSession" class="plus-menu-item plus-menu-row">
+              <span class="msi">tune</span>
+              <span class="plus-menu-label">{{ $t("composer.executionModeLabel") }}</span>
+              <Select
+                :modelValue="sessionStore.currentSession.execution_mode"
+                @update:modelValue="(v) => onExecutionModeChange(v as ExecutionMode)"
+                :options="EXECUTION_MODE_OPTIONS"
+                optionLabel="label"
+                optionValue="value"
+                class="execution-mode-select"
+                size="small"
+              />
+            </div>
+            <div v-if="sessionStore.currentSession" class="plus-menu-item plus-menu-row">
+              <span class="msi">psychology</span>
+              <span class="plus-menu-label">{{ $t("composer.reasoningLabel") }}</span>
+              <Select
+                :modelValue="reasoningEffort"
+                @update:modelValue="(v) => onReasoningEffortChange(v as 'off' | 'on' | 'auto' | 'low' | 'medium' | 'high')"
+                :options="REASONING_EFFORT_OPTIONS"
+                optionLabel="label"
+                optionValue="value"
+                class="execution-mode-select"
+                size="small"
+              />
+            </div>
+            <div v-if="sessionStore.currentSession && sessionStore.personas.length > 0" class="plus-menu-item plus-menu-row">
+              <span class="msi">theater_comedy</span>
+              <span class="plus-menu-label">{{ $t("composer.personaLabel") }}</span>
+              <Select
+                :modelValue="sessionStore.currentSession.persona_id ?? PERSONA_NONE"
+                @update:modelValue="(v) => onPersonaChange(v as string)"
+                :options="personaOptions"
+                optionLabel="label"
+                optionValue="value"
+                class="execution-mode-select persona-select"
+                size="small"
+              />
+            </div>
+            <button
+              v-if="sessionStore.currentSession"
+              class="plus-menu-item plus-menu-toggle"
+              :class="{ 'plus-menu-toggle-on': sessionStore.currentSession.fable_method }"
+              v-tooltip.right="$t('composer.fableTooltip')"
+              @click="sessionStore.updateFableMethod(!sessionStore.currentSession.fable_method)"
+            >
+              <span class="msi">route</span>
+              <span class="plus-menu-label">{{ $t("composer.fableLabel") }}</span>
+              <span class="plus-menu-switch"><span class="plus-menu-switch-dot" /></span>
+            </button>
+            <button
+              v-if="mcpServers.length > 0"
+              class="plus-menu-item"
+              @click="mcpModalVisible = true; plusMenuRef?.hide()"
+            >
+              <span class="msi">extension</span>
+              <span class="plus-menu-label">{{ $t("composer.mcpLabel") }}</span>
+              <span class="plus-menu-badge">{{ enabledMcpCount }}/{{ mcpServers.length }}</span>
+            </button>
+          </div>
+        </Popover>
       </div>
       <div class="footer-right">
         <ContextGauge />
+        <button
+          v-if="sessionStore.status === 'idle'"
+          class="mic-btn"
+          :class="{ recording: micState === 'recording', error: micState === 'error' }"
+          :disabled="micState === 'transcribing'"
+          v-tooltip.top="$t(micState === 'recording' ? 'composer.micStop' : 'composer.micStart')"
+          @click="toggleMic"
+        >
+          <span class="msi">{{ micState === "transcribing" ? "hourglass_top" : micState === "error" ? "error" : micState === "recording" ? "stop" : "mic" }}</span>
+        </button>
         <button
           v-if="sessionStore.status === 'idle'"
           class="send-btn"
@@ -533,7 +1019,59 @@ watch(
         </button>
       </div>
     </div>
+    <FileBrowser v-model:visible="fileBrowserVisible" />
+    <RepoDiffViewer v-model:visible="repoDiffVisible" />
+
+    <Dialog
+      v-model:visible="mcpModalVisible"
+      :header="$t('composer.mcpModalTitle')"
+      modal
+      :style="{ width: 'min(480px, 92vw)' }"
+    >
+      <div class="mcp-modal-list">
+        <div v-for="srv in mcpServers" :key="srv.name" class="mcp-modal-item">
+          <label v-tooltip.right="`${srv.command} ${srv.args.join(' ')}`">
+            <input
+              type="checkbox"
+              :checked="enabledMcpNames.includes(srv.name)"
+              @change="toggleMcpServer(srv.name)"
+            />
+            <span class="mcp-modal-name">{{ srv.name }}</span>
+          </label>
+          <button
+            class="mcp-tools-btn"
+            v-tooltip.top="$t('composer.mcpViewTools')"
+            @click="showMcpTools(srv)"
+          >
+            <span class="msi">list_alt</span>
+          </button>
+        </div>
+        <p v-if="mcpServers.length === 0" class="mcp-modal-empty">{{ $t("composer.mcpModalEmpty") }}</p>
+      </div>
+    </Dialog>
+
+    <Dialog
+      v-model:visible="mcpToolsModalVisible"
+      :header="mcpToolsModalServerName"
+      modal
+      :style="{ width: 'min(480px, 92vw)' }"
+    >
+      <p v-if="mcpToolsLoading" class="hint">{{ $t("composer.mcpToolsLoading") }}</p>
+      <p v-else-if="mcpToolsError" class="error-text">{{ mcpToolsError }}</p>
+      <div v-else-if="mcpToolsList.length > 0" class="mcp-tools-list">
+        <div v-for="tool in mcpToolsList" :key="tool.name" class="mcp-tools-item">
+          <span class="mcp-tools-name">{{ tool.name }}</span>
+          <p v-if="tool.description" class="mcp-tools-desc">{{ tool.description }}</p>
+        </div>
+      </div>
+      <p v-else class="hint">{{ $t("composer.mcpToolsEmpty") }}</p>
+    </Dialog>
   </div>
+  <!-- Resumo em texto do que está selecionado (modelo/modo/raciocínio) —
+       pedido do usuário (2026-08-20), inspirado no Claude Code desktop.
+       FORA da caixa do composer (abaixo dela), não dentro do rodapé — os
+       dropdowns de verdade (Modo/Raciocínio) vivem no menu "+". -->
+  <span v-if="sessionStore.currentSession" class="composer-summary">{{ composerSummary }}</span>
 </template>
 
 <style scoped>
@@ -544,15 +1082,6 @@ watch(
   background: #ffffff;
   max-width: 100%;
   box-sizing: border-box;
-}
-
-.composer-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-bottom: 8px;
-  margin-bottom: 8px;
-  border-bottom: var(--cerne-border);
 }
 
 .composer-input {
@@ -570,6 +1099,97 @@ watch(
 
 .composer-input::placeholder {
   color: #a1a1aa;
+}
+
+.composer-input-wrap {
+  position: relative;
+}
+
+.slash-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  background: #ffffff;
+  border: var(--cerne-border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+  padding: 4px;
+  max-height: 280px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.slash-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  padding: 7px 8px;
+  cursor: pointer;
+  text-align: left;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.slash-item.active,
+.slash-item:hover {
+  background: #f4f4f5;
+}
+
+.slash-item-icon {
+  font-size: 16px;
+  color: #71717a;
+  flex-shrink: 0;
+}
+
+.slash-item-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.slash-item-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #18181b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-item-sublabel {
+  font-size: 11px;
+  font-weight: 500;
+  color: #a1a1aa;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.slash-item-kind {
+  font-size: 10px;
+  font-weight: 600;
+  color: #a1a1aa;
+  background: #f4f4f5;
+  border-radius: 4px;
+  padding: 2px 6px;
+  flex-shrink: 0;
+  text-transform: uppercase;
+}
+
+.slash-empty {
+  font-size: 12px;
+  font-weight: 500;
+  color: #a1a1aa;
+  padding: 8px;
+  margin: 0;
 }
 
 .attachments-row {
@@ -704,6 +1324,19 @@ watch(
   margin-left: auto;
 }
 
+.composer-summary {
+  display: block;
+  margin-top: 6px;
+  padding: 0 4px;
+  font-size: 11px;
+  font-weight: 500;
+  color: #a1a1aa;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .execution-mode-select {
   font-size: 12px;
   font-weight: 500;
@@ -717,6 +1350,16 @@ watch(
   padding: 5px 8px;
   font-size: 12px;
   font-weight: 500;
+}
+
+.persona-select {
+  max-width: 140px;
+}
+
+.persona-select :deep(.p-select-label) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .attach-btn {
@@ -737,7 +1380,7 @@ watch(
   cursor: default;
 }
 
-.fable-btn {
+.file-browser-btn {
   border: var(--cerne-border);
   background: #ffffff;
   border-radius: 8px;
@@ -750,16 +1393,165 @@ watch(
   color: #52525b;
 }
 
-.fable-btn:hover {
+.file-browser-btn:hover {
   border-color: #d4d4d8;
 }
 
-/* Ligado = chip rosa, pra deixar óbvio que o método Fable está ativo
+.vision-icon-btn {
+  border: var(--cerne-border);
+  background: #ffffff;
+  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: #a1a1aa;
+  flex-shrink: 0;
+}
+
+.vision-icon-btn .msi {
+  font-size: 17px;
+}
+
+.vision-icon-btn.vision-untested {
+  color: #a1a1aa;
+}
+
+.vision-icon-btn.vision-supported {
+  border-color: #22c55e;
+  color: #16a34a;
+  background: #ecfdf3;
+}
+
+.vision-icon-btn.vision-unsupported {
+  border-color: #f87171;
+  color: #dc2626;
+  background: #fef2f2;
+}
+
+.plus-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 240px;
+}
+
+.plus-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  padding: 8px;
+  cursor: pointer;
+  color: #3f3f46;
+  font-size: 13px;
+  font-weight: 500;
+  font-family: inherit;
+  text-align: left;
+  width: 100%;
+}
+
+.plus-menu-item:hover {
+  background: #f4f4f5;
+}
+
+.plus-menu-item .msi {
+  font-size: 17px;
+  color: #71717a;
+  flex-shrink: 0;
+}
+
+.plus-menu-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.plus-menu-row {
+  cursor: default;
+}
+
+.plus-menu-row:hover {
+  background: transparent;
+}
+
+.plus-menu-badge {
+  font-size: 11px;
+  font-weight: 700;
+  color: #71717a;
+  background: #f4f4f5;
+  border-radius: 999px;
+  padding: 2px 8px;
+  flex-shrink: 0;
+}
+
+.plus-menu-switch {
+  flex-shrink: 0;
+  width: 30px;
+  height: 18px;
+  border-radius: 999px;
+  background: #e4e4e7;
+  position: relative;
+  transition: background 0.15s;
+}
+
+.plus-menu-switch-dot {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #ffffff;
+  transition: transform 0.15s;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+/* Ligado = trilho rosa, pra deixar óbvio que o método Fable está ativo
    (é opt-in, só faz sentido em modelos pequenos/médios). */
-.fable-btn.fable-on {
+.plus-menu-toggle-on .plus-menu-switch {
   background: #db2777;
-  border-color: #db2777;
-  color: #ffffff;
+}
+
+.plus-menu-toggle-on .plus-menu-switch-dot {
+  transform: translateX(12px);
+}
+
+.mic-btn {
+  border: var(--cerne-border);
+  background: #ffffff;
+  color: #a1a1aa;
+  border-radius: 8px;
+  width: 30px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.mic-btn:disabled {
+  color: #d4d4d8;
+  cursor: default;
+}
+
+.mic-btn.recording {
+  border-color: #dc2626;
+  color: #dc2626;
+  background: #fef2f2;
+}
+
+.mic-btn.error {
+  border-color: #f87171;
+  color: #dc2626;
+}
+
+.mic-btn .msi {
+  font-size: 17px;
 }
 
 .send-btn {
@@ -790,50 +1582,120 @@ watch(
 }
 
 .send-btn .msi,
-.attach-btn .msi,
-.fable-btn .msi {
+.attach-btn .msi {
   font-size: 18px;
 }
 
-.mcp-toggle-group {
+.mcp-modal-list {
   display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 360px;
+  overflow-y: auto;
 }
 
-.mcp-toggle-btn {
+.mcp-modal-item {
   display: flex;
   align-items: center;
-  gap: 3px;
-  border: 1px solid #e4e4e7;
-  background: #f4f4f5;
-  color: #a1a1aa;
-  border-radius: 6px;
+  gap: 4px;
   padding: 2px 6px;
-  font-size: 11px;
-  font-weight: 600;
+  border-radius: 6px;
+}
+
+.mcp-modal-item:hover {
+  background: #f4f4f5;
+}
+
+.mcp-modal-item label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 6px 0;
   cursor: pointer;
-  transition: all 0.15s;
+  font-size: 13px;
+  font-weight: 500;
+  color: #3f3f46;
 }
 
-.mcp-toggle-btn:hover {
-  border-color: #d4d4d8;
-}
-
-.mcp-toggle-btn.mcp-on {
-  background: #ede9fe;
-  border-color: #8b5cf6;
-  color: #6d28d9;
-}
-
-.mcp-toggle-btn .msi {
-  font-size: 14px;
-}
-
-.mcp-label {
-  max-width: 80px;
+.mcp-modal-name {
+  font-family: ui-monospace, monospace;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.mcp-modal-empty {
+  font-size: 12px;
+  font-weight: 500;
+  color: #a1a1aa;
+}
+
+.mcp-tools-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: #a1a1aa;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+}
+
+.mcp-tools-btn:hover {
+  background: #e4e4e7;
+  color: #18181b;
+}
+
+.mcp-tools-btn .msi {
+  font-size: 18px;
+}
+
+.mcp-tools-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.mcp-tools-item {
+  padding-bottom: 8px;
+  border-bottom: 1px solid #f4f4f5;
+}
+
+.mcp-tools-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.mcp-tools-name {
+  font-family: ui-monospace, monospace;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #18181b;
+}
+
+.mcp-tools-desc {
+  margin: 3px 0 0;
+  font-size: 12px;
+  font-weight: 400;
+  color: #71717a;
+  overflow-wrap: break-word;
+}
+
+.hint {
+  font-size: 12px;
+  font-weight: 500;
+  color: #71717a;
+}
+
+.error-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: #dc2626;
 }
 </style>

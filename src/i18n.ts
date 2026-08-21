@@ -29,6 +29,7 @@ export const i18n = createI18n({
   legacy: false,
   locale: loadStoredLocale(),
   fallbackLocale: "en",
+  warnHtmlMessage: false,
   messages: {
     "pt-BR": ptBR,
     en,

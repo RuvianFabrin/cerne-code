@@ -54,6 +54,12 @@ async function create() {
     provider.value === "llama_cpp" ? fork.value : null,
     provider.value === "custom" ? customProviderId.value : null,
   );
+  providerStore.setActiveSelection(
+    provider.value,
+    model.value,
+    provider.value === "llama_cpp" ? fork.value : undefined,
+    provider.value === "custom" ? customProviderId.value : undefined,
+  );
   emit("update:visible", false);
 }
 </script>
