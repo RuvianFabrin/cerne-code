@@ -292,15 +292,44 @@ pub async fn chat_stream(
     apply_reasoning(&mut body, cfg.kind, &cfg.base_url, reasoning_effort);
 
     let mut req = client.post(&url).json(&body);
-    if let Some(key) = api_key {
+    if let Some(ref key) = api_key {
         req = req.bearer_auth(key);
     }
 
-    let resp = req.send().await?;
+    let mut resp = req.send().await?;
     if !resp.status().is_success() {
         let status = resp.status();
         let text = resp.text().await.unwrap_or_default();
-        return Err(anyhow!("provider request failed ({status}): {text}"));
+        // Achado ao vivo (2026-08-21): alguns modelos "stealth"/beta na
+        // OpenRouter (ex: stealth/ox-alpha) rejeitam reasoning desligado —
+        // "Reasoning is mandatory for this endpoint and cannot be disabled."
+        // Sem isso a sessao inteira travava toda vez que o usuario tentava
+        // usar um desses modelos com Raciocinio "Desligado" (default do
+        // Cerne). Detecta esse erro especifico e tenta de novo sem forcar
+        // `reasoning:{effort:"none"}` — deixa o provider usar o default dele
+        // em vez de nunca conseguir responder.
+        let forced_reasoning_off =
+            reasoning_effort == Some(ReasoningEffort::Off) && body.get("reasoning").is_some();
+        let mandates_reasoning = status == reqwest::StatusCode::BAD_REQUEST
+            && text.to_lowercase().contains("reasoning")
+            && text.to_lowercase().contains("mandatory");
+        if forced_reasoning_off && mandates_reasoning {
+            if let Some(obj) = body.as_object_mut() {
+                obj.remove("reasoning");
+            }
+            let mut retry_req = client.post(&url).json(&body);
+            if let Some(key) = api_key {
+                retry_req = retry_req.bearer_auth(key);
+            }
+            resp = retry_req.send().await?;
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(anyhow!("provider request failed ({status}): {text}"));
+            }
+        } else {
+            return Err(anyhow!("provider request failed ({status}): {text}"));
+        }
     }
 
     let mut stream = resp.bytes_stream();

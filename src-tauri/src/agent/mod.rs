@@ -944,9 +944,18 @@ pub async fn run_turn(
                 images: Vec::new(),
                 display_content: None,
             }];
+            // Canal sintetico, mesmo padrao da compactacao (`::compact`) —
+            // antes usava o session_id de verdade, entao os tokens dessa
+            // chamada utilitaria (so pra descobrir o nome) vazavam no
+            // `chat:token` da conversa de verdade, se misturando com a
+            // resposta real que estava sendo transmitida ao mesmo tempo.
+            // O frontend so escuta o canal real, entao o usuario nunca
+            // precisa ver o LLM "pensando" no nome — so o resultado final
+            // (evento `agent:session_renamed`) importa.
+            let naming_channel = format!("{session_id_clone}::naming");
             if let Ok(result) = providers::chat_stream(
                 &app_clone,
-                &session_id_clone,
+                &naming_channel,
                 &cfg_clone,
                 api_key_clone,
                 &model_clone,
