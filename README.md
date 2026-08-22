@@ -18,6 +18,11 @@
 - **🔌 MCP** — conecta em servidores MCP externos pra expandir as capacidades (banco de dados, APIs, o que você quiser).
 - **🔧 Ferramentas Python dinâmicas** — cria ferramentas reutilizáveis em Python que ficam disponíveis em todas as sessões futuras.
 - **🎯 Modo Manual** — modo Manual de execução: o agente pede permissão antes de cada ação. Controle total sobre o que roda na sua máquina.
+- **🎤 Áudio no composer** — fala diretamente pelo microfone em vez de digitar. O áudio é transcrito automaticamente e vira mensagem de texto.
+- **🔊 Ouvir texto** — seleciona qualquer resposta do agente ou texto do chat e ouve em voz alta. Também dá pra ouvir a mensagem inteira com um clique.
+- **🧠 Skills & Agents** — skills reutilizáveis que ensinam o agente a fazer tarefas específicas (revisar PR, organizar arquivos, resumir e-mails, etc.). Agents são sessões especializadas com instruções próprias.
+- **👤 Personas** — cria personas com jeito próprio de responder. Cada uma com seu tom, regras e conhecimento — o agente assume a persona que você escolher.
+- **🔍 Qualquer provedor de busca** — conecta com DuckDuckGo (sem chave, já vem funcionando), Brave Search API, Tavily ou sua própria instância SearXNG. Troca na hora pela tela de configurações.
 
 ### 🎯 Pra quem é
 
@@ -83,6 +88,11 @@ Abaixo você encontra instruções de uso, decisões técnicas, benchmark de mod
 - **🔌 MCP** — connects to external MCP servers to expand capabilities (databases, APIs, anything).
 - **🔧 Dynamic Python tools** — creates reusable Python tools that become available in every future session.
 - **🎯 Manual mode** — the agent asks permission before every action. Full control over what runs on your machine.
+- **🎤 Audio input** — speak directly through the mic instead of typing. Audio is transcribed to text automatically.
+- **🔊 Text-to-speech** — select any agent response or chat text and hear it spoken aloud. Or listen to the entire message with one click.
+- **🧠 Skills & Agents** — reusable skills that teach the agent specific tasks (PR review, file organizing, email triage, etc.). Agents are specialized sessions with their own instructions.
+- **👤 Personas** — create personas with their own tone, rules, and knowledge. The agent takes on the persona you choose.
+- **🔍 Any search provider** — connect with DuckDuckGo (no key, works out of the box), Brave Search API, Tavily, or your own SearXNG instance. Switch anytime from settings.
 
 ### 🎯 Who it's for
 
@@ -138,6 +148,11 @@ Abaixo você encontra instruções de uso, decisões técnicas, benchmark de mod
 - **🔌 MCP** — se conecta a servidores MCP externos para expandir capacidades (bases de datos, APIs, lo que quieras).
 - **🔧 Herramientas Python dinámicas** — crea herramientas reutilizables en Python que quedan disponibles en todas las sesiones futuras.
 - **🎯 Modo Manual** — el agente pide permiso antes de cada acción. Control total sobre lo que se ejecuta en tu máquina.
+- **🎤 Audio en el compositor** — habla directamente por el micrófono en vez de escribir. El audio se transcribe automáticamente a texto.
+- **🔊 Escuchar texto** — selecciona cualquier respuesta del agente o texto del chat y escúchalo en voz alta. También puedes oír el mensaje completo con un clic.
+- **🧠 Skills & Agents** — skills reutilizables que le enseñan al agente tareas específicas (revisar PR, organizar archivos, resumir correos, etc.). Los agents son sesiones especializadas con instrucciones propias.
+- **👤 Personas** — crea personas con su propio tono, reglas y conocimiento. El agente adopta la persona que elijas.
+- **🔍 Cualquier proveedor de búsqueda** — conecta con DuckDuckGo (sin clave, funciona de fábrica), Brave Search API, Tavily o tu propia instancia SearXNG. Cámbialo al instante desde configuración.
 
 ### 🎯 Para quién es
 
@@ -193,6 +208,11 @@ Abaixo você encontra instruções de uso, decisões técnicas, benchmark de mod
 - **🔌 MCP** —— 连接外部 MCP 服务器以扩展功能（数据库、API，任何你需要的）。
 - **🔧 动态 Python 工具** —— 创建可复用的 Python 工具，这些工具将在所有未来的会话中可用。
 - **🎯 手动模式** —— 助手在每次操作前都会请求许可。完全控制在你机器上执行的内容。
+- **🎤 语音输入** —— 直接对着麦克风说话，不用打字。语音会自动转录为文字。
+- **🔊 朗读文本** —— 选中助手的任何回复或聊天文本，即可听语音朗读。也可以一键收听整条消息。
+- **🧠 Skills & Agents** —— 可复用的技能，教会助手执行特定任务（审查 PR、整理文件、分类邮件等）。Agents 是带有专属指令的专门会话。
+- **👤 人设 (Personas)** —— 创建拥有自己语气、规则和知识的人设。助手会采用你选择的人设来回应。
+- **🔍 任意搜索引擎** —— 连接 DuckDuckGo（无需密钥，开箱即用）、Brave Search API、Tavily 或你自己的 SearXNG 实例。随时在设置中切换。
 
 ### 🎯 适合谁
 
