@@ -59,7 +59,176 @@ Abaixo você encontra instruções de uso, decisões técnicas, benchmark de mod
 
 ---
 
-## Rodando (desenvolvimento)
+---
+
+## English
+
+# 🪵 Cerne Code
+
+> **Your local coding agent. Free. No strings attached.**
+>
+> Tired of coding agents that charge per use, lock you into an ecosystem, or simply don't work with local models? **Cerne Code** is a full-featured desktop coding agent, completely free, running **100% locally** with any model (OpenAI, Claude, Ollama, llama.cpp, LM Studio, Qwen — anything that speaks the OpenAI-compatible API).
+
+---
+
+### 🚀 What it does
+
+**Cerne Code** is the GUI that turns any language model into a real coding agent:
+
+- **🧠 Edits files** — ask and it reads, edits, adds functions, refactors. With a safety sandbox (you approve or reject every change before it's applied).
+- **🔍 Searches code** — `grep` and `ast_grep` (AST-based structural search) to find exactly what you need, not just literal text.
+- **💻 Runs commands** — executes tests, builds, linters, installs dependencies, and shows results in real time. Supports background commands (dev server, watch mode) without blocking the chat.
+- **🌐 Web search** — looks up documentation, versions, APIs, and answers with real sources. No Docker or API key required (uses aggregated DuckDuckGo + Brave + Mojeek).
+- **🧩 Quality pipeline** — ask the agent to implement something and it verifies with real tests before claiming it's done. Dev → QA → Analyst, automatic cycle.
+- **🔌 MCP** — connects to external MCP servers to expand capabilities (databases, APIs, anything).
+- **🔧 Dynamic Python tools** — creates reusable Python tools that become available in every future session.
+- **🎯 Manual mode** — the agent asks permission before every action. Full control over what runs on your machine.
+
+### 🎯 Who it's for
+
+| Profile | Why download |
+|---------|-------------|
+| **Dev using Claude/GPT/cloud** | Stop paying per use. Run locally, unlimited, no token counting |
+| **Dev using Ollama/LM Studio** | A real coding agent that works with local models |
+| **Privacy-conscious** | Nothing leaves your machine. Code, search, everything local |
+| **Tired of setup** | Install and use. Built-in web search, no Docker/SearXNG needed |
+
+### ⚡ Quick comparison
+
+| Feature | Cerne Code | Claude Code CLI |
+|---------|:----------:|:---------------:|
+| GUI ✅ | Yes | CLI + VS Code plugin |
+| 100% local | ✅ | ❌ (cloud only) |
+| Free | ✅ | ❌ (pay per use) |
+| Supports local models (Ollama, llama.cpp, LM Studio) | ✅ | ❌ |
+| Edit sandbox (approve/reject) | ✅ | ✅ |
+| Auto Dev→QA→Analyst pipeline | ✅ | ❌ |
+| Web search without API key | ✅ | ❌ |
+| MCP | ✅ | ✅ |
+| Sub-agents (task) | ✅ | ✅ |
+| Windows, Linux, Mac | ✅ | ✅ (CLI) |
+
+### 📥 Download
+
+👉 **[Download the latest Cerne Code](https://ruvianfabrin.github.io/cerne-code.html)** (Windows, NSIS installer)
+
+---
+
+---
+
+## Español
+
+# 🪵 Cerne Code
+
+> **Tu agente de código local, gratis y sin vueltas.**
+>
+> ¿Cansado de pagar por un agente de código que cobra por uso, te ata a un ecosistema o simplemente no funciona con modelos locales? **Cerne Code** es un agente de código desktop completo, gratuito, que funciona **100% local** con cualquier modelo (OpenAI, Claude, Ollama, llama.cpp, LM Studio, Qwen — cualquiera que hable la API compatible con OpenAI).
+
+---
+
+### 🚀 Para qué sirve
+
+**Cerne Code** es la interfaz gráfica que convierte cualquier modelo de lenguaje en un agente de código real:
+
+- **🧠 Edita archivos** — pídele y lee, edita, agrega funciones, refactoriza. Con un sandbox de seguridad (aceptas o rechazas cada cambio antes de aplicarlo).
+- **🔍 Busca en el código** — `grep` y `ast_grep` (búsqueda estructural por AST) para encontrar exactamente lo que necesitas, no solo texto literal.
+- **💻 Ejecuta comandos** — corre tests, builds, linters, instala dependencias y ve el resultado al instante. Con soporte para comandos en segundo plano (dev server, watch mode) sin bloquear el chat.
+- **🌐 Búsqueda web** — investiga documentación, versiones, APIs y responde con fuentes reales. Sin necesidad de Docker ni clave de API (usa DuckDuckGo + Brave + Mojeek agregados).
+- **🧩 Pipeline de calidad** — pídele al agente que implemente algo y él mismo verifica con tests reales antes de decir que está listo. Dev → QA → Analista, ciclo automático.
+- **🔌 MCP** — se conecta a servidores MCP externos para expandir capacidades (bases de datos, APIs, lo que quieras).
+- **🔧 Herramientas Python dinámicas** — crea herramientas reutilizables en Python que quedan disponibles en todas las sesiones futuras.
+- **🎯 Modo Manual** — el agente pide permiso antes de cada acción. Control total sobre lo que se ejecuta en tu máquina.
+
+### 🎯 Para quién es
+
+| Perfil | Por qué descargar |
+|--------|-------------------|
+| **Dev que usa Claude/GPT/nube** | Deja de pagar por uso. Corre local, ilimitado, sin contar tokens |
+| **Dev que usa Ollama/LM Studio** | Un agente de código real que funciona con modelos locales |
+| **Quien valora la privacidad** | Nada sale de tu máquina. Código, búsqueda, todo local |
+| **Hartos de configuraciones** | Instala y usa. Búsqueda web incorporada, sin Docker/SearXNG |
+
+### ⚡ Comparación rápida
+
+| Característica | Cerne Code | Claude Code CLI |
+|----------------|:----------:|:---------------:|
+| Interfaz gráfica ✅ | Sí | CLI + plugin VS Code |
+| 100% local | ✅ | ❌ (solo nube) |
+| Gratuito | ✅ | ❌ (pago por uso) |
+| Soporta modelos locales (Ollama, llama.cpp, LM Studio) | ✅ | ❌ |
+| Sandbox de edición (aceptar/rechazar) | ✅ | ✅ |
+| Pipeline automático Dev→QA→Analista | ✅ | ❌ |
+| Búsqueda web sin clave API | ✅ | ❌ |
+| MCP | ✅ | ✅ |
+| Sub-agentes (task) | ✅ | ✅ |
+| Windows, Linux, Mac | ✅ | ✅ (CLI) |
+
+### 📥 Descargar
+
+👉 **[Descarga la última versión de Cerne Code](https://ruvianfabrin.github.io/cerne-code.html)** (Windows, instalador NSIS)
+
+---
+
+---
+
+## 中文
+
+# 🪵 Cerne Code
+
+> **你的本地代码助手，完全免费，没有套路。**
+>
+> 厌倦了按使用次数收费、把你锁在某个生态系统里、或者干脆无法与本地模型配合的代码助手？**Cerne Code** 是一款功能完整的桌面代码助手，完全免费，**100% 本地运行**，支持任何模型（OpenAI、Claude、Ollama、llama.cpp、LM Studio、Qwen —— 任何兼容 OpenAI API 的模型都可以）。
+
+---
+
+### 🚀 它能做什么
+
+**Cerne Code** 是一款图形界面工具，能把任何语言模型变成真正的代码助手：
+
+- **🧠 编辑文件** —— 让它读取、编辑、添加函数、重构代码。带有安全沙箱（在应用之前，你可以批准或拒绝每一项更改）。
+- **🔍 搜索代码** —— `grep` 和 `ast_grep`（基于 AST 的结构化搜索），能精确找到你需要的内容，而不只是逐字匹配。
+- **💻 运行命令** —— 执行测试、构建、代码检查、安装依赖，并实时显示结果。支持后台命令（开发服务器、监听模式），不会阻塞对话。
+- **🌐 网页搜索** —— 查找文档、版本信息、API，并提供真实来源的回答。无需安装 Docker 或 API 密钥（聚合 DuckDuckGo + Brave + Mojeek）。
+- **🧩 质量流水线** —— 让助手实现某个功能，它会用真实测试来验证，然后才报告完成。开发 → 质量检查 → 分析师，自动循环。
+- **🔌 MCP** —— 连接外部 MCP 服务器以扩展功能（数据库、API，任何你需要的）。
+- **🔧 动态 Python 工具** —— 创建可复用的 Python 工具，这些工具将在所有未来的会话中可用。
+- **🎯 手动模式** —— 助手在每次操作前都会请求许可。完全控制在你机器上执行的内容。
+
+### 🎯 适合谁
+
+| 用户画像 | 为什么下载 |
+|----------|-----------|
+| **使用 Claude/GPT/云端 的开发者** | 停止按使用付费。本地运行，无限制，不计 token |
+| **使用 Ollama/LM Studio 的开发者** | 一个能与本地模型配合的真正代码助手 |
+| **注重隐私的用户** | 没有任何数据离开你的机器。代码、搜索，全部本地化 |
+| **厌倦配置的用户** | 安装即可使用。内置网页搜索，无需 Docker/SearXNG |
+
+### ⚡ 快速对比
+
+| 特性 | Cerne Code | Claude Code CLI |
+|------|:----------:|:---------------:|
+| 图形界面 ✅ | 是 | CLI + VS Code 插件 |
+| 100% 本地运行 | ✅ | ❌（仅云端） |
+| 免费 | ✅ | ❌（按使用付费） |
+| 支持本地模型 (Ollama, llama.cpp, LM Studio) | ✅ | ❌ |
+| 编辑沙箱 (批准/拒绝) | ✅ | ✅ |
+| 自动 Dev→QA→分析师 流水线 | ✅ | ❌ |
+| 无需 API 密钥的网页搜索 | ✅ | ❌ |
+| MCP | ✅ | ✅ |
+| 子代理 (task) | ✅ | ✅ |
+| Windows, Linux, Mac | ✅ | ✅ (CLI) |
+
+### 📥 下载
+
+👉 **[下载 Cerne Code 最新版本](https://ruvianfabrin.github.io/cerne-code.html)**（Windows，NSIS 安装程序）
+
+---
+
+---
+
+### 📖 Documentação completa neste README (Português)
+
+Abaixo você encontra instruções de uso, decisões técnicas, benchmark de modelos e histórico completo do projeto (em português).
 
 ## Rodando
 
