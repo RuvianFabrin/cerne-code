@@ -221,7 +221,9 @@ const HEALTH_CHECK_POLL_INTERVAL: std::time::Duration = std::time::Duration::fro
 /// failed".
 pub async fn start_server(fork: &LlamaForkConfig) -> Result<Child> {
     if !PathBuf::from(&fork.server_exe).exists() {
-        return Err(anyhow!("llama-server.exe not found at {}", fork.server_exe));
+        // Neutro de SO (Tarefa 4.1 do port): em Unix o binario nao tem .exe,
+        // entao a mensagem nao pode hardcodar o nome com extensao.
+        return Err(anyhow!("llama-server não encontrado em {}", fork.server_exe));
     }
     let mut child = Command::new(&fork.server_exe)
         .arg("--models-preset")

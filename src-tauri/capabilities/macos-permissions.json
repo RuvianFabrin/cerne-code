@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "macos-permissions",
+  "description": "TCC (Accessibility/Screen Recording/etc.) so existe no macOS - separado do default.json pra nao quebrar o schema nos outros SOs, onde o plugin nem compila (ver Tarefa 3.1c de PLANOS/port_linux_macos.md).",
+  "windows": ["main"],
+  "platforms": ["macOS"],
+  "permissions": ["macos-permissions:default"]
+}

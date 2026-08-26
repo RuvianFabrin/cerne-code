@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ubuntu-latest, windows-latest, macos-latest]
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Dependencias de sistema do WebView/bundler no Linux (Tarefa 1.4 e
+      # 5.1 de PLANOS/port_linux_macos.md). Sem elas o cargo check ja falha
+      # na fase de link do gdk-sys/webkit2gtk.
+      - name: Instalar dependencias de sistema (Linux)
+        if: matrix.platform == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      # No macOS builda os dois targets (arm64 + intel) pra virar um
+      # universal binary depois - macos-latest hoje e Apple Silicon, entao
+      # sem isso o .dmg gerado nao rodaria nativamente em Mac Intel (so via
+      # Rosetta 2, com overhead e risco de descontinuacao futura).
+      - name: Instalar Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache do cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Instalar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalar dependencias do frontend
+        run: npm ci
+
+      - name: Checar tipos TypeScript (vue-tsc)
+        run: npx vue-tsc --noEmit
+
+      # cargo check antes do test/build pra falhar rapido e com erro mais
+      # legivel caso algum #[cfg] tenha vazado pro SO errado (ver "Mapa de
+      # riscos de regressao no Windows" do plano de port).
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --lib
+
+      - name: cargo test --lib
+        working-directory: src-tauri
+        run: cargo test --lib
+
+      # Build completo com empacotamento (.msi/.exe no Windows, .dmg
+      # universal - arm64+intel via lipo - no macOS, .deb/.AppImage no
+      # Linux). E esperado que isto falhe em macOS/Linux ate a Tarefa 5.1
+      # (targets de bundle por SO, assinatura) fechar - o objetivo da CI
+      # aqui e justamente revelar esse gap, nao escondê-lo com
+      # continue-on-error. Build ~2x mais lento no macOS (compila os dois
+      # targets antes do lipo) - esperado, nao e falha de configuracao.
+      - name: Build do Tauri (com empacotamento)
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "macos-latest" ]; then
+            npm run tauri build -- --target universal-apple-darwin
+          else
+            npm run tauri build
+          fi
+
+      # Build universal (macOS) sai em target/universal-apple-darwin/release/
+      # em vez de target/release/ - os dois padroes de path cobrem os dois
+      # casos sem precisar de outro if por plataforma; o que nao existir
+      # simplesmente nao casa com o glob.
+      - name: Upload dos instaladores gerados
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cerne-code-${{ matrix.platform }}
+          path: |
+            src-tauri/target/release/bundle/**
+            src-tauri/target/universal-apple-darwin/release/bundle/**
+          if-no-files-found: warn
+          retention-days: 14

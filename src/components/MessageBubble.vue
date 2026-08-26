@@ -222,11 +222,12 @@ const shownText = computed(() =>
 }
 
 .bubble {
-  max-width: 72ch;
+  max-width: 100%;
   padding: 4px 0;
 }
 
 .bubble.user {
+  max-width: 72ch;
   background: #18181b;
   color: #fafafa;
   padding: 10px 14px;

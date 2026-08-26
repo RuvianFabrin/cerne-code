@@ -152,6 +152,9 @@ impl BackgroundJobs {
     ) -> Result<String> {
         prune_finished_jobs(&mut self.jobs.lock().unwrap());
         let mut cmd = super::shell::build_shell_command(command);
+        // Unix: grupo de processo proprio — pre-condicao pro kill de arvore
+        // via `kill -9 -<pgid>` no stop() (ver shell::apply_process_group).
+        super::shell::apply_process_group(&mut cmd);
         cmd.current_dir(project_root)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -279,13 +282,30 @@ impl BackgroundJobs {
         };
         let command = job.command.clone();
         if let Some(pid) = job.child.id() {
-            // Ignora falha do taskkill de proposito: o caso mais comum e o
+            // Ignora falha do kill de proposito: o caso mais comum e o
             // processo ja ter morrido sozinho entre o ultimo check e o stop,
             // que nao e erro real (o objetivo do usuario ja estava satisfeito).
-            let mut taskkill = tokio::process::Command::new("taskkill");
-            taskkill.args(["/PID", &pid.to_string(), "/T", "/F"]);
-            super::shell::apply_creation_flags(&mut taskkill);
-            let _ = taskkill.output().await;
+            //
+            // Windows: `taskkill /T /F` mata a arvore inteira (fix original
+            // do bug do processo orfao — NAO simplificar, ver README).
+            // Unix: mesmo problema existia com `kill -9 <pid>` (so matava o
+            // /bin/sh -c); agora usa process group (ver shell.rs) — o spawn
+            // em `start()` coloca o processo num grupo proprio, entao um
+            // `kill -9 -<pgid>` alcanca shell + filhos de uma vez.
+            #[cfg(windows)]
+            {
+                let mut taskkill = tokio::process::Command::new("taskkill");
+                taskkill.args(["/PID", &pid.to_string(), "/T", "/F"]);
+                super::shell::apply_creation_flags(&mut taskkill);
+                let _ = taskkill.output().await;
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = tokio::task::spawn_blocking(move || {
+                    super::shell::kill_pid_tree_blocking(pid);
+                })
+                .await;
+            }
         }
         drop(job); // kill_on_drop dispara aqui como rede de seguranca redundante, sem efeito (ja morto)
         Ok(format!("comando '{command}' (id {id}) encerrado"))
@@ -616,6 +636,14 @@ mod tests {
     /// especifico do filho (via PowerShell/CIM), nao por nome de imagem —
     /// nome de imagem colidiria com o `ping` de outro teste rodando em
     /// paralelo no mesmo processo de teste.
+    ///
+    /// Versao Unix (mesmo proposito, mesma classe de bug): o comando roda via
+    /// `/bin/sh -c "sleep 30"`, o sleep e FILHO do sh. Antes do fix do
+    /// process group, o stop so matava o sh (`kill -9 <pid>`) e o sleep
+    /// ficava orfao. Agora o kill de grupo (`kill -9 -<pgid>`) deve alcancar
+    /// o filho tambem — checado via `/proc/<pid>` (Linux) ou `ps -p`
+    /// (macOS/compativel), sem depender de inspecionar arvores por fora.
+    #[cfg(windows)]
     #[tokio::test]
     async fn stop_kills_the_whole_process_tree_not_just_cmd_exe() {
         let jobs = BackgroundJobs::default();
@@ -655,6 +683,57 @@ mod tests {
         );
     }
 
+    #[cfg(not(windows))]
+    #[tokio::test]
+    async fn stop_kills_the_whole_process_tree_not_just_sh() {
+        let jobs = BackgroundJobs::default();
+        let dir = std::env::temp_dir();
+        // IMPORTANTE (achado depurando no WSL): shells POSIX fazem EXEC()
+        // direto quando `sh -c <comando-simples>` — o shell E substituido
+        // pelo comando e o PID rastreado pelo tokio JA E o processo final
+        // (sem arvore). Nesses casos kill -9 <pid> puro bastaria. O bug de
+        // arvore so existe quando o shell PERMANECE vivo com filhos: comando
+        // composto (`;`) + subshell explicito `( ... )` garante isso. Aqui:
+        // `(sleep 30 & wait)` mantem o bash vivo com o sleep como FILHO real.
+        // Verificar via /proc quem e o filho do shell rastreado e exigir que
+        // ele morra junto no stop — se o kill so alcancar o shell, o sleep
+        // fica orfao e este teste falha (mesma semantica do teste Windows).
+        let id = jobs.start(&dir, "(sleep 30 & wait)", &dir, "test-session").unwrap();
+
+        let sh_pid = jobs
+            .cmd_pid(&id)
+            .expect("job deveria ter pid enquanto roda");
+        let mut sleep_pid: Option<u32> = None;
+        for _ in 0..60 {
+            if let Some(pid) = child_pid_of(sh_pid) {
+                sleep_pid = Some(pid);
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let sleep_pid =
+            sleep_pid.expect("/bin/sh deveria ter spawnado o sleep como processo filho com PID proprio");
+        assert!(
+            pid_exists(sleep_pid),
+            "sleep (pid {sleep_pid}) deveria estar rodando antes do stop"
+        );
+
+        jobs.stop(&id).await.unwrap();
+        let mut gone = false;
+        for _ in 0..60 {
+            if !pid_exists(sleep_pid) {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            gone,
+            "sleep (pid {sleep_pid}) deveria ter morrido junto com o sh - bug do processo orfao voltou se isso falhar"
+        );
+    }
+
+    #[cfg(windows)]
     async fn child_pid_of(parent_pid: u32) -> Option<u32> {
         let output = tokio::process::Command::new("powershell")
             .args([
@@ -674,6 +753,41 @@ mod tests {
             .ok()
     }
 
+    /// Filho direto de um PID no Unix — le `/proc/<pid>/task/<tid>/children`
+    /// (Linux; primeira linha tem PIDs separados por espaco). Em macOS nao ha
+    /// /proc: usa `pgrep -P`. Retorna o primeiro filho encontrado.
+    #[cfg(not(windows))]
+    fn child_pid_of(parent_pid: u32) -> Option<u32> {
+        #[cfg(target_os = "linux")]
+        {
+            let children_path = format!("/proc/{parent_pid}/task/{parent_pid}/children");
+            let content = std::fs::read_to_string(children_path).ok()?;
+            return content
+                .split_whitespace()
+                .next()?
+                .parse::<u32>()
+                .ok();
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let output = std::process::Command::new("pgrep")
+                .args(["-P", &parent_pid.to_string()])
+                .output()
+                .ok()?;
+            String::from_utf8_lossy(&output.stdout)
+                .split_whitespace()
+                .next()?
+                .parse::<u32>()
+                .ok()
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn pid_exists(pid: u32) -> bool {
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
+    }
+
+    #[cfg(windows)]
     async fn pid_exists(pid: u32) -> bool {
         let output = tokio::process::Command::new("tasklist")
             .args(["/FI", &format!("PID eq {pid}")])

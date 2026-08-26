@@ -5,6 +5,10 @@ use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Instant;
+#[cfg(target_os = "linux")]
+use super::computer_atspi;
+#[cfg(target_os = "linux")]
+use super::computer_wayland;
 
 static LAST_ACTION: Mutex<Option<Instant>> = Mutex::new(None);
 static AUTHORIZED_APPS: Mutex<Option<Vec<String>>> = Mutex::new(None);
@@ -101,7 +105,61 @@ fn get_foreground_exe_name() -> Result<String> {
     }
 }
 
-#[cfg(not(windows))]
+/// Linux/X11 e macOS: acha a janela com foco via `is_focused()` do xcap
+/// (EWMH `_NET_ACTIVE_WINDOW` via XCB no Linux, `NSWorkspace`/CGWindowList
+/// por baixo no macOS - a API publica do xcap e a mesma nos dois SOs, so a
+/// implementacao interna muda) e resolve o nome do processo. No Linux
+/// prefere `/proc/<pid>/exe` (mais confiavel que WM_CLASS, que so tem o
+/// nome da classe da toolkit); no macOS esse caminho nao existe (sem
+/// `/proc`), entao cai direto no `app_name()` do xcap, que la vem do
+/// `NSRunningApplication` - identificador natural o bastante pro
+/// vocabulario de autorizacao (nome do app, nao caminho de executavel).
+/// Sem suporte em Wayland - o protocolo nao expoe "janela ativa" de outro
+/// processo por seguranca (ver PLANOS/port_linux_macos.md Tarefa 3.1);
+/// nesse caso `is_focused()` nunca acha correspondencia e o Err abaixo
+/// propaga como "aplicacao nao autorizada", que e o comportamento esperado
+/// ate a Tarefa 3.1b (portal RemoteDesktop). No macOS, autorizar/clicar
+/// tambem depende do usuario ja ter concedido Accessibility/Screen
+/// Recording via `tauri-plugin-macos-permissions` (Tarefa 3.1c) - sem isso
+/// o xcap tende a devolver listas vazias em vez de erro claro.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn get_foreground_exe_name() -> Result<String> {
+    use xcap::Window;
+
+    let windows = Window::all().map_err(|e| anyhow!("falha ao listar janelas: {e}"))?;
+    let win = windows
+        .into_iter()
+        .find(|w| w.is_focused().unwrap_or(false))
+        .ok_or_else(|| {
+            anyhow!(
+                "nao foi possivel obter janela em primeiro plano \
+                 (sem suporte a esta deteccao em sessoes Wayland; no macOS, \
+                 confirme que Accessibility/Screen Recording foram concedidos)"
+            )
+        })?;
+
+    #[cfg(target_os = "linux")]
+    {
+        let pid = win
+            .pid()
+            .map_err(|e| anyhow!("falha ao obter pid da janela em primeiro plano: {e}"))?;
+        if let Ok(exe_path) = std::fs::read_link(format!("/proc/{pid}/exe")) {
+            if let Some(name) = exe_path.file_name().and_then(|n| n.to_str()) {
+                return Ok(name.to_string());
+            }
+        }
+    }
+
+    let app_name = win
+        .app_name()
+        .map_err(|e| anyhow!("falha ao obter nome do processo em primeiro plano: {e}"))?;
+    if app_name.trim().is_empty() {
+        return Err(anyhow!("nao foi possivel identificar o processo em primeiro plano"));
+    }
+    Ok(app_name)
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 fn get_foreground_exe_name() -> Result<String> {
     Err(anyhow!("get_foreground_exe_name nao implementado nesta plataforma"))
 }
@@ -207,10 +265,49 @@ fn focus_window(hwnd: windows::Win32::Foundation::HWND) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+/// Linux/X11: ativa a janela via `wmctrl -a <titulo>` (busca por substring,
+/// mesmo criterio das outras plataformas) ou `xdotool` como fallback -
+/// nenhum dos dois e dependencia do Cargo (sao ferramentas de sistema, ja
+/// que nao ha equivalente ao SetForegroundWindow acessivel via crate pura
+/// sem reimplementar client messages EWMH cruas). Sem nenhum dos dois
+/// instalado, retorna erro explicando a dependencia de sistema faltante -
+/// mesmo padrao usado por `agent::tools` pro aviso de `uv` ausente.
+#[cfg(target_os = "linux")]
+fn focus_window_by_title(title: &str) -> Result<()> {
+    if super::shell::command_exists("wmctrl") {
+        let status = std::process::Command::new("wmctrl")
+            .args(["-a", title])
+            .status()
+            .map_err(|e| anyhow!("falha ao executar wmctrl: {e}"))?;
+        if !status.success() {
+            return Err(anyhow!(
+                "wmctrl nao encontrou/nao conseguiu ativar janela contendo '{title}'"
+            ));
+        }
+    } else if super::shell::command_exists("xdotool") {
+        let status = std::process::Command::new("xdotool")
+            .args(["search", "--name", title, "windowactivate"])
+            .status()
+            .map_err(|e| anyhow!("falha ao executar xdotool: {e}"))?;
+        if !status.success() {
+            return Err(anyhow!(
+                "xdotool nao encontrou/nao conseguiu ativar janela contendo '{title}'"
+            ));
+        }
+    } else {
+        return Err(anyhow!(
+            "focus_window no Linux precisa de 'wmctrl' ou 'xdotool' instalado no sistema \
+             (ex: sudo apt install wmctrl) - nenhum dos dois foi encontrado no PATH"
+        ));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 fn exec_focus_window(_args: &Value) -> Result<ComputerOutcome> {
     Ok(ComputerOutcome {
-        text: "focus_window so disponivel no Windows.".to_string(),
+        text: "focus_window ainda nao implementado nesta plataforma (so Windows/Linux por enquanto).".to_string(),
         screenshot_base64: None,
     })
 }
@@ -235,7 +332,17 @@ pub fn maybe_focus_from_args(args: &Value) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+pub fn maybe_focus_from_args(args: &Value) -> Result<()> {
+    if let Some(title) = args["window_title"].as_str() {
+        if !title.trim().is_empty() {
+            focus_window_by_title(title)?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn maybe_focus_from_args(_args: &Value) -> Result<()> {
     Ok(())
 }
@@ -249,6 +356,21 @@ fn exec_focus_window(args: &Value) -> Result<ComputerOutcome> {
     let hwnd = find_window_by_title(title)?;
     focus_window(hwnd)?;
     std::thread::sleep(std::time::Duration::from_millis(150));
+    Ok(ComputerOutcome {
+        text: format!(
+            "Janela contendo '{title}' trazida para primeiro plano. Use computer_use_screenshot pra ver o estado atual antes de clicar/digitar."
+        ),
+        screenshot_base64: None,
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn exec_focus_window(args: &Value) -> Result<ComputerOutcome> {
+    rate_limit()?;
+    let title = args["window_title"]
+        .as_str()
+        .ok_or_else(|| anyhow!("window_title obrigatorio"))?;
+    focus_window_by_title(title)?;
     Ok(ComputerOutcome {
         text: format!(
             "Janela contendo '{title}' trazida para primeiro plano. Use computer_use_screenshot pra ver o estado atual antes de clicar/digitar."
@@ -356,11 +478,11 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         ),
         spec(
             "computer_use_authorize",
-            "Autoriza o computer_use a interagir com uma aplicacao (pelo nome do executavel, ex: chrome.exe). Use ANTES de click/type/key/scroll. Sempre confirme com o usuario via ask antes de autorizar.",
+            "Autoriza o computer_use a interagir com uma aplicacao (pelo nome do executavel/app, ex: chrome.exe no Windows, chrome no Linux, ou \"Google Chrome\" no macOS). Use ANTES de click/type/key/scroll. Sempre confirme com o usuario via ask antes de autorizar.",
             json!({
                 "type": "object",
                 "properties": {
-                    "exe_name": { "type": "string", "description": "Nome do executavel (ex: chrome.exe, code.exe, notepad.exe)" }
+                    "exe_name": { "type": "string", "description": "Nome do executavel/app: com .exe no Windows (ex: chrome.exe, code.exe), sem extensao no Linux (ex: chrome, code), nome de exibicao no macOS (ex: \"Google Chrome\") - use o nome exato que apareceu no erro 'APLICACAO NAO AUTORIZADA'" }
                 },
                 "required": ["exe_name"]
             }),
@@ -381,7 +503,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         ),
         spec(
             "computer_use_get_window_state",
-            "Le a arvore de acessibilidade (UI Automation) de uma janela. Retorna elementos interativos com [element_index N] para usar em computer_use_click_element. Mais confiavel que coordenadas pixel. So Windows.",
+            "Le a arvore de acessibilidade de uma janela (UI Automation no Windows, AT-SPI2 no Linux - GTK/Qt tem suporte nativo, Electron/Chrome pode ser parcial). Retorna elementos interativos com [element_index N] para usar em computer_use_click_element. Mais confiavel que coordenadas pixel. Sem suporte no macOS ainda.",
             json!({
                 "type": "object",
                 "properties": {
@@ -392,7 +514,7 @@ pub fn tool_specs() -> Vec<ToolSpec> {
         ),
         spec(
             "computer_use_click_element",
-            "Clica em um elemento da arvore de acessibilidade pelo element_index (obtido via computer_use_get_window_state). Mais confiavel que coordenadas pixel. So Windows.",
+            "Clica em um elemento da arvore de acessibilidade pelo element_index (obtido via computer_use_get_window_state). Mais confiavel que coordenadas pixel. Sem suporte no macOS ainda.",
             json!({
                 "type": "object",
                 "properties": {
@@ -436,6 +558,23 @@ pub struct ComputerOutcome {
     pub screenshot_base64: Option<String>,
 }
 
+/// Em Wayland o `enigo` nao consegue injetar input (bloqueio estrutural do
+/// protocolo - ver `computer_wayland`) e nao ha "janela em primeiro plano"
+/// consultavel por outro processo, entao a checagem por executavel
+/// (`check_authorization`) e a focagem por titulo (`maybe_focus_from_args`)
+/// nao se aplicam - o consentimento explicito do usuario no dialogo do
+/// portal RemoteDesktop e a barreira de seguranca equivalente nesse caso
+/// (mesma decisao registrada na Tarefa 3.1b do plano de port).
+#[cfg(target_os = "linux")]
+fn should_use_wayland_backend() -> bool {
+    computer_wayland::is_wayland_session()
+}
+
+#[cfg(not(target_os = "linux"))]
+fn should_use_wayland_backend() -> bool {
+    false
+}
+
 pub async fn execute(name: &str, args: &Value, app_data_dir: &Path) -> Result<ComputerOutcome> {
     match name {
         "computer_use_screenshot" => exec_screenshot(args),
@@ -443,30 +582,166 @@ pub async fn execute(name: &str, args: &Value, app_data_dir: &Path) -> Result<Co
         "computer_use_focus_window" => exec_focus_window(args),
         "computer_use_authorize" => exec_authorize(args, app_data_dir),
         "computer_use_click" => {
+            if should_use_wayland_backend() {
+                #[cfg(target_os = "linux")]
+                return exec_click_wayland(args).await;
+            }
             maybe_focus_from_args(args)?;
             check_authorization(app_data_dir)?;
             exec_click(args)
         }
         "computer_use_type_text" => {
+            if should_use_wayland_backend() {
+                #[cfg(target_os = "linux")]
+                return exec_type_text_wayland(args).await;
+            }
             maybe_focus_from_args(args)?;
             check_authorization(app_data_dir)?;
             exec_type_text(args)
         }
         "computer_use_press_key" => {
+            if should_use_wayland_backend() {
+                #[cfg(target_os = "linux")]
+                return exec_press_key_wayland(args).await;
+            }
             maybe_focus_from_args(args)?;
             check_authorization(app_data_dir)?;
             exec_press_key(args)
         }
         "computer_use_scroll" => {
+            if should_use_wayland_backend() {
+                #[cfg(target_os = "linux")]
+                return exec_scroll_wayland(args).await;
+            }
             maybe_focus_from_args(args)?;
             check_authorization(app_data_dir)?;
             exec_scroll(args)
         }
         "computer_use_browser_execute" => exec_browser(args).await,
-        "computer_use_get_window_state" => exec_ax_tree(args),
-        "computer_use_click_element" => exec_click_element(args),
+        "computer_use_get_window_state" => {
+            #[cfg(target_os = "linux")]
+            {
+                exec_ax_tree_linux(args).await
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                exec_ax_tree(args)
+            }
+        }
+        "computer_use_click_element" => {
+            #[cfg(target_os = "linux")]
+            {
+                exec_click_element_linux(args).await
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                exec_click_element(args)
+            }
+        }
         _ => Err(anyhow!("computer_use tool desconhecida: {name}")),
     }
+}
+
+#[cfg(target_os = "linux")]
+async fn exec_click_wayland(args: &Value) -> Result<ComputerOutcome> {
+    rate_limit()?;
+    let x = args["x"]
+        .as_i64()
+        .ok_or_else(|| anyhow!("x obrigatorio (integer)"))? as i32;
+    let y = args["y"]
+        .as_i64()
+        .ok_or_else(|| anyhow!("y obrigatorio (integer)"))? as i32;
+    let button_str = args["button"].as_str().unwrap_or("left");
+
+    computer_wayland::click(x, y, button_str).await?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let (b64, w, h, meta) = capture_screen_base64(None)?;
+    Ok(ComputerOutcome {
+        text: format!("Clique {button_str} em ({x},{y}) executado via portal Wayland no monitor primario. {meta}. Screenshot pos-clique ({w}x{h}px) anexado — verifique se o efeito foi o esperado."),
+        screenshot_base64: Some(b64),
+    })
+}
+
+#[cfg(target_os = "linux")]
+async fn exec_type_text_wayland(args: &Value) -> Result<ComputerOutcome> {
+    rate_limit()?;
+    let text = args["text"]
+        .as_str()
+        .ok_or_else(|| anyhow!("text obrigatorio"))?;
+    if text.len() > 500 {
+        return Err(anyhow!(
+            "texto muito longo ({} chars, max 500). Divida em chamadas menores.",
+            text.len()
+        ));
+    }
+
+    computer_wayland::type_text(text).await?;
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let (b64, w, h, _meta) = capture_screen_base64(None)?;
+    Ok(ComputerOutcome {
+        text: format!(
+            "Texto digitado ({} chars) via portal Wayland. Screenshot pos-digitacao ({w}x{h}px) anexado.",
+            text.len()
+        ),
+        screenshot_base64: Some(b64),
+    })
+}
+
+#[cfg(target_os = "linux")]
+async fn exec_press_key_wayland(args: &Value) -> Result<ComputerOutcome> {
+    rate_limit()?;
+    let key_name = args["key"]
+        .as_str()
+        .ok_or_else(|| anyhow!("key obrigatorio"))?;
+    let modifiers: Vec<String> = args["modifiers"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    if is_blocked_combo(key_name, &modifiers) {
+        return Err(anyhow!(
+            "combinacao bloqueada por seguranca: {}+{key_name}. Use o sistema manualmente para esta acao.",
+            modifiers.join("+")
+        ));
+    }
+
+    computer_wayland::press_key(key_name, &modifiers).await?;
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let (b64, w, h, _meta) = capture_screen_base64(None)?;
+    let mod_str = if modifiers.is_empty() {
+        String::new()
+    } else {
+        format!("{}+", modifiers.join("+"))
+    };
+    Ok(ComputerOutcome {
+        text: format!("Tecla {mod_str}{key_name} pressionada via portal Wayland. Screenshot pos-acao ({w}x{h}px) anexado."),
+        screenshot_base64: Some(b64),
+    })
+}
+
+#[cfg(target_os = "linux")]
+async fn exec_scroll_wayland(args: &Value) -> Result<ComputerOutcome> {
+    rate_limit()?;
+    let direction = args["direction"]
+        .as_str()
+        .ok_or_else(|| anyhow!("direction obrigatorio"))?;
+    let amount = args["amount"].as_i64().unwrap_or(3) as i32;
+
+    computer_wayland::scroll(direction, amount).await?;
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    let (b64, w, h, _meta) = capture_screen_base64(None)?;
+    Ok(ComputerOutcome {
+        text: format!("Rolagem {direction} ({amount}) executada via portal Wayland. Screenshot pos-acao ({w}x{h}px) anexado."),
+        screenshot_base64: Some(b64),
+    })
 }
 
 fn rgba_to_base64(img: image::RgbaImage) -> Result<String> {
@@ -815,10 +1090,53 @@ fn exec_list_windows() -> Result<ComputerOutcome> {
     })
 }
 
-#[cfg(not(windows))]
+/// Linux/X11 e macOS via xcap (mesma fonte que `capture_screen_base64` usa
+/// pra screenshot de janela especifica - API publica identica nos dois
+/// SOs). Em Wayland `Window::all()` do xcap tende a vir vazio ou sem
+/// titulo/pid confiaveis (o compositor nao expoe janelas de outros
+/// processos) - ver limitacao documentada na Tarefa 3.2 de
+/// PLANOS/port_linux_macos.md. No macOS depende de Screen Recording
+/// concedido (Tarefa 3.1c) pra enxergar titulos de janelas de outros apps.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn exec_list_windows() -> Result<ComputerOutcome> {
+    use xcap::Window;
+
+    let windows = Window::all().map_err(|e| anyhow!("falha ao listar janelas: {e}"))?;
+    let lines: Vec<String> = windows
+        .iter()
+        .filter_map(|w| {
+            let title = w.title().unwrap_or_default();
+            if title.trim().is_empty() {
+                return None;
+            }
+            let pid = w.pid().unwrap_or(0);
+            let x = w.x().unwrap_or(0);
+            let y = w.y().unwrap_or(0);
+            let width = w.width().unwrap_or(0);
+            let height = w.height().unwrap_or(0);
+            Some(format!(
+                "pid={pid} title=\"{title}\" rect=({x},{y},{width}x{height})"
+            ))
+        })
+        .collect();
+
+    if lines.is_empty() {
+        return Ok(ComputerOutcome {
+            text: "Nenhuma janela visivel encontrada.".to_string(),
+            screenshot_base64: None,
+        });
+    }
+
+    Ok(ComputerOutcome {
+        text: format!("{} janelas visiveis:\n{}", lines.len(), lines.join("\n")),
+        screenshot_base64: None,
+    })
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 fn exec_list_windows() -> Result<ComputerOutcome> {
     Ok(ComputerOutcome {
-        text: "list_windows ainda nao implementado nesta plataforma (so Windows por enquanto).".to_string(),
+        text: "list_windows ainda nao implementado nesta plataforma (Windows/Linux/macOS por enquanto).".to_string(),
         screenshot_base64: None,
     })
 }
@@ -1082,10 +1400,23 @@ fn exec_ax_tree(args: &Value) -> Result<ComputerOutcome> {
     })
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 fn exec_ax_tree(_args: &Value) -> Result<ComputerOutcome> {
     Ok(ComputerOutcome {
-        text: "AX tree so disponivel no Windows.".to_string(),
+        text: "AX tree ainda nao implementada nesta plataforma (Windows/Linux por enquanto)."
+            .to_string(),
+        screenshot_base64: None,
+    })
+}
+
+#[cfg(target_os = "linux")]
+async fn exec_ax_tree_linux(args: &Value) -> Result<ComputerOutcome> {
+    let pid = args["pid"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("pid obrigatorio"))? as u32;
+    let text = computer_atspi::get_window_state(pid).await?;
+    Ok(ComputerOutcome {
+        text,
         screenshot_base64: None,
     })
 }
@@ -1168,10 +1499,26 @@ fn exec_click_element(args: &Value) -> Result<ComputerOutcome> {
     ))
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "linux")))]
 fn exec_click_element(_args: &Value) -> Result<ComputerOutcome> {
     Ok(ComputerOutcome {
-        text: "click_element so disponivel no Windows.".to_string(),
+        text: "click_element ainda nao implementado nesta plataforma (Windows/Linux por enquanto)."
+            .to_string(),
+        screenshot_base64: None,
+    })
+}
+
+#[cfg(target_os = "linux")]
+async fn exec_click_element_linux(args: &Value) -> Result<ComputerOutcome> {
+    let pid = args["pid"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("pid obrigatorio"))? as u32;
+    let element_index = args["element_index"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("element_index obrigatorio"))? as usize;
+    let text = computer_atspi::click_element(pid, element_index).await?;
+    Ok(ComputerOutcome {
+        text,
         screenshot_base64: None,
     })
 }

@@ -514,7 +514,7 @@ watch(
 }
 
 .bubble.streaming {
-  max-width: 72ch;
+  max-width: 100%;
   padding: 4px 0;
 }
 

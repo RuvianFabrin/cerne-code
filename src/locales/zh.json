@@ -204,7 +204,7 @@
     "modelsOpenRouterTitle": "模型 — OpenRouter",
     "viewModels": "查看模型",
     "llamaCppLocal": "本地 llama.cpp",
-    "llamaCppHint": "在 <code>providers.toml</code> 中配置的 fork——每一个都指向你机器上某个特定 llama.cpp 构建版本的 <code>llama-server.exe</code> 和 <code>models.ini</code>。没有预配置任何 fork（Cerne Code 发布时不会假设你安装在哪里）。",
+    "llamaCppHint": "在 <code>providers.toml</code> 中配置的 fork——每一个都指向你机器上某个特定 llama.cpp 构建版本的 <code>llama-server</code> 和 <code>models.ini</code>。没有预配置任何 fork（Cerne Code 发布时不会假设你安装在哪里）。",
     "noForksYet": "尚未配置任何 fork。",
     "labelOptional": "标签（可选）",
     "port": "端口",

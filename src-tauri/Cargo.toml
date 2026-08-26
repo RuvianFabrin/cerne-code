@@ -29,7 +29,16 @@ futures-util = "0.3"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5"
-keyring = { version = "3", features = ["windows-native"] }
+# Keyring com backend POR ALVO: o código (config.rs, custom.rs, search.rs)
+# usa a mesma API `keyring::Entry` em todos os SOs — só as features mudam.
+# - windows-native: Credential Manager (correção do bug documentado no README
+#   de chaves que não eram salvas de verdade — NÃO remover)
+# - linux-native: Secret Service via D-Bus — exige libsecret + gnome-keyring
+#   ou kwallet instalados no sistema (documentar como dependência; ver
+#   PLANOS/port_linux_macos.md Tarefa 1.1 e seção 0.1)
+# - apple-native: macOS Keychain
+# Fallback pra Linux headless/sem keyring ainda é decisão aberta (Tarefa 1.1).
+keyring = { version = "3", features = ["windows-native", "linux-native", "apple-native"] }
 similar = "2"
 ignore = "0.4"
 grep = "0.3"
@@ -67,6 +76,28 @@ windows = { version = "0.58", features = [
     "Win32_System_Threading",
 ] }
 uiautomation = "0.25"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Backend de input do computer_use em sessoes Wayland (Tarefa 3.1b): o enigo
+# nao injeta input no Wayland por design do protocolo, entao usamos o portal
+# xdg-desktop RemoteDesktop (consentimento explicito via dialogo nativo do
+# compositor) combinado com Screencast so pra obter o node id do PipeWire
+# que notify_pointer_motion_absolute exige como referencia de coordenadas.
+ashpd = { version = "0.13", features = ["remote_desktop", "screencast"] }
+# AX-tree sem visao no Linux (Tarefa 3.3): AT-SPI2 e o equivalente ao UI
+# Automation do Windows pra apps GTK/Qt. zbus e dependencia direta (nao so
+# transitiva via atspi) porque resolvemos o PID de cada app via
+# org.freedesktop.DBus.GetConnectionUnixProcessID manualmente.
+atspi = "0.30"
+zbus = "5"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# TCC (Accessibility/Screen Recording) pro computer_use no macOS (Tarefa
+# 3.1c) - plugin dedicado em vez de reimplementar as chamadas objc2
+# (CGRequestScreenCaptureAccess/AXIsProcessTrustedWithOptions) na mao, sem
+# nenhuma forma de compilar/testar isso aqui (sem toolchain C pra macOS no
+# Windows - nem `cargo check --target aarch64-apple-darwin` funciona).
+tauri-plugin-macos-permissions = "2"
 
 [dev-dependencies]
 

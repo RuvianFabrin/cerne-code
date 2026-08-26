@@ -1858,9 +1858,17 @@ fn set_disclaimer_accepted(state: State<AppState>, _accepted: bool) -> Result<()
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_dialog::init());
+
+    // TCC (Accessibility/Screen Recording/etc.) so existe no macOS - o
+    // computer_use la depende de check()/request() guiado na UI antes de
+    // screenshot/click funcionarem (Tarefa 3.1c de PLANOS/port_linux_macos.md).
+    #[cfg(target_os = "macos")]
+    let builder = builder.plugin(tauri_plugin_macos_permissions::init());
+
+    builder
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().expect("no app data dir");
             std::fs::create_dir_all(&app_data_dir).ok();

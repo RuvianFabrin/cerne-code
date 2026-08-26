@@ -198,6 +198,24 @@ fn is_reasoning_effort_native(base_url: &str) -> bool {
 ///   `reasoning:{effort:...}`, em qualquer nível (bug corrigido — antes só o
 ///   `Off` usava o objeto aninhado, Low/Medium/High vazavam pro formato
 ///   solto errado).
+/// App attribution da OpenRouter (https://openrouter.ai/docs/app-attribution).
+/// Alguns modelos "agentic-only" (ex: thinkingmachines/inkling:free) exigem
+/// um app identificado/categorizado e retornam 403 sem esses headers. Só
+/// aplica quando `kind == ProviderKind::Openrouter` - outros providers
+/// (Custom/llama.cpp/etc) não devem receber esses headers.
+fn apply_openrouter_attribution(
+    req: reqwest::RequestBuilder,
+    kind: ProviderKind,
+) -> reqwest::RequestBuilder {
+    if kind == ProviderKind::Openrouter {
+        req.header("HTTP-Referer", "https://github.com/RuvianFabrin/cerne-code")
+            .header("X-OpenRouter-Title", "Cerne Code")
+            .header("X-OpenRouter-Categories", "cli-agent")
+    } else {
+        req
+    }
+}
+
 fn apply_reasoning(
     body: &mut serde_json::Value,
     kind: ProviderKind,
@@ -292,6 +310,7 @@ pub async fn chat_stream(
     apply_reasoning(&mut body, cfg.kind, &cfg.base_url, reasoning_effort);
 
     let mut req = client.post(&url).json(&body);
+    req = apply_openrouter_attribution(req, cfg.kind);
     if let Some(ref key) = api_key {
         req = req.bearer_auth(key);
     }
@@ -318,6 +337,7 @@ pub async fn chat_stream(
                 obj.remove("reasoning");
             }
             let mut retry_req = client.post(&url).json(&body);
+            retry_req = apply_openrouter_attribution(retry_req, cfg.kind);
             if let Some(key) = api_key {
                 retry_req = retry_req.bearer_auth(key);
             }
@@ -496,6 +516,7 @@ pub async fn list_models(cfg: &ProviderConfig, api_key: Option<String>, app_data
         _ => {
             let url = format!("{}/models", cfg.base_url.trim_end_matches('/'));
             let mut req = client.get(&url);
+            req = apply_openrouter_attribution(req, cfg.kind);
             if let Some(key) = api_key {
                 req = req.bearer_auth(key);
             }
@@ -515,10 +536,19 @@ pub async fn list_models(cfg: &ProviderConfig, api_key: Option<String>, app_data
             // JSON deixavam "criar sessão" visivelmente lento.
             let mut cache = load_context_cache(app_data_dir);
             let mut cache_changed = false;
-            let models = json["data"]
+            // A maioria (OpenRouter, LM Studio) envolve a lista em
+            // `{"data": [...]}`, mas nem todo endpoint OpenAI-compat segue
+            // isso — achado real testando com Together AI: `/v1/models` deles
+            // devolve um ARRAY JSON PURO na raiz (confirmado na doc oficial,
+            // schema `ModelInfoList`), sem chave `data` nenhuma. Sem esse
+            // fallback, `json["data"].as_array()` dava `None` e a lista
+            // ficava silenciosamente vazia — nenhum erro, só zero modelos.
+            let raw_models = json["data"]
                 .as_array()
                 .cloned()
-                .unwrap_or_default()
+                .or_else(|| json.as_array().cloned())
+                .unwrap_or_default();
+            let models = raw_models
                 .into_iter()
                 .filter_map(|m| {
                     let id = m["id"].as_str()?.to_string();
@@ -542,7 +572,12 @@ pub async fn list_models(cfg: &ProviderConfig, api_key: Option<String>, app_data
                     // OpenRouter traz nome/descrição/preço/modalidades; um
                     // endpoint OpenAI-compat genérico (Custom/LM Studio) não
                     // traz nada disso e os campos ficam None.
-                    let name = m["name"].as_str().map(|s| s.to_string());
+                    // Together AI (e possivelmente outros) usam
+                    // `display_name` em vez de `name`.
+                    let name = m["name"]
+                        .as_str()
+                        .or_else(|| m["display_name"].as_str())
+                        .map(|s| s.to_string());
                     let description = m["description"].as_str().map(|s| s.to_string());
                     let price_prompt = m["pricing"]["prompt"]
                         .as_str()
@@ -686,6 +721,7 @@ pub async fn supports_vision(cfg: &ProviderConfig, api_key: Option<String>, mode
         ProviderKind::Openrouter => {
             let url = format!("{}/models", cfg.base_url.trim_end_matches('/'));
             let mut req = client.get(&url);
+            req = apply_openrouter_attribution(req, cfg.kind);
             if let Some(key) = api_key {
                 req = req.bearer_auth(key);
             }

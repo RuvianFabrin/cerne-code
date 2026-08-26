@@ -22,6 +22,7 @@ import { SUPPORTED_LOCALES, setLocale, type LocaleCode } from "../i18n";
 import LlamaForkRow from "./LlamaForkRow.vue";
 import ModelBrowserDialog from "./ModelBrowserDialog.vue";
 import { MCP_CONNECTORS, type McpConnector } from "../content/mcpConnectors";
+import { executablePickerExtensions, llamaServerPlaceholder } from "../platform";
 
 // Fase F do roteiro (14_backlog_pendente.md): Settings deixa de ser uma
 // view inteira alternada em App.vue e vira modal, como Ajuda/Sobre já são
@@ -105,7 +106,14 @@ const newForkPort = ref(8082);
 const forkError = ref("");
 
 async function pickForkExe() {
-  const selected = await open({ directory: false, multiple: false, filters: [{ name: t("settings.executableFilter"), extensions: ["exe"] }] });
+  // Filtro condicional por SO (Tarefa 4.1 do port): no Windows filtramos
+  // .exe; fora dele executavel nao tem extensao — sem filtro nenhum.
+  const extensions = executablePickerExtensions();
+  const selected = await open({
+    directory: false,
+    multiple: false,
+    ...(extensions ? { filters: [{ name: t("settings.executableFilter"), extensions }] } : {}),
+  });
   if (typeof selected === "string") newForkExe.value = selected;
 }
 
@@ -783,7 +791,7 @@ async function importSessionsBackup() {
           <div class="fork-form-row">
             <button class="folder-btn" @click="pickForkExe">
               <span class="msi">folder_open</span>
-              <span class="folder-path">{{ newForkExe || "llama-server.exe..." }}</span>
+              <span class="folder-path">{{ newForkExe || llamaServerPlaceholder() }}</span>
             </button>
             <button class="folder-btn" @click="pickForkIni">
               <span class="msi">folder_open</span>

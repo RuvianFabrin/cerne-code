@@ -204,7 +204,7 @@
     "modelsOpenRouterTitle": "Models — OpenRouter",
     "viewModels": "View models",
     "llamaCppLocal": "llama.cpp local",
-    "llamaCppHint": "Forks configured in <code>providers.toml</code> — each one points to the <code>llama-server.exe</code> and <code>models.ini</code> of a specific llama.cpp build on your machine. No fork comes pre-configured (Cerne Code ships without assuming where you installed yours).",
+    "llamaCppHint": "Forks configured in <code>providers.toml</code> — each one points to the <code>llama-server</code> and <code>models.ini</code> of a specific llama.cpp build on your machine. No fork comes pre-configured (Cerne Code ships without assuming where you installed yours).",
     "noForksYet": "No forks configured yet.",
     "labelOptional": "label (optional)",
     "port": "port",

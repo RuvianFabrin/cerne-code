@@ -2,6 +2,10 @@ mod analyst;
 mod ast_tools;
 pub mod background;
 pub mod computer;
+#[cfg(target_os = "linux")]
+mod computer_atspi;
+#[cfg(target_os = "linux")]
+mod computer_wayland;
 mod pipeline;
 pub mod shell;
 mod subagent;
@@ -808,10 +812,15 @@ pub async fn run_turn(
             prompt.push_str(&persona.content);
         }
         if let Some(ref root) = session.project_root {
+            // Separador do SO real (Tarefa 4.2 do port): em Windows o exemplo
+            // continua com `\`; em Unix vira `/` — o prompt e contrato de
+            // comportamento do LLM, ensinar separador errado degrada tudo
+            // silenciosamente.
+            let sep = std::path::MAIN_SEPARATOR;
             prompt.push_str(&format!(
                 "\n\nPasta do projeto desta sessao: {root}\n\
                  Use SEMPRE caminhos absolutos nas ferramentas de arquivo e diretorio \
-                 (ex: {root}\\arquivo.txt) — nunca caminhos relativos. Assim o usuario ve \
+                 (ex: {root}{sep}arquivo.txt) — nunca caminhos relativos. Assim o usuario ve \
                  exatamente em qual pasta cada arquivo sera lido ou criado."
             ));
         }

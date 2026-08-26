@@ -147,7 +147,9 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
     vec![
         spec(
             "read_file",
-            "Le o conteudo de um arquivo. Caminho relativo e resolvido dentro do projeto; caminho absoluto funciona para QUALQUER pasta do sistema (ex: F:\\outro-repo\\src\\main.rs) — use para consultar codigo de outros repositorios ou documentacao externa. Use offset+limit pra ler so um trecho de arquivos grandes (economiza tokens e memoria) — o retorno inclui o total de linhas pra voce saber se precisa continuar lendo.",
+            // Exemplo neutro de SO (Tarefa 4.2 do port): mostra os dois
+            // formatos em vez de ensinar so o Windows.
+            "Le o conteudo de um arquivo. Caminho relativo e resolvido dentro do projeto; caminho absoluto funciona para QUALQUER pasta do sistema (ex: /pasta/outro-repo/src/main.rs no Unix, C:\\pasta\\outro-repo\\src\\main.rs no Windows) — use para consultar codigo de outros repositorios ou documentacao externa. Use offset+limit pra ler so um trecho de arquivos grandes (economiza tokens e memoria) — o retorno inclui o total de linhas pra voce saber se precisa continuar lendo.",
             json!({
                 "type": "object",
                 "properties": {
@@ -585,7 +587,17 @@ fn resolve_within(
     allow_external: bool,
 ) -> Result<PathBuf> {
     let trimmed = rel.trim();
-    let candidate = project_root.join(trimmed.trim_start_matches(['/', '\\']));
+    // Caminho absoluto deve ser preservado COMO ESTA. Nao remover os
+    // separadores iniciais: em POSIX, tirar a `/` inicial transforma um
+    // caminho absoluto em RELATIVO e o `project_root.join()` o colocaria
+    // DENTRO do projeto — o write sairia dentro da raiz quando deveria ir
+    // pra pasta externa (bug que so aparecia fora do Windows, onde absolutos
+    // tem drive e o join() os substitui de qualquer forma).
+    let candidate = if Path::new(trimmed).is_absolute() {
+        PathBuf::from(trimmed)
+    } else {
+        project_root.join(trimmed)
+    };
     if allow_external && Path::new(trimmed).is_absolute() {
         return Ok(candidate);
     }
@@ -1156,31 +1168,61 @@ async fn execute_project_tool(
             }
             const RUN_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
             let mut cmd = super::shell::build_shell_command(command);
+            // Unix: grupo de processo proprio — no timeout, `kill_on_drop`
+            // so mata o shell; sem o grupo, os filhos dele ficariam orfaos
+            // (mesma classe do bug do background.rs::stop). Com o grupo,
+            // kill_pid_tree_blocking alcanca todos.
+            super::shell::apply_process_group(&mut cmd);
             cmd.current_dir(project_root)
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .kill_on_drop(true);
             let child = cmd.spawn()?;
-            let result = match tokio::time::timeout(RUN_COMMAND_TIMEOUT, child.wait_with_output()).await
-            {
-                Ok(output) => {
-                    let output = output?;
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    format!(
-                        "exit_code: {}\nstdout:\n{}\nstderr:\n{}",
-                        output.status.code().unwrap_or(-1),
-                        truncate(&stdout, 8000),
-                        truncate(&stderr, 4000)
-                    )
-                }
-                Err(_) => format!(
-                    "comando expirou apos {}s e foi encerrado (nao terminou sozinho). Se for um \
-                     servidor ou processo de longa duracao que deveria continuar rodando, use \
-                     {{\"background\": true}} em vez de esperar ele terminar.",
-                    RUN_COMMAND_TIMEOUT.as_secs()
-                ),
-            };
+            // Captura o PID ANTES: `wait_with_output()` consome o Child, e se
+            // o timeout vencer, o future e dropado junto com ele (kill_on_drop
+            // mata so o shell). O PID capturado permite matar a ARVORE depois.
+            let child_pid = child.id();
+            let result =
+                match tokio::time::timeout(RUN_COMMAND_TIMEOUT, child.wait_with_output()).await {
+                    Ok(output) => {
+                        let output = output?;
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        format!(
+                            "exit_code: {}\nstdout:\n{}\nstderr:\n{}",
+                            output.status.code().unwrap_or(-1),
+                            truncate(&stdout, 8000),
+                            truncate(&stderr, 4000)
+                        )
+                    }
+                    Err(_) => {
+                        // Timeout: mata a ARVORE explicitamente. No Unix,
+                        // kill_on_drop so mataria o shell (/bin/sh -c) e
+                        // deixaria o comando real orfao rodando; no Windows,
+                        // taskkill /T /F garante o mesmo. A mensagem
+                        // consumida pelo LLM nao muda.
+                        #[cfg(windows)]
+                        if let Some(pid) = child_pid {
+                            let mut taskkill = tokio::process::Command::new("taskkill");
+                            taskkill.args(["/PID", &pid.to_string(), "/T", "/F"]);
+                            super::shell::apply_creation_flags(&mut taskkill);
+                            let _ = taskkill.output().await;
+                        }
+                        #[cfg(not(windows))]
+                        if let Some(pid) = child_pid {
+                            let _ = tokio::task::spawn_blocking(move || {
+                                super::shell::kill_pid_tree_blocking(pid);
+                            })
+                            .await;
+                        }
+                        format!(
+                            "comando expirou apos {}s e foi encerrado (nao terminou sozinho). Se for um \
+                             servidor ou processo de longa duracao que deveria continuar rodando, use \
+                             {{\"background\": true}} em vez de esperar ele terminar.",
+                            RUN_COMMAND_TIMEOUT.as_secs()
+                        )
+                    }
+                };
             // Comando arbitrario pode ter criado/apagado arquivos reais;
             // descarta o cache de travessia pra proxima busca ver o estado atual.
             super::walk_cache::invalidate(project_root);

@@ -143,6 +143,14 @@ pub fn apply_std_creation_flags(_cmd: &mut std::process::Command) {
 /// `Child::start_kill()`/`kill_on_drop` sozinhos só matam o processo direto
 /// (achado documentado em `agent/background.rs::stop`). Ignora falha de
 /// propósito — o caso mais comum é o processo já ter morrido sozinho.
+///
+/// No Unix, o correto é matar o **process group**: os comandos são spawnados
+/// com `.process_group(0)` (ver `apply_process_group`), então o shell E todos
+/// os filhos dele compartilham o pgid = pid original, e um único `kill -9 -<pgid>`
+/// alcança a árvore inteira. Antes disso era `kill -9 <pid>` puro, que só
+/// matava o `/bin/sh -c` e deixava o processo de verdade órfão (mesmo bug do
+/// taskkill no Windows). Se o grupo já não existir (processo morreu sozinho),
+/// cai pro `kill -9 <pid>` individual por segurança.
 pub fn kill_pid_tree_blocking(pid: u32) {
     #[cfg(windows)]
     {
@@ -154,10 +162,34 @@ pub fn kill_pid_tree_blocking(pid: u32) {
     }
     #[cfg(not(windows))]
     {
-        let _ = std::process::Command::new("kill")
-            .args(["-9", &pid.to_string()])
+        // `kill -- -PGID` mata todo o process group de uma vez. O sinal
+        // negativo na frente do PID é o que indica "grupo, não processo".
+        let group_kill = std::process::Command::new("kill")
+            .args(["-9", &format!("-{pid}")])
             .output();
+        if group_kill.is_err() || !group_kill.unwrap().status.success() {
+            // Grupo pode nem existir mais (processo morreu sozinho e filhos
+            // reparentados pra init). Tenta o processo direto mesmo assim.
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .output();
+        }
     }
+}
+
+/// Coloca o futuro processo em seu PRÓPRIO process group (`pgid = pid`),
+/// pré-condição pro kill de árvore Unix funcionar (ver
+/// `kill_pid_tree_blocking`). Sem isso, o shell herda o pgid do Cerne e um
+/// hipotético `kill -- -<pgid>` mataria o próprio Cerne junto.
+#[cfg(not(windows))]
+pub fn apply_process_group(cmd: &mut tokio::process::Command) {
+    cmd.process_group(0);
+}
+
+#[cfg(windows)]
+pub fn apply_process_group(_cmd: &mut tokio::process::Command) {
+    // No-op no Windows: lá a árvore é morta via `taskkill /T`, que não
+    // depende de process groups.
 }
 
 /// Configura um `tokio::process::Command` com o shell detectado e o comando

@@ -76,10 +76,20 @@ function injectCopyButtons() {
   });
 }
 
-watch(html, async () => {
-  await nextTick();
-  injectCopyButtons();
-});
+watch(
+  html,
+  async () => {
+    await nextTick();
+    injectCopyButtons();
+  },
+  // Sem isso, o botão nunca aparecia na mensagem final: durante o streaming
+  // o texto vem de um <MarkdownContent> "ao vivo" (ChatView.vue liveBlocks),
+  // mas ao terminar o turno essa instância é descartada e uma NOVA monta a
+  // mensagem persistida (MessageBubble). Nessa instância nova, `html` já
+  // nasce com o valor final e nunca "muda" depois - o watcher sem immediate
+  // nunca disparava, então injectCopyButtons() nunca rodava.
+  { immediate: true },
+);
 </script>
 
 <template>
@@ -183,16 +193,10 @@ watch(html, async () => {
   border-radius: 6px;
   padding: 4px;
   cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.15s;
   display: flex;
   align-items: center;
   justify-content: center;
   color: #52525b;
-}
-
-.markdown-body :deep(pre:hover .code-copy-btn) {
-  opacity: 1;
 }
 
 .markdown-body :deep(.code-copy-btn:hover) {
