@@ -1,4 +1,4 @@
-// Item da lista "Pra implementar" (PLANOS/aFazer.md, PLANOS/14_backlog_pendente.md): backup de
+// Item da lista "Pra implementar": backup de
 // sessão como `.zip` — exportar uma sessão específica ou todas, e reimportar depois. Cada sessão
 // no disco é só 3 arquivos JSON pequenos (`session.json`, `chat_log.json`, `tasks.json`, dentro de
 // `<app_data_dir>/sessions/<id>/`) — sem anexos binários dentro da pasta da sessão (attachments são

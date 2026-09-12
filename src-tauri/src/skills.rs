@@ -39,8 +39,7 @@ pub fn project_skills_dir(project_root: &Path) -> PathBuf {
 }
 
 /// Skills de exemplo embarcadas no binário, semeadas só na primeira vez que
-/// o app roda (junto do `_README.md`) — Fase B2 do roteiro de Agentes/Skills
-/// (`PLANOS/13_roteiro_agentes_skills_fases.md`), adaptadas a partir das
+/// o app roda (junto do `_README.md`), adaptadas a partir das
 /// skills do picoClaw (`weather`/`skill-creator` do repo original) pro
 /// formato e ferramentas reais do Cerne (sem depender de `curl`/wttr.in como
 /// o picoClaw fazia — usa `web_search`/`web_fetch`, que o Cerne já tem

@@ -7,18 +7,16 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencias / build output
 node_modules
 dist
 dist-ssr
 *.local
 
-# Lock files
-package-lock.json
-
-# Rust / Tauri build output
+# Rust / Tauri
 src-tauri/target/
 
-# Editor directories and files
+# Editores
 .vscode/*
 .claude/*
 .qwen/*
@@ -31,18 +29,19 @@ src-tauri/target/
 *.sln
 *.sw?
 
-# Test files
+# Arquivos locais de teste / rascunho (nao fazem parte do projeto)
 teste.py
 teste_escrita.txt
 lista de testes.md
 comandos para rodar o projeto.txt
 falta_ajustar.md
 
-# Setup / temp
-_setup/
+# Resultados de benchmark (artefatos gerados; o script esta versionado)
+scripts/benchmark_result.json
+scripts/benchmark_tools_result.json
 
-# Planos / notes (keep only the official ones)
-PLANOS/agent_loop_propostas.md
-
-# PPTX presentations (not source code)
+# Apresentacoes (nao sao codigo)
 *.pptx
+
+# Pasta de setup local
+_setup/

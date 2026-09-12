@@ -35,9 +35,8 @@ pub struct Persona {
     pub content: String,
     #[serde(default)]
     pub kind: PersonaKind,
-    /// Allowlist de ferramentas — Fase A3 do roteiro de Agentes/Skills
-    /// (`PLANOS/13_roteiro_agentes_skills_fases.md`), completando o gap
-    /// documentado em T24 ("falta tools/model/skills por agente"). Vazio
+    /// Allowlist de ferramentas, completando o gap documentado de
+    /// "falta tools/model/skills por agente". Vazio
     /// (default, inclusive pra personas salvas antes desse campo existir —
     /// `serde(default)` cobre isso) = sem restrição, comportamento IDÊNTICO
     /// a antes. Só filtra o toolset da sessão quando o usuário preenche essa

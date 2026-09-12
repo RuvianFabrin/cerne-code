@@ -1,4 +1,4 @@
-// Voz — item 7a/7b da lista "Pra implementar" (PLANOS/aFazer.md): ler
+// Voz: ler
 // resposta em voz alta (TTS) e microfone no composer (STT). Escopo reduzido
 // a pedido explícito do usuário ("focar no ler texto, e no falar texto") —
 // SEM redesenho do "+", SEM modo de conversa em tempo real, SEM configurar

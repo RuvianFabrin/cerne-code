@@ -34,8 +34,7 @@ dirs = "5"
 # - windows-native: Credential Manager (correção do bug documentado no README
 #   de chaves que não eram salvas de verdade — NÃO remover)
 # - linux-native: Secret Service via D-Bus — exige libsecret + gnome-keyring
-#   ou kwallet instalados no sistema (documentar como dependência; ver
-#   PLANOS/port_linux_macos.md Tarefa 1.1 e seção 0.1)
+#   ou kwallet instalados no sistema (documentar como dependência de sistema)
 # - apple-native: macOS Keychain
 # Fallback pra Linux headless/sem keyring ainda é decisão aberta (Tarefa 1.1).
 keyring = { version = "3", features = ["windows-native", "linux-native", "apple-native"] }

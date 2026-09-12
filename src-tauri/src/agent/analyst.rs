@@ -1,5 +1,5 @@
-//! Etapa ANALISTA do pipeline Dev → QA → Analista (Fase 3 do roteiro de
-//! Agentes/Skills, `PLANOS/13_roteiro_agentes_skills_fases.md`).
+//! Etapa ANALISTA do pipeline Dev → QA → Analista (a última etapa do
+//! ciclo de qualidade).
 //!
 //! Estruturalmente é uma cópia de `verifier.rs` (mesmo toolset read-only,
 //! mesmo formato de veredito APROVADO/REFUTADO + evidência) — decisão de

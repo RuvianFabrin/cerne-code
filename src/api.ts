@@ -579,10 +579,10 @@ export function onAgentsSkillsPlan(cb: (plan: AgentsSkillsPlan) => void): Promis
   return listen<AgentsSkillsPlan>("agent:agents_skills_plan", (e) => cb(e.payload));
 }
 
-// Fase A4: aviso informativo (não bloqueia) disparado nos modos Auto/YOLO
+// Aviso informativo (não bloqueia) disparado nos modos Auto/YOLO
 // quando o turno vai rodar `task`s em paralelo via API — no modo Manual o
 // mesmo aviso já vem embutido em `AgentsSkillsPlan.parallel` acima. Ainda
-// sem um componente de toast consumindo isso (ver PLANOS/14_backlog_pendente.md).
+// sem um componente de toast consumindo isso.
 export function onParallelExecutionInfo(cb: (info: ParallelExecutionInfo) => void): Promise<UnlistenFn> {
   return listen<ParallelExecutionInfo>("agent:parallel_execution_info", (e) => cb(e.payload));
 }

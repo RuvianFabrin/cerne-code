@@ -115,7 +115,7 @@ fn get_foreground_exe_name() -> Result<String> {
 /// `NSRunningApplication` - identificador natural o bastante pro
 /// vocabulario de autorizacao (nome do app, nao caminho de executavel).
 /// Sem suporte em Wayland - o protocolo nao expoe "janela ativa" de outro
-/// processo por seguranca (ver PLANOS/port_linux_macos.md Tarefa 3.1);
+/// processo por seguranca;
 /// nesse caso `is_focused()` nunca acha correspondencia e o Err abaixo
 /// propaga como "aplicacao nao autorizada", que e o comportamento esperado
 /// ate a Tarefa 3.1b (portal RemoteDesktop). No macOS, autorizar/clicar
@@ -1094,9 +1094,8 @@ fn exec_list_windows() -> Result<ComputerOutcome> {
 /// pra screenshot de janela especifica - API publica identica nos dois
 /// SOs). Em Wayland `Window::all()` do xcap tende a vir vazio ou sem
 /// titulo/pid confiaveis (o compositor nao expoe janelas de outros
-/// processos) - ver limitacao documentada na Tarefa 3.2 de
-/// PLANOS/port_linux_macos.md. No macOS depende de Screen Recording
-/// concedido (Tarefa 3.1c) pra enxergar titulos de janelas de outros apps.
+/// processos) - limitacao conhecida do protocolo. No macOS depende de
+/// Screen Recording concedido pra enxergar titulos de janelas de outros apps.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn exec_list_windows() -> Result<ComputerOutcome> {
     use xcap::Window;

@@ -113,8 +113,8 @@ fn run_git(project_root: &Path, args: &[&str]) -> Result<String> {
 }
 
 // ---------------------------------------------------------------------
-// Backup/sincronização de SESSÕES via git (PLANOS/14_backlog_pendente.md,
-// "backup/sincronização via git" — alternativa ao `.zip`). Repo próprio,
+// Backup/sincronização de SESSÕES via git (alternativa ao `.zip`).
+// Repo próprio,
 // raiz em `<app_data_dir>/sessions` (NÃO o app_data_dir inteiro — arquivos
 // como `mcp_servers.json` podem ter segredo em texto puro no campo `env`,
 // nunca deveriam ir pra um remoto git por engano). Conflito de merge não é

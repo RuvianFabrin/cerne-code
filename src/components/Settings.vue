@@ -529,9 +529,8 @@ async function saveKey() {
   editingOpenrouterKey.value = false;
 }
 
-// Backup de sessão como .zip (PLANOS/14_backlog_pendente.md, "backup/exportar
-// sessão"). Comando faz a leitura/escrita no disco — frontend só escolhe o
-// caminho (dialog nativo) e mostra o resultado.
+// Backup de sessão como .zip. Comando faz a leitura/escrita no disco —
+// frontend só escolhe o caminho (dialog nativo) e mostra o resultado.
 const backupStatus = ref("");
 const backupError = ref("");
 
@@ -1050,8 +1049,8 @@ async function importSessionsBackup() {
 
       <!-- Escondido a pedido do usuário (2026-08-20), antes de subir o Cerne
            Code — backup .zip e backup via git ainda não foram confirmados
-           testando (ver PLANOS/Testar.md, itens 1 e 2). Código intacto,
-           só a UI fica invisível até serem confirmados; então é só tirar
+           testando. Código intacto, só a UI fica invisível até serem
+           confirmados; então é só tirar
            esse `v-if="false"`. -->
       <AccordionPanel v-if="false" value="backup">
         <AccordionHeader>{{ $t("settings.backupTitle") }}</AccordionHeader>

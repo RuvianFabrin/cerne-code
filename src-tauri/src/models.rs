@@ -604,8 +604,7 @@ pub struct TaskItem {
 /// Uma execução isolada de agente/skill (`task`/`verify_completion` hoje —
 /// ver `agent/subagent.rs`/`agent/verifier.rs`), rastreada por UUID pra
 /// permitir reconstruir a árvore de chamadas (agente A chama skill B chama
-/// agente C) sem perder a referência de quem chamou quem — Fase A1 do
-/// roteiro de Agentes/Skills (`PLANOS/13_roteiro_agentes_skills_fases.md`).
+/// agente C) sem perder a referência de quem chamou quem.
 /// Vive num registro em memória (`AppState.agent_executions`), não
 /// persistido: é só pra UI consultar "o que está rodando agora" enquanto o
 /// app está aberto, não é histórico de longo prazo (isso já existe via

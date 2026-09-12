@@ -1864,7 +1864,7 @@ pub fn run() {
 
     // TCC (Accessibility/Screen Recording/etc.) so existe no macOS - o
     // computer_use la depende de check()/request() guiado na UI antes de
-    // screenshot/click funcionarem (Tarefa 3.1c de PLANOS/port_linux_macos.md).
+    // screenshot/click funcionarem.
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_plugin_macos_permissions::init());
 

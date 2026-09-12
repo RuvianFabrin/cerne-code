@@ -1,8 +1,8 @@
 /**
  * Detecção de plataforma — PONTO ÚNICO DE VERDADE.
  *
- * Regra do projeto (Tarefa 4.0 do PLANOS/port_linux_macos.md): nenhum
- * componente faz regex de userAgent sozinho; todos importam daqui. Se um dia
+ * Regra do projeto: nenhum componente faz regex de userAgent sozinho;
+ * todos importam daqui. Se um dia
  * a detecção mudar (ex.: comando Tauri `get_platform`), muda só este arquivo.
  */
 

@@ -1,7 +1,6 @@
-//! AX-tree sem visao no Linux (Tarefa 3.3 de PLANOS/port_linux_macos.md),
-//! via AT-SPI2 - o equivalente de acessibilidade do UI Automation do
-//! Windows pra apps GTK/Qt (Electron/Chrome tem suporte parcial, igual
-//! documentado no plano). Complementa `computer_wayland` (que cobre
+//! AX-tree sem visao no Linux, via AT-SPI2 - o equivalente de
+//! acessibilidade do UI Automation do Windows pra apps GTK/Qt
+//! (Electron/Chrome tem suporte parcial). Complementa `computer_wayland` (que cobre
 //! click/type/scroll "as cegas" via portal): a AX-tree deixa o agente
 //! localizar e clicar elementos por nome/papel, sem precisar de screenshot.
 //!

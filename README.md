@@ -56,6 +56,41 @@
 
 👉 **[Baixe a última versão do Cerne Code](https://ruvianfabrin.github.io/cerne-code.html)** (Windows, instalador NSIS)
 
+> 🐧 **Linux:** o suporte está implementado e em fase final de validação — o
+> instalador será publicado assim que os testes em VM terminarem. As versões
+> compatíveis estão na tabela abaixo.
+
+---
+
+### 🐧 Compatibilidade com Linux
+
+O Cerne Code precisa de **`webkit2gtk-4.1`**, que exige **glib ≥ 2.70**, e é
+compilado sobre **glibc 2.35** — por isso algumas distros mais antigas não
+conseguem rodar (nem compilar) ele.
+
+**Regra prática:** funciona em qualquer distro com **glibc ≥ 2.35** e
+**glib 2.70+**.
+
+| Família | Versões que funcionam | Versões que **não** funcionam |
+|---|---|---|
+| **Debian / Ubuntu / Mint**<br>(`.deb`, `.AppImage`) | **Ubuntu 22.04 LTS** ou mais novo<br>**Kubuntu / Xubuntu / Lubuntu 22.04+**<br>**Linux Mint 21** ou mais novo<br>**Debian 12** (Bookworm) ou mais novo<br>**Pop!_OS 22.04+** · **Zorin 17+** · **elementary 7+** | Ubuntu 20.04 ❌<br>Linux Mint 20 ❌<br>Debian 11 (Bullseye) ❌ |
+| **Fedora / Red Hat**<br>(`.rpm`) | **Fedora 36** ou mais novo<br>**Nobara / Ultramarine** (qualquer versão atual) | Fedora 35 e anteriores ❌<br>RHEL 9 / Rocky 9 / Alma 9 ❌¹ |
+| **Arch**<br>(AUR) | **Arch Linux** · **Manjaro** · **EndeavourOS** · **Garuda** (rolling release, sempre atual) | — |
+| **openSUSE** | **Tumbleweed** (rolling)<br>**Leap 15.6** ou mais novo | openSUSE Leap 15.5 ❌ |
+
+¹ RHEL 9 e derivados têm glib 2.68 — abaixo do mínimo exigido pelo
+`webkit2gtk-4.1`. É uma limitação atual do Tauri v2, não do Cerne Code.
+
+**Não sabe qual é a sua?** Rode no terminal:
+
+```bash
+ldd --version | head -1        # precisa ser 2.35 ou maior
+pkg-config --modversion glib-2.0   # precisa ser 2.70 ou maior
+```
+
+> 💡 **Sua distro não está na lista?** Você ainda pode compilar do código-fonte
+> — veja a seção "Rodando" mais abaixo.
+
 ---
 
 ### 📖 Documentação completa neste README
@@ -122,7 +157,37 @@ Abaixo você encontra instruções de uso, decisões técnicas, benchmark de mod
 
 👉 **[Download the latest Cerne Code](https://ruvianfabrin.github.io/cerne-code.html)** (Windows, NSIS installer)
 
+> 🐧 **Linux:** support is implemented and in final validation — the installer
+> will be published as soon as VM testing is done. Compatible distros below.
+
 ---
+
+### 🐧 Linux compatibility
+
+Cerne Code needs **`webkit2gtk-4.1`**, which requires **glib ≥ 2.70**, and is
+built against **glibc 2.35** — that's why older distros can't run (or build) it.
+
+**Rule of thumb:** works on any distro with **glibc ≥ 2.35** and **glib 2.70+**.
+
+| Family | Supported versions | **Not** supported |
+|---|---|---|
+| **Debian / Ubuntu / Mint**<br>(`.deb`, `.AppImage`) | **Ubuntu 22.04 LTS** or newer<br>**Kubuntu / Xubuntu / Lubuntu 22.04+**<br>**Linux Mint 21** or newer<br>**Debian 12** (Bookworm) or newer<br>**Pop!_OS 22.04+** · **Zorin 17+** · **elementary 7+** | Ubuntu 20.04 ❌<br>Linux Mint 20 ❌<br>Debian 11 (Bullseye) ❌ |
+| **Fedora / Red Hat**<br>(`.rpm`) | **Fedora 36** or newer<br>**Nobara / Ultramarine** (any current release) | Fedora 35 and older ❌<br>RHEL 9 / Rocky 9 / Alma 9 ❌¹ |
+| **Arch**<br>(AUR) | **Arch Linux** · **Manjaro** · **EndeavourOS** · **Garuda** (rolling release, always current) | — |
+| **openSUSE** | **Tumbleweed** (rolling)<br>**Leap 15.6** or newer | openSUSE Leap 15.5 ❌ |
+
+¹ RHEL 9 and derivatives ship glib 2.68 — below the minimum required by
+`webkit2gtk-4.1`. This is a current limitation of Tauri v2, not of Cerne Code.
+
+**Not sure about yours?** Run:
+
+```bash
+ldd --version | head -1            # needs to be 2.35 or higher
+pkg-config --modversion glib-2.0   # needs to be 2.70 or higher
+```
+
+> 💡 **Your distro isn't listed?** You can still build from source — see the
+> "Running" section below.
 
 ---
 
@@ -252,11 +317,42 @@ Abaixo você encontra instruções de uso, decisões técnicas, benchmark de mod
 
 ## Rodando
 
+### Windows
+
 ```powershell
 cd C:\cerne
 npm install          # se ainda não rodou
 npm run tauri dev    # janela nativa, hot-reload do frontend
 ```
+
+### Linux
+
+Instale as dependências de sistema (nomes do Debian/Ubuntu — em Fedora/Arch
+use o equivalente):
+
+```bash
+sudo apt install build-essential curl wget file libssl-dev \
+  libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev \
+  librsvg2-dev libsecret-1-0 gnome-keyring
+```
+
+> O `libsecret` + `gnome-keyring` são necessários pro cofre de chaves (onde a
+> chave de API é guardada). Sem eles o app abre, mas não consegue salvar a chave.
+
+Depois:
+
+```bash
+git clone https://github.com/RuvianFabrin/cerne-code.git
+cd cerne-code
+npm install
+npm run tauri dev      # desenvolvimento (hot-reload)
+npm run tauri build    # gera o instalador (.deb / .rpm / .AppImage)
+```
+
+> ⚠️ **Para gerar um `.deb`/`.AppImage` que rode em distros mais antigas**,
+> compile dentro de um **Ubuntu 22.04** (container ou VM). Compilando em
+> Ubuntu 24.04+ o binário resultante exige glibc mais nova e **não abre** em
+> 22.04 / Mint 21 / Debian 12.
 
 `npm run dev` sozinho sobe só o Vite (útil pra iterar na UI sem recompilar
 Rust, mas sem os comandos IPC — o app fica sem dados reais nesse modo).

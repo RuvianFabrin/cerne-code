@@ -1,5 +1,5 @@
-//! Backend de input do computer_use pra sessoes Wayland (Tarefa 3.1b de
-//! PLANOS/port_linux_macos.md). O enigo injeta input direto no display
+//! Backend de input do computer_use pra sessoes Wayland. O enigo injeta
+//! input direto no display
 //! server e o Wayland bloqueia isso por design (isolamento entre apps) -
 //! a rota oficial e o portal xdg-desktop `RemoteDesktop`, que pede
 //! consentimento explicito do usuario via dialogo nativo do compositor

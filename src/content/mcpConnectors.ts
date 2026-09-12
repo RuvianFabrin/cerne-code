@@ -1,5 +1,4 @@
-// Item da lista de ideias do Hermes Agent (PLANOS/14_backlog_pendente.md):
-// conectores MCP pré-curados — uma lista fixa de servidores MCP conhecidos e
+// Conectores MCP pré-curados — uma lista fixa de servidores MCP conhecidos e
 // estáveis (do repositório oficial modelcontextprotocol/servers e afins),
 // pra reduzir a fricção de "abrir o README, copiar comando/args/env na mão"
 // pra um clique que já preenche o formulário — o usuário ainda revisa e

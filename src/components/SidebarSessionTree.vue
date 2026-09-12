@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// G4.1 (Fase G, PLANOS/13_roteiro_agentes_skills_fases.md): árvore
-// expansível pra sessões orquestradas (criadas por start_agent_session) —
+// Árvore expansível pra sessões orquestradas (criadas por
+// start_agent_session) —
 // ícone na sessão-mãe expande mostrando as filhas indentadas abaixo, e se
 // uma filha também tiver filhas, mostra uma debaixo da outra recursivamente.
 // Clicar de novo no ícone fecha tudo. Componente próprio (em vez de mexer
