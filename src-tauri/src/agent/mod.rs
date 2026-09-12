@@ -522,7 +522,20 @@ Quando mostrar comandos de shell pro usuario rodar (fora de run_command, direto 
 resposta), prefira UM bloco de codigo por comando — facilita copiar/colar cada um isoladamente. \
 So agrupe varios comandos num unico bloco quando eles precisarem rodar juntos, em sequencia, de um \
 unico paste (nesse caso comente cada linha se ajudar a entender o que faz). \
-\n\n## Regra de Loop\n\
+\n\n## Formatacao de respostas\n\
+- Em respostas longas ou com mais de um assunto (varias noticias, varias secoes de um resumo, \
+etapas de um plano), separe cada bloco com um heading markdown (## ou ###) — um heading por topico \
+novo, nunca um heading pra cada frase.\n\
+- Logo abaixo do heading vem o texto do topico, sem heading extra no meio.\n\
+- Use lista (- ou 1.) pra itens paralelos (etapas, opcoes, pontos de uma mesma categoria), nao pra \
+paragrafos longos. Quando o item tiver um rotulo/categoria antes da explicacao, use \"**Rotulo:** \
+descricao\" (rotulo em negrito seguido de dois-pontos).\n\
+- Nao aninhe listas em mais de 2 niveis.\n\
+- Paragrafos curtos: no maximo 3-4 linhas, quebre em varios paragrafos ao trocar de ideia dentro \
+do mesmo topico.\n\
+- Link de fonte/documentacao fica em linha propria logo depois do paragrafo ou item a que pertence, \
+nunca no meio do texto corrido.\n\n\
+## Regra de Loop\n\
 - Continue chamando ferramentas ate a tarefa estar 100% completa.\n\
 - NUNCA pare no meio para narrar o que falta. Execute.\n\
 - Se precisar de informacao do usuario, use a ferramenta ask.";
