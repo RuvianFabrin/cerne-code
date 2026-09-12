@@ -99,8 +99,6 @@ Abaixo você encontra instruções de uso, decisões técnicas, benchmark de mod
 
 ---
 
----
-
 ## English
 
 # 🪵 Cerne Code
@@ -187,7 +185,7 @@ pkg-config --modversion glib-2.0   # needs to be 2.70 or higher
 ```
 
 > 💡 **Your distro isn't listed?** You can still build from source — see the
-> "Running" section below.
+> "Rodando" section below.
 
 ---
 
@@ -247,7 +245,33 @@ pkg-config --modversion glib-2.0   # needs to be 2.70 or higher
 
 👉 **[Descarga la última versión de Cerne Code](https://ruvianfabrin.github.io/cerne-code.html)** (Windows, instalador NSIS)
 
+> 🐧 **Linux:** el soporte está implementado y en validación final — el instalador se publicará cuando terminen las pruebas en máquina virtual. Las versiones compatibles están en la tabla de abajo.
+
 ---
+
+### 🐧 Compatibilidad con Linux
+
+Cerne Code necesita **`webkit2gtk-4.1`**, que exige **glib ≥ 2.70**, y se compila sobre **glibc 2.35** — por eso algunas distros más antiguas no pueden ejecutarlo (ni compilarlo).
+
+**Regla práctica:** funciona en cualquier distro con **glibc ≥ 2.35** y **glib 2.70+**.
+
+| Familia | Versiones que funcionan | Versiones que **no** funcionan |
+|---|---|---|
+| **Debian / Ubuntu / Mint**<br>(`.deb`, `.AppImage`) | **Ubuntu 22.04 LTS** o más reciente<br>**Kubuntu / Xubuntu / Lubuntu 22.04+**<br>**Linux Mint 21** o más reciente<br>**Debian 12** (Bookworm) o más reciente<br>**Pop!_OS 22.04+** · **Zorin 17+** · **elementary 7+** | Ubuntu 20.04 ❌<br>Linux Mint 20 ❌<br>Debian 11 (Bullseye) ❌ |
+| **Fedora / Red Hat**<br>(`.rpm`) | **Fedora 36** o más reciente<br>**Nobara / Ultramarine** (cualquier versión actual) | Fedora 35 y anteriores ❌<br>RHEL 9 / Rocky 9 / Alma 9 ❌¹ |
+| **Arch**<br>(AUR) | **Arch Linux** · **Manjaro** · **EndeavourOS** · **Garuda** (rolling release, siempre al día) | — |
+| **openSUSE** | **Tumbleweed** (rolling)<br>**Leap 15.6** o más reciente | openSUSE Leap 15.5 ❌ |
+
+¹ RHEL 9 y derivados traen glib 2.68 — por debajo del mínimo que exige `webkit2gtk-4.1`. Es una limitación actual de Tauri v2, no de Cerne Code.
+
+**¿No sabes cuál es la tuya?** Ejecuta:
+
+```bash
+ldd --version | head -1            # necesita ser 2.35 o mayor
+pkg-config --modversion glib-2.0   # necesita ser 2.70 o mayor
+```
+
+> 💡 **¿Tu distro no está en la lista?** Todavía puedes compilar desde el código fuente — ver la sección "Rodando" más abajo.
 
 ---
 
@@ -307,7 +331,33 @@ pkg-config --modversion glib-2.0   # needs to be 2.70 or higher
 
 👉 **[下载 Cerne Code 最新版本](https://ruvianfabrin.github.io/cerne-code.html)**（Windows，NSIS 安装程序）
 
+> 🐧 **Linux：**支持已实现，正在进行最后验证 — 虚拟机测试完成后即发布安装包。兼容版本见下表。
+
 ---
+
+### 🐧 Linux 兼容性
+
+Cerne Code 需要 **`webkit2gtk-4.1`**，而它要求 **glib ≥ 2.70**，并且基于 **glibc 2.35** 构建 — 所以某些较旧的发行版无法运行（也无法编译）。
+
+**简单规则：** 任何满足 **glibc ≥ 2.35** 和 **glib 2.70+** 的发行版都可以。
+
+| 系列 | 支持的版本 | **不**支持的版本 |
+|---|---|---|
+| **Debian / Ubuntu / Mint**<br>(`.deb`, `.AppImage`) | **Ubuntu 22.04 LTS** 或更新<br>**Kubuntu / Xubuntu / Lubuntu 22.04+**<br>**Linux Mint 21** 或更新<br>**Debian 12** (Bookworm) 或更新<br>**Pop!_OS 22.04+** · **Zorin 17+** · **elementary 7+** | Ubuntu 20.04 ❌<br>Linux Mint 20 ❌<br>Debian 11 (Bullseye) ❌ |
+| **Fedora / Red Hat**<br>(`.rpm`) | **Fedora 36** 或更新<br>**Nobara / Ultramarine**（任何当前版本） | Fedora 35 及更旧 ❌<br>RHEL 9 / Rocky 9 / Alma 9 ❌¹ |
+| **Arch**<br>(AUR) | **Arch Linux** · **Manjaro** · **EndeavourOS** · **Garuda**（滚动发布，始终最新） | — |
+| **openSUSE** | **Tumbleweed**（滚动）<br>**Leap 15.6** 或更新 | openSUSE Leap 15.5 ❌ |
+
+¹ RHEL 9 及其衍生版本携带 glib 2.68 — 低于 `webkit2gtk-4.1` 所需的最低版本。这是 Tauri v2 的当前限制，不是 Cerne Code 的问题。
+
+**不知道自己的版本？** 运行：
+
+```bash
+ldd --version | head -1            # 需要 2.35 或更高
+pkg-config --modversion glib-2.0   # 需要 2.70 或更高
+```
+
+> 💡 **你的发行版不在列表中？** 依然可以从源码编译 — 见下方 "Rodando" 部分。
 
 ---
 
