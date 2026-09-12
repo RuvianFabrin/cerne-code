@@ -64,7 +64,7 @@ function respond(approved: boolean) {
 }
 
 .permission-title code {
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   background: #dbeafe;
   border-radius: 4px;
   padding: 1px 5px;
@@ -77,7 +77,7 @@ function respond(approved: boolean) {
   border: 1px solid #bfdbfe;
   border-radius: 8px;
   font-size: 11px;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   color: #3f3f46;
   max-height: 160px;
   overflow: auto;

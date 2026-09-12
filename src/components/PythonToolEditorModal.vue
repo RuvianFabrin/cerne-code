@@ -97,7 +97,7 @@ function cancel() {
 
 .pyt-path {
   margin-top: 4px !important;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   font-size: 11px !important;
   color: #71717a !important;
   word-break: break-all;
@@ -130,7 +130,7 @@ function cancel() {
   border-radius: 8px;
   padding: 10px 12px;
   font-size: 12px;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   resize: vertical;
   outline: none;
 }

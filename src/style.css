@@ -1,8 +1,27 @@
 @import "material-symbols/outlined.css";
 
+/* Fontes embutidas (variáveis, sem rede) — importadas em main.ts:
+   Inter (UI), JetBrains Mono (código), Literata / Source Serif 4 (leitura). */
+
 :root {
   --cerne-border: 1px solid var(--p-content-border-color, #e4e4e7);
   --cerne-sidebar-width: 272px;
+
+  /* pilhas de fonte — trocar aqui afeta o app todo */
+  --cerne-ui:
+    "Inter Variable", -apple-system, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  --cerne-mono:
+    "JetBrains Mono Variable", ui-monospace, "Cascadia Code", "Fira Code",
+    Consolas, monospace;
+  --cerne-serif: "Literata Variable", Georgia, "Times New Roman", serif;
+
+  /* tamanhos de fonte configuráveis (Configurações → Aparência) — valores
+     default aqui, sobrescritos em runtime via style.setProperty por
+     src/fontSettings.ts a partir do que foi salvo no localStorage. */
+  --cerne-font-chat: 14px;
+  --cerne-font-composer: 14px;
+  --cerne-zoom: 1;
 }
 
 * {
@@ -17,13 +36,13 @@ body,
 }
 
 body {
-  font-family:
-    -apple-system, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+  font-family: var(--cerne-ui);
   font-weight: 400;
   font-size: 14px;
   color: #18181b;
   background: #ffffff;
   -webkit-font-smoothing: antialiased;
+  zoom: var(--cerne-zoom);
 }
 
 .msi {

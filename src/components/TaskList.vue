@@ -112,7 +112,7 @@ const statusIcon: Record<string, string> = {
   font-size: 12px;
   font-weight: 600;
   color: #18181b;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

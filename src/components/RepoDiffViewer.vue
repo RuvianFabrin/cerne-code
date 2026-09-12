@@ -228,7 +228,7 @@ async function onRootPick(path: string) {
   border-radius: 4px;
   font-size: 10px;
   font-weight: 700;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   color: #ffffff;
   background: #71717a;
 }
@@ -255,7 +255,7 @@ async function onRootPick(path: string) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   color: #18181b;
 }
 
@@ -275,7 +275,7 @@ async function onRootPick(path: string) {
   gap: 4px;
   font-size: 10px;
   font-weight: 600;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
 }
 
 .stat-add {
@@ -296,7 +296,7 @@ async function onRootPick(path: string) {
   margin: 0 0 8px;
   font-size: 12px;
   font-weight: 600;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   color: #3f3f46;
   overflow-wrap: break-word;
 }
@@ -307,7 +307,7 @@ async function onRootPick(path: string) {
   padding: 8px 10px;
   overflow-x: auto;
   font-size: 12px;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
 }
 
 .diff-line {

@@ -206,7 +206,7 @@ function usePrompt(prompt: ReadyPrompt) {
   padding: 8px 10px;
   white-space: pre-wrap;
   line-height: 1.5;
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: var(--cerne-mono);
 }
 
 .prompt-actions {

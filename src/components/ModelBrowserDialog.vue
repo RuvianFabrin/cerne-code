@@ -303,7 +303,7 @@ function priceLabel(m: ModelInfo): string {
 .model-id {
   font-size: 11px;
   color: #a1a1aa;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
 }
 
 .model-desc {

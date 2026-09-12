@@ -211,7 +211,7 @@ async function stop(job: BackgroundJobInfo) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   color: #18181b;
 }
 
@@ -244,7 +244,7 @@ async function stop(job: BackgroundJobInfo) {
   white-space: pre-wrap;
   word-break: break-word;
   font-size: 12px;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   background: #fafafa;
   border: var(--cerne-border);
   border-radius: 8px;

@@ -1089,7 +1089,7 @@ watch(
   border: none;
   outline: none;
   resize: none;
-  font-size: 14px;
+  font-size: var(--cerne-font-composer, 14px);
   font-weight: 500;
   font-family: inherit;
   color: #18181b;
@@ -1620,7 +1620,7 @@ watch(
 }
 
 .mcp-modal-name {
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1673,7 +1673,7 @@ watch(
 }
 
 .mcp-tools-name {
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   font-size: 12.5px;
   font-weight: 600;
   color: #18181b;

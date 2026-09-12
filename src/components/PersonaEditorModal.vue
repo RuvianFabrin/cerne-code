@@ -194,7 +194,7 @@ function cancel() {
   border-radius: 8px;
   padding: 10px 12px;
   font-size: 12px;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   resize: vertical;
   outline: none;
 }

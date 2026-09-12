@@ -144,7 +144,7 @@ function cancel() {
 }
 
 .skill-help code {
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   background: #e4e4e7;
   border-radius: 4px;
   padding: 1px 5px;
@@ -186,7 +186,7 @@ function cancel() {
   border-radius: 8px;
   padding: 10px 12px;
   font-size: 12px;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   resize: vertical;
   outline: none;
 }

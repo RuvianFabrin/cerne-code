@@ -347,7 +347,7 @@ function usePythonToolNow(tool: PythonTool) {
 .asp-name {
   font-size: 13px;
   font-weight: 600;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   display: flex;
   align-items: center;
   gap: 6px;

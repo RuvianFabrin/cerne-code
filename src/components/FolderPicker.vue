@@ -70,7 +70,7 @@ async function onChange(value: string) {
   border-radius: 6px;
   padding: 6px 8px;
   font-size: 12px;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   color: #52525b;
   background: #f4f4f5;
 }

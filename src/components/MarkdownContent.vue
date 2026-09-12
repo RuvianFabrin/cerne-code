@@ -98,14 +98,14 @@ watch(
 
 <style scoped>
 .markdown-body {
-  font-size: 14px;
+  font-size: var(--cerne-font-chat, 14px);
   font-weight: 400;
   line-height: 1.55;
   word-break: break-word;
 }
 
 .markdown-body :deep(p) {
-  margin: 0 0 8px;
+  margin: 0 0 4px;
   white-space: pre-wrap;
 }
 
@@ -117,30 +117,46 @@ watch(
 .markdown-body :deep(h2),
 .markdown-body :deep(h3),
 .markdown-body :deep(h4) {
-  margin: 12px 0 6px;
+  margin: 22px 0 4px;
   font-weight: 600;
   line-height: 1.3;
 }
 
+.markdown-body :deep(h1:first-child),
+.markdown-body :deep(h2:first-child),
+.markdown-body :deep(h3:first-child),
+.markdown-body :deep(h4:first-child) {
+  margin-top: 0;
+}
+
 .markdown-body :deep(h1) {
-  font-size: 18px;
+  font-size: 1.29em;
 }
 .markdown-body :deep(h2) {
-  font-size: 16px;
+  font-size: 1.14em;
 }
 .markdown-body :deep(h3),
 .markdown-body :deep(h4) {
-  font-size: 14px;
+  font-size: 1em;
 }
 
 .markdown-body :deep(ul),
 .markdown-body :deep(ol) {
-  margin: 0 0 8px;
-  padding-left: 20px;
+  margin: 4px 0 10px;
+  padding-left: 22px;
 }
 
 .markdown-body :deep(li) {
-  margin: 2px 0;
+  margin: 6px 0;
+}
+
+.markdown-body :deep(li p) {
+  margin: 0;
+}
+
+.markdown-body :deep(li ul),
+.markdown-body :deep(li ol) {
+  margin: 4px 0;
 }
 
 .markdown-body :deep(a) {
@@ -164,8 +180,8 @@ watch(
 }
 
 .markdown-body :deep(code) {
-  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-  font-size: 12.5px;
+  font-family: var(--cerne-mono);
+  font-size: 0.89em;
 }
 
 .markdown-body :deep(:not(pre) > code) {
@@ -220,7 +236,7 @@ watch(
 .markdown-body :deep(table) {
   border-collapse: collapse;
   margin: 0 0 8px;
-  font-size: 13px;
+  font-size: 0.93em;
   display: block;
   overflow-x: auto;
 }

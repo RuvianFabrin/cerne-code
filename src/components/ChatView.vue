@@ -602,7 +602,7 @@ watch(
   font-weight: 400;
   color: #b0b0b8;
   padding: 8px 2px 2px;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
 }
 
 .turn-stats .msi {

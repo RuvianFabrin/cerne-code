@@ -73,7 +73,7 @@ function lineClass(line: string) {
 
 .diff-path {
   font-size: 12px;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   flex: 1;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -119,7 +119,7 @@ function lineClass(line: string) {
   margin: 0;
   padding: 8px 10px;
   font-size: 12px;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   max-height: 320px;
   overflow: auto;
   white-space: pre-wrap;

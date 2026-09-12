@@ -325,7 +325,7 @@ function isWriteTool(task: TaskItem): boolean {
   padding: 1px 6px 1px 4px;
   font-size: 11px;
   font-weight: 500;
-  font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+  font-family: var(--cerne-mono);
   color: #3f3f46;
   max-width: 220px;
   flex-shrink: 1;
@@ -350,7 +350,7 @@ function isWriteTool(task: TaskItem): boolean {
   gap: 4px;
   font-size: 11px;
   font-weight: 600;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   flex-shrink: 0;
 }
 
@@ -366,7 +366,7 @@ function isWriteTool(task: TaskItem): boolean {
   font-size: 11px;
   font-weight: 400;
   color: #a1a1aa;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   flex-shrink: 0;
 }
 
@@ -401,7 +401,7 @@ function isWriteTool(task: TaskItem): boolean {
 .step-detail-label {
   font-size: 11px;
   font-weight: 500;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   color: #52525b;
   overflow-wrap: break-word;
 }
@@ -483,7 +483,7 @@ function isWriteTool(task: TaskItem): boolean {
   border-radius: 6px;
   overflow: hidden auto;
   max-height: 320px;
-  font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+  font-family: var(--cerne-mono);
   font-size: 11.5px;
   line-height: 1.5;
 }
@@ -538,7 +538,7 @@ function isWriteTool(task: TaskItem): boolean {
   color: #3f3f46;
   border-radius: 6px;
   font-size: 11px;
-  font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
+  font-family: var(--cerne-mono);
   white-space: pre-wrap;
   overflow-wrap: break-word;
   max-height: 200px;

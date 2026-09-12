@@ -19,6 +19,7 @@ import {
 } from "../api";
 import { PROVIDER_KINDS, providerLabel, useProviderStore } from "../stores/provider";
 import { SUPPORTED_LOCALES, setLocale, type LocaleCode } from "../i18n";
+import { fontSettings, FONT_SIZE_LIMITS, setFontSetting, resetFontSettings } from "../fontSettings";
 import LlamaForkRow from "./LlamaForkRow.vue";
 import ModelBrowserDialog from "./ModelBrowserDialog.vue";
 import { MCP_CONNECTORS, type McpConnector } from "../content/mcpConnectors";
@@ -743,6 +744,67 @@ async function importSessionsBackup() {
         </AccordionContent>
       </AccordionPanel>
 
+      <AccordionPanel value="appearance">
+        <AccordionHeader>{{ $t("settings.appearance") }}</AccordionHeader>
+        <AccordionContent>
+        <p class="hint">{{ $t("settings.appearanceHint") }}</p>
+
+        <div class="font-setting-row">
+          <label class="font-setting-label">
+            {{ $t("settings.fontChat") }}
+            <span class="font-setting-value">{{ fontSettings.chat }}px</span>
+          </label>
+          <input
+            type="range"
+            class="font-slider"
+            :min="FONT_SIZE_LIMITS.chat.min"
+            :max="FONT_SIZE_LIMITS.chat.max"
+            :step="FONT_SIZE_LIMITS.chat.step"
+            :value="fontSettings.chat"
+            @input="setFontSetting('chat', Number(($event.target as HTMLInputElement).value))"
+          />
+          <p class="font-setting-preview" :style="{ fontSize: fontSettings.chat + 'px' }">
+            {{ $t("settings.fontPreviewText") }}
+          </p>
+        </div>
+
+        <div class="font-setting-row">
+          <label class="font-setting-label">
+            {{ $t("settings.fontComposer") }}
+            <span class="font-setting-value">{{ fontSettings.composer }}px</span>
+          </label>
+          <input
+            type="range"
+            class="font-slider"
+            :min="FONT_SIZE_LIMITS.composer.min"
+            :max="FONT_SIZE_LIMITS.composer.max"
+            :step="FONT_SIZE_LIMITS.composer.step"
+            :value="fontSettings.composer"
+            @input="setFontSetting('composer', Number(($event.target as HTMLInputElement).value))"
+          />
+        </div>
+
+        <div class="font-setting-row">
+          <label class="font-setting-label">
+            {{ $t("settings.fontZoom") }}
+            <span class="font-setting-value">{{ Math.round(fontSettings.zoom * 100) }}%</span>
+          </label>
+          <input
+            type="range"
+            class="font-slider"
+            :min="FONT_SIZE_LIMITS.zoom.min"
+            :max="FONT_SIZE_LIMITS.zoom.max"
+            :step="FONT_SIZE_LIMITS.zoom.step"
+            :value="fontSettings.zoom"
+            @input="setFontSetting('zoom', Number(($event.target as HTMLInputElement).value))"
+          />
+          <p class="hint" style="margin: 4px 0 0">{{ $t("settings.fontZoomHint") }}</p>
+        </div>
+
+        <button class="btn-secondary" @click="resetFontSettings">{{ $t("settings.fontReset") }}</button>
+        </AccordionContent>
+      </AccordionPanel>
+
       <AccordionPanel value="openrouter">
         <AccordionHeader>OpenRouter</AccordionHeader>
         <AccordionContent>
@@ -1337,6 +1399,41 @@ h1 {
   margin: 16px 0 8px;
 }
 
+.font-setting-row {
+  margin: 0 0 18px;
+}
+
+.font-setting-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 13px;
+  font-weight: 600;
+  color: #3f3f46;
+  margin-bottom: 6px;
+}
+
+.font-setting-value {
+  font-family: var(--cerne-mono);
+  font-weight: 500;
+  color: #71717a;
+}
+
+.font-slider {
+  width: 100%;
+  accent-color: #18181b;
+  cursor: pointer;
+}
+
+.font-setting-preview {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: var(--cerne-border);
+  border-radius: 8px;
+  color: #18181b;
+  background: #fafafa;
+}
+
 .key-row {
   display: flex;
   gap: 8px;
@@ -1365,7 +1462,7 @@ h1 {
 }
 
 .key-preview {
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   font-weight: 500;
 }
 
@@ -1541,7 +1638,7 @@ h1 {
 .skill-name {
   font-size: 13px;
   font-weight: 600;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
 }
 
 .vision-badge {
@@ -1608,7 +1705,7 @@ h1 {
 
 .mcp-env-input {
   resize: vertical;
-  font-family: ui-monospace, monospace;
+  font-family: var(--cerne-mono);
   line-height: 1.5;
 }
 
