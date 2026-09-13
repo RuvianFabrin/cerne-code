@@ -540,6 +540,14 @@ async fn on_job_finished(completion: JobCompletionCtx, output: Arc<Mutex<VecDequ
         crate::sessions::load_messages(&completion.app_data_dir, &completion.session_id)
     {
         messages.push(note);
+        // Achado ao vivo (2026-09-12, sessão travada com 400 "An assistant
+        // message with 'tool_calls' must be followed by tool messages"): essa
+        // nota é injetada a qualquer momento, inclusive quando o turno que
+        // iniciou o job ainda está no meio da execução — entre o `tool_calls`
+        // já salvo em disco e o resultado da ferramenta ainda não salvo. Sem o
+        // reparo, a nota entra no meio do grupo e o histórico inteiro passa a
+        // ser rejeitado pelo provider em toda mensagem seguinte.
+        crate::history::repair(&mut messages);
         let _ = crate::sessions::save_messages(
             &completion.app_data_dir,
             &completion.session_id,
@@ -866,5 +874,98 @@ mod tests {
 
     fn fs_remove_dir_all_ignore(dir: &std::path::Path) {
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Regressão do 400 que travou a sessão do usuário em 2026-09-12 ("An
+    /// assistant message with 'tool_calls' must be followed by tool messages
+    /// responding to each 'tool_call_id'"): o job em segundo plano terminou
+    /// enquanto o histórico tinha um `tool_calls` recém-salvo e ainda sem
+    /// resposta, e a nota injetada entrou NO MEIO do grupo. Depois do reparo,
+    /// a nota (e qualquer mensagem seguinte) fica DEPOIS de uma resposta —
+    /// sintética, já que a real nunca chegou a ser salva.
+    #[tokio::test]
+    async fn finished_job_never_breaks_a_tool_call_group_in_history() {
+        use crate::models::{ChatMessage, ToolCall, ToolCallFunction};
+
+        let jobs = BackgroundJobs::default();
+        let dir = std::env::temp_dir();
+        let app_data_dir = dir.join(format!("cerne-t14-orfao-test-{}", uuid::Uuid::new_v4()));
+        let session_id = "sessao-com-tool-call-orfao";
+
+        let assistant = ChatMessage {
+            role: "assistant".to_string(),
+            content: String::new(),
+            tool_calls: Some(vec![ToolCall {
+                id: "call_orfa_1".to_string(),
+                kind: "function".to_string(),
+                function: ToolCallFunction {
+                    name: "run_command".to_string(),
+                    arguments: "{\"background\":true}".to_string(),
+                },
+            }]),
+            tool_call_id: None,
+            name: None,
+            images: Vec::new(),
+            display_content: None,
+        };
+        let historico = vec![
+            ChatMessage {
+                role: "system".to_string(),
+                content: "prompt".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+                images: Vec::new(),
+                display_content: None,
+            },
+            ChatMessage {
+                role: "user".to_string(),
+                content: "roda o teste em background".to_string(),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+                images: Vec::new(),
+                display_content: None,
+            },
+            assistant,
+        ];
+        crate::sessions::save_messages(&app_data_dir, session_id, &historico).unwrap();
+
+        let id = jobs
+            .start(&dir, "echo t14-orfao", &app_data_dir, session_id)
+            .unwrap();
+        let _ = wait_for(&jobs, &id, "encerrado").await;
+
+        let mut messages = Vec::new();
+        for _ in 0..60 {
+            messages = crate::sessions::load_messages(&app_data_dir, session_id).unwrap_or_default();
+            if messages.iter().any(|m| m.role == "tool") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        assert!(
+            messages
+                .iter()
+                .any(|m| m.name.as_deref() == Some("background_job_done")),
+            "a nota de conclusao deveria ter sido injetada: {messages:?}"
+        );
+        // A invariante que o provider exige: todo `tool_calls` seguido
+        // imediatamente pelas respostas dos seus ids.
+        for (i, m) in messages.iter().enumerate() {
+            for call in m.tool_calls.iter().flatten() {
+                let next = messages.get(i + 1).expect("resposta depois do pedido");
+                assert_eq!(
+                    next.role, "tool",
+                    "mensagem seguinte ao tool_calls deveria ser a resposta, veio {}",
+                    next.role
+                );
+                assert_eq!(next.tool_call_id.as_deref(), Some(call.id.as_str()));
+            }
+        }
+
+        jobs.stop(&id).await.ok();
+        fs_remove_dir_all_ignore(&app_data_dir);
     }
 }

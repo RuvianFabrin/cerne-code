@@ -7,6 +7,7 @@ mod context;
 mod encoding;
 mod folders;
 mod git;
+mod history;
 mod mcp;
 mod memory;
 mod models;
@@ -1373,6 +1374,13 @@ fn cancel_turn(
             // cortado antes do assistente salvar qualquer coisa, a última
             // mensagem ainda é do usuário — insere um placeholder.
             if let Ok(mut messages) = sessions::load_messages(&state.app_data_dir, &session_id) {
+                // O abort pode ter acontecido DEPOIS do assistente já ter
+                // salvo um `tool_calls` em disco (run_turn salva o pedido
+                // antes de executar a ferramenta), deixando o histórico com um
+                // pedido sem resposta — o provider passa a responder 400 em
+                // toda mensagem seguinte. `repair` fecha esse grupo com uma
+                // resposta sintética avisando que a execução foi cancelada.
+                history::repair(&mut messages);
                 let last_is_user = messages.last().map(|m| m.role == "user").unwrap_or(false);
                 if last_is_user {
                     messages.push(ChatMessage {
@@ -1384,8 +1392,8 @@ fn cancel_turn(
                         images: Vec::new(),
                         display_content: None,
                     });
-                    let _ = sessions::save_messages(&state.app_data_dir, &session_id, &messages);
                 }
+                let _ = sessions::save_messages(&state.app_data_dir, &session_id, &messages);
             }
 
             let _ = tauri::Emitter::emit(

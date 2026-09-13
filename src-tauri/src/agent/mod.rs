@@ -18,7 +18,7 @@ use crate::context;
 use crate::models::{
     ChatMessage, ExecutionMode, PendingEdit, ProviderConfig, ProviderKind, Session, TaskItem,
 };
-use crate::{providers, sessions, skills, AppState};
+use crate::{history, providers, sessions, skills, AppState};
 use anyhow::Result;
 use serde::Serialize;
 use std::path::Path;
@@ -266,6 +266,11 @@ fn notify_auto_continue_stopped(app: &AppHandle, state: &AppState, session_id: &
     };
     if let Ok(mut messages) = sessions::load_messages(&state.app_data_dir, session_id) {
         messages.push(note);
+        // Mesmo motivo do reparo em `run_turn`/`on_job_finished`: essa nota
+        // entra no historico a qualquer momento, e se o turno anterior tiver
+        // sido cortado com um `tool_calls` sem resposta ela cairia no meio do
+        // grupo (ver src/history.rs).
+        history::repair(&mut messages);
         let _ = sessions::save_messages(&state.app_data_dir, session_id, &messages);
     }
     let _ = app.emit(
@@ -762,6 +767,15 @@ pub async fn run_turn(
     let app_data_dir = state.app_data_dir.clone();
     let mut session = sessions::get_session(&app_data_dir, &session_id)?;
     let mut messages = sessions::load_messages(&app_data_dir, &session_id)?;
+    // Conserta historico quebrado ANTES de montar o prompt e mandar pro
+    // provider: um turno abortado (ou a nota de job em background injetada no
+    // meio dele) pode ter deixado um `tool_calls` sem as respostas logo
+    // depois, o que faz o provider responder 400 em TODA mensagem nova e
+    // travar a sessao de vez (ver src/history.rs). Reparo persistido — a
+    // sessao volta a funcionar sozinha, sem o usuario perder a conversa.
+    if history::repair(&mut messages) > 0 {
+        sessions::save_messages(&app_data_dir, &session_id, &messages)?;
+    }
 
     // Monta o system prompt com as informações atuais (pastas, skills, etc.)
     // — refeito a cada turno, não só na primeira mensagem, pra refletir
@@ -2227,6 +2241,12 @@ async fn maybe_compact(
         display_content: None,
     });
     new_messages.extend_from_slice(&messages[messages.len() - KEEP_LAST_MESSAGES..]);
+
+    // O corte acima é por contagem de mensagens, então pode cair no meio de
+    // um grupo `tool_calls` + respostas — deixando uma ponta órfã (o pedido
+    // sem a resposta, ou a resposta sem o pedido) que o provider rejeita com
+    // 400 no próximo envio. Repara depois de montar a lista nova.
+    history::repair(&mut new_messages);
 
     let summarized_count = compactable.len();
     *messages = new_messages;
