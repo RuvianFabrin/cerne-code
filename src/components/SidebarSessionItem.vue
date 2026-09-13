@@ -139,6 +139,7 @@ async function moveTo(folderId: string) {
             :class="{ current: !session.folder_id }"
             @click="moveTo('__root__')"
           >{{ t("sidebar.rootFolder") }}</button>
+          <div v-if="folders.length" class="move-menu-sep" />
           <template v-for="f in folders" :key="f.id">
             <button
               class="move-menu-item"
@@ -292,29 +293,50 @@ async function moveTo(folderId: string) {
   border: var(--cerne-border);
   border-radius: 8px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
-  padding: 4px;
-  min-width: 160px;
-  max-width: 240px;
-  max-height: 240px;
+  /* Respiro interno + gap entre linhas: antes era padding 4px/gap 1px com
+     item de 6px, o que deixava a lista visivelmente "grudada" (achado ao
+     vivo, 2026-09-13). Os valores aqui foram escolhidos pra alvo de clique
+     confortável (~30px de altura por item) sem a lista ficar gigante. */
+  padding: 6px;
+  min-width: 190px;
+  max-width: 280px;
+  /* Alto o bastante pra caber a maioria das listas sem rolar, mas ainda
+     limitado pra não estourar em tela baixa. */
+  max-height: 360px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 3px;
+  /* O menu abre dentro de uma lista rolável da sidebar — sem isso o scroll
+     do menu "vaza" pro container de trás quando a roda do mouse é usada em
+     cima dele. */
+  overscroll-behavior: contain;
+}
+
+/* Separa "Raiz" da lista de pastas — sem essa quebra as duas coisas lidas
+   em sequência pareciam um bloco só. */
+.move-menu-sep {
+  height: 1px;
+  background: #e4e4e7;
+  margin: 2px 4px;
+  flex-shrink: 0;
 }
 
 .move-menu-item {
   border: none;
   background: transparent;
   text-align: left;
-  padding: 6px 8px;
-  border-radius: 5px;
+  padding: 7px 10px;
+  border-radius: 6px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 500;
+  line-height: 1.35;
   color: #3f3f46;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex-shrink: 0;
 }
 
 .move-menu-item:hover {
@@ -322,6 +344,7 @@ async function moveTo(folderId: string) {
 }
 
 .move-menu-item.current {
+  background: #eef2ff;
   color: var(--cerne-accent, #6366f1);
   font-weight: 600;
 }
