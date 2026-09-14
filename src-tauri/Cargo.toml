@@ -66,6 +66,32 @@ tokio-tungstenite = { version = "0.24", features = ["connect"] }
 rust_xlsxwriter = "0.84"
 printpdf = "0.3"
 zip = "8.6.0"
+# Contagem de tokens REAL para o medidor de contexto (ver `context.rs`).
+# Antes usava a heuristica "chars/4", que erra feio justamente no conteudo que
+# mais trafega num agente de codigo: codigo, JSON de resultado de ferramenta e
+# texto acentuado gastam MUITO mais tokens por caractere (medido: -17% em
+# portugues acentuado, -27% em JSON, -74% em CJK; a heuristica subestimava de
+# 7% a 39% nas sessoes reais do usuario).
+#
+# `tiktoken` (goliajp/rust-tiktoken) e o port em Rust do tiktoken da OpenAI,
+# com os vocabularios EMBUTIDOS no binario (funciona offline, sem baixar nada
+# em runtime) e cobertura dos provedores que o Cerne usa de verdade -
+# inclusive DeepSeek V4 e Qwen, que a `tiktoken-rs` nao cobre.
+#
+# `default-features = false`: sem isso vem `vocabs-all` (5,1 MB de dados no
+# binario). Aqui so entram os vocabularios que fazem sentido pro Cerne:
+# - cl100k_base: OpenAI + fallback pra quem nao tem encoding proprio (Claude, Grok)
+# - llama3:      modelos locais (llama/ornith/gemma e afins)
+# - deepseek:    deepseek-v3/v4 (o modelo que o usuario mais usa)
+# - qwen2:       Qwen
+# Soma ~1,3 MB. Modelo sem encoding proprio cai no cl100k_base.
+tiktoken = { version = "4", default-features = false, features = [
+    "vocab-cl100k_base",
+    "vocab-o200k_base",
+    "vocab-llama3",
+    "vocab-deepseek",
+    "vocab-qwen",
+] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

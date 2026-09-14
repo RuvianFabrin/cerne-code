@@ -23,21 +23,32 @@ function formatTokens(n: number): string {
 
 const label = computed(() => {
   if (!usage.value) return "";
-  const { used_tokens, context_length, is_estimated_length } = usage.value;
-  const approx = is_estimated_length ? "~" : "";
-  return `${formatTokens(used_tokens)} / ${approx}${formatTokens(context_length)}`;
+  const { used_tokens, context_length, is_estimated_length, is_estimated_usage } = usage.value;
+  // O `~` marca o que é ESTIMATIVA, e os dois lados têm motivo próprio pra ser:
+  // - `used_tokens`: só estimado antes da primeira resposta da sessão (depois
+  //   disso é o `prompt_tokens` real que o provider devolveu).
+  // - `context_length`: a janela do modelo quando o provider não informou.
+  const usedPrefix = is_estimated_usage ? "~" : "";
+  const lenPrefix = is_estimated_length ? "~" : "";
+  return `${usedPrefix}${formatTokens(used_tokens)} / ${lenPrefix}${formatTokens(context_length)}`;
 });
 
 const tooltip = computed(() => {
   if (!usage.value) return "";
+  const u = usage.value;
   const base = t("contextGauge.tooltipBase", {
-    used: usage.value.used_tokens,
-    total: usage.value.context_length,
+    used: u.used_tokens,
+    total: u.context_length,
     percent: percent.value.toFixed(0),
   });
-  return usage.value.is_estimated_length
-    ? `${base}. ${t("contextGauge.tooltipEstimated")}`
-    : `${base}. ${t("contextGauge.tooltipClickToFix")}`;
+  // Diz de onde veio o número — é a diferença entre "o provider contou" e
+  // "nós chutamos", e o usuário merece saber qual dos dois está vendo.
+  const origem = u.is_estimated_usage
+    ? t("contextGauge.sourceEstimated")
+    : t("contextGauge.sourceReal");
+  const janela = u.is_estimated_length ? ` ${t("contextGauge.tooltipEstimated")}` : "";
+  const corrigir = u.is_estimated_length ? ` ${t("contextGauge.tooltipClickToFix")}` : "";
+  return `${base}. ${origem}${janela}${corrigir}`;
 });
 
 const editing = ref(false);

@@ -70,6 +70,8 @@ pub fn create_session(
         total_prompt_tokens: 0,
         total_completion_tokens: 0,
         total_requests: 0,
+        // Sem requisição ainda — o medidor estima até a primeira resposta.
+        last_prompt_tokens: None,
         folder_id: None,
         parent_session_id: None,
     };
@@ -283,6 +285,17 @@ pub fn update_enabled_mcp_servers(
     Ok(session)
 }
 
+/// Soma o consumo da sessão e **guarda o `prompt_tokens` desta requisição**
+/// como o tamanho atual do contexto (`last_prompt_tokens`).
+///
+/// Os dois são coisas diferentes de propósito: `total_prompt_tokens` é a soma
+/// histórica (só pra mostrar consumo acumulado), enquanto `last_prompt_tokens`
+/// é o estado ATUAL — é o que o medidor de contexto exibe, porque é o número
+/// real que o provider contou do request que acabou de ir.
+///
+/// `prompt_tokens` só sobrescreve o `last_` quando é maior que zero: provider
+/// que não reporta usage em streaming (ou que manda 0 no último chunk) não
+/// pode zerar o último valor bom que a gente tinha.
 pub fn accumulate_usage(
     app_data_dir: &PathBuf,
     id: &str,
@@ -293,6 +306,9 @@ pub fn accumulate_usage(
     session.total_prompt_tokens += prompt_tokens;
     session.total_completion_tokens += completion_tokens;
     session.total_requests += 1;
+    if prompt_tokens > 0 {
+        session.last_prompt_tokens = Some(prompt_tokens);
+    }
     let dir = session_dir(app_data_dir, id);
     std::fs::write(
         dir.join("session.json"),

@@ -58,7 +58,13 @@ export interface ContextUsage {
   session_id: string;
   used_tokens: number;
   context_length: number;
+  /** A JANELA (`context_length`) é só o chute conservador, não confirmada. */
   is_estimated_length: boolean;
+  /**
+   * O USADO (`used_tokens`) é estimativa, não o `prompt_tokens` real devolvido
+   * pelo provider. Só acontece antes da primeira resposta da sessão.
+   */
+  is_estimated_usage: boolean;
   percent: number;
   total_prompt_tokens: number;
   total_completion_tokens: number;

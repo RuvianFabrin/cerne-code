@@ -1221,19 +1221,63 @@ fn get_session_context_usage(
 ) -> Result<models::ContextUsage, String> {
     let session = sessions::get_session(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
     let messages = sessions::load_messages(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
-    let (context_length, is_estimated) = match session.context_length {
-        Some(len) => (len, false),
-        None => (models::DEFAULT_CONTEXT_LENGTH, true),
-    };
-    Ok(context::usage_for(
-        &id,
-        &messages,
+
+    // Antes isto caía direto em `DEFAULT_CONTEXT_LENGTH` (8192) quando a sessão
+    // não tinha `context_length`, enquanto `run_turn` resolvia o valor de
+    // verdade (tabela de modelos + cache) — ou seja, a mesma sessão podia
+    // mostrar 8.192 no medidor e usar 1M no turno. Agora passa pelo mesmo
+    // caminho do turno, então os dois concordam.
+    let context_length = session.context_length.unwrap_or_else(|| {
+        providers::resolve_context_length(&state.app_data_dir, &session.model, None)
+    });
+    let is_estimated_length = session.context_length.is_none();
+
+    // As tool specs fazem parte do que vai no request, então precisam entrar na
+    // estimativa (ver `context.rs`). Como este comando não tem o contexto do
+    // turno, reconstrói o conjunto que a sessão realmente usaria: as sempre
+    // presentes, as de projeto (quando há pasta) e as de orquestração (quando
+    // não é sessão filha) — mesma regra do `run_turn`.
+    let mut tool_specs = agent::tools::always_tool_specs();
+    if session.project_root.is_some() || !session.extra_read_paths.is_empty() {
+        tool_specs.extend(agent::tools::project_tool_specs());
+    }
+    if session.parent_session_id.is_none() {
+        tool_specs.extend(agent::tools::orchestration_tool_specs());
+    }
+
+    // As tools de `computer_use` só entram quando o modelo tem visão (ver
+    // `run_turn`), e são ~1,9 mil tokens — deixá-las de fora erra a estimativa
+    // em 22% numa sessão de visão (medido contra o `prompt_tokens` real).
+    //
+    // O `run_turn` descobre isso chamando `supports_vision`, que faz request de
+    // rede — não dá pra pagar esse custo toda vez que o usuário abre uma sessão
+    // na sidebar. Então usa a evidência local disponível: **se o histórico
+    // desta sessão tem alguma imagem, o modelo aceitou imagem** — quem decidiu
+    // isso foi o provider, e o app só deixa anexar imagem depois de confirmar
+    // visão.
+    //
+    // Limitação aceita: sessão nova (sem histórico) com modelo de visão fica
+    // sem as tools na estimativa e subestima ~22%. É o caso menos provável
+    // (sem imagem anexada, o computer_use dificilmente vai ser usado) e dura
+    // só até a primeira resposta — depois o medidor usa o `prompt_tokens` real.
+    let tem_evidencia_de_visao = messages.iter().any(|m| !m.images.is_empty());
+    if tem_evidencia_de_visao {
+        tool_specs.extend(agent::computer::tool_specs());
+    }
+
+    Ok(context::usage_for(context::UsageInputs {
+        session_id: &id,
+        messages: &messages,
+        tool_specs: &tool_specs,
+        model: &session.model,
         context_length,
-        is_estimated,
-        session.total_prompt_tokens,
-        session.total_completion_tokens,
-        session.total_requests,
-    ))
+        is_estimated_length,
+        // O prompt_tokens real da última requisição é a fonte da verdade.
+        real_used_tokens: session.last_prompt_tokens,
+        total_prompt_tokens: session.total_prompt_tokens,
+        total_completion_tokens: session.total_completion_tokens,
+        total_requests: session.total_requests,
+    }))
 }
 
 /// Lista as execuções de agente/skill (`task`/`verify_completion`) em

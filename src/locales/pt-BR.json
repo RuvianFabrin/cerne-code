@@ -456,7 +456,9 @@
     "serverDown": "Servidor parado"
   },
   "contextGauge": {
-    "tooltipBase": "{used} de {total} tokens ({percent}%) — estimativa (chars/4)",
+    "tooltipBase": "{used} de {total} tokens ({percent}%)",
+    "sourceReal": "Contagem real do provedor.",
+    "sourceEstimated": "Ainda sem resposta nesta sessão — número estimado com o tokenizador do modelo.",
     "tooltipEstimated": "Contexto do modelo desconhecido, usando padrão. Clique pra corrigir manualmente.",
     "tooltipClickToFix": "Clique pra corrigir manualmente.",
     "invalidTokens": "Informe um número de tokens válido",

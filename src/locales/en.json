@@ -456,7 +456,9 @@
     "serverDown": "Server stopped"
   },
   "contextGauge": {
-    "tooltipBase": "{used} of {total} tokens ({percent}%) — estimate (chars/4)",
+    "tooltipBase": "{used} of {total} tokens ({percent}%)",
+    "sourceReal": "Real count from the provider.",
+    "sourceEstimated": "No response yet in this session — number estimated with the model's tokenizer.",
     "tooltipEstimated": "Model context unknown, using default. Click to fix it manually.",
     "tooltipClickToFix": "Click to fix it manually.",
     "invalidTokens": "Enter a valid token count",

@@ -479,6 +479,20 @@ pub struct Session {
     pub total_completion_tokens: u32,
     #[serde(default)]
     pub total_requests: u32,
+    /// `prompt_tokens` da ÚLTIMA requisição — o tamanho real do que foi
+    /// enviado ao modelo, contado pelo tokenizador do próprio provider.
+    ///
+    /// Diferente dos `total_*` acima (que são soma histórica da sessão, só pra
+    /// mostrar consumo), este é o **estado atual** do contexto e é o que o
+    /// medidor exibe quando existe. `None` = nenhuma resposta ainda (sessão
+    /// nova), aí o medidor estima.
+    ///
+    /// Por que confiar nele em vez de estimar: vem do provider, então já
+    /// inclui system prompt + histórico + tool specs + ferramentas MCP com o
+    /// tokenizador certo de cada modelo — sem heurística nenhuma. Ver
+    /// `context.rs`.
+    #[serde(default)]
+    pub last_prompt_tokens: Option<u32>,
     /// Pasta (ver `folders.rs`) que agrupa esta sessão na barra lateral.
     /// `None` = solta na raiz (comportamento de toda sessão criada antes
     /// dessa feature existir, T29).
@@ -548,7 +562,15 @@ pub struct ContextUsage {
     pub session_id: String,
     pub used_tokens: u32,
     pub context_length: u32,
+    /// `true` quando `context_length` (a janela, denominador) é só o chute
+    /// conservador, não um valor que o provider/tabela confirmou.
     pub is_estimated_length: bool,
+    /// `true` quando `used_tokens` (o numerador) é **estimativa**, não o
+    /// `prompt_tokens` real que o provider devolveu. Só acontece antes da
+    /// primeira resposta da sessão. A UI usa isso pra marcar o número com `~`
+    /// em vez de apresentá-lo como exato.
+    #[serde(default)]
+    pub is_estimated_usage: bool,
     pub percent: f32,
     #[serde(default)]
     pub total_prompt_tokens: u32,

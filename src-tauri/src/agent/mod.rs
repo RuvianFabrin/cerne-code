@@ -17,6 +17,7 @@ pub mod websearch;
 use crate::context;
 use crate::models::{
     ChatMessage, ExecutionMode, PendingEdit, ProviderConfig, ProviderKind, Session, TaskItem,
+    ToolSpec,
 };
 use crate::{history, providers, sessions, skills, AppState};
 use anyhow::Result;
@@ -1095,6 +1096,7 @@ pub async fn run_turn(
         api_key.clone(),
         &session.model,
         &mut messages,
+        &tool_specs,
         context_length,
     )
     .await?
@@ -1117,6 +1119,7 @@ pub async fn run_turn(
             &app,
             &session_id,
             &messages,
+            &tool_specs,
             context_length,
             is_estimated_length,
             &session,
@@ -2080,6 +2083,7 @@ pub async fn run_turn(
         &app,
         &session_id,
         &messages,
+        &tool_specs,
         context_length,
         is_estimated_length,
         &session,
@@ -2109,19 +2113,25 @@ fn emit_context_usage(
     app: &AppHandle,
     session_id: &str,
     messages: &[ChatMessage],
+    tool_specs: &[ToolSpec],
     context_length: u32,
     is_estimated_length: bool,
     session: &Session,
 ) {
-    let usage = context::usage_for(
+    let usage = context::usage_for(context::UsageInputs {
         session_id,
         messages,
+        tool_specs,
+        model: &session.model,
         context_length,
         is_estimated_length,
-        session.total_prompt_tokens,
-        session.total_completion_tokens,
-        session.total_requests,
-    );
+        // O número real da última requisição (se já houve alguma) vence a
+        // estimativa — ver `context.rs`.
+        real_used_tokens: session.last_prompt_tokens,
+        total_prompt_tokens: session.total_prompt_tokens,
+        total_completion_tokens: session.total_completion_tokens,
+        total_requests: session.total_requests,
+    });
     let _ = app.emit("agent:context", usage);
 }
 
@@ -2136,6 +2146,7 @@ async fn maybe_compact(
     api_key: Option<String>,
     model: &str,
     messages: &mut Vec<ChatMessage>,
+    tool_specs: &[ToolSpec],
     context_length: u32,
 ) -> Result<bool> {
     let has_system = messages
@@ -2148,7 +2159,10 @@ async fn maybe_compact(
         return Ok(false); // not enough history to bother
     }
 
-    let estimate = context::estimate_messages_tokens(messages);
+    // Estimativa com tokenizador de verdade E incluindo as tool specs — elas
+    // ocupam janela igual ao resto do prompt (vão no mesmo request), então
+    // ignorá-las aqui fazia a compactação disparar tarde demais.
+    let estimate = context::estimate_messages_tokens(messages, tool_specs, model);
     let reserve = ((context_length as f32) * COMPACT_RESERVE_RATIO)
         .clamp(COMPACT_RESERVE_MIN_TOKENS as f32, COMPACT_RESERVE_MAX_TOKENS as f32)
         as u32;

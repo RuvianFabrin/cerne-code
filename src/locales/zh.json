@@ -456,7 +456,9 @@
     "serverDown": "服务器已停止"
   },
   "contextGauge": {
-    "tooltipBase": "{used} / {total} tokens（{percent}%）— 估算值（字符数/4）",
+    "tooltipBase": "{used} / {total} tokens（{percent}%）",
+    "sourceReal": "来自提供商的真实计数。",
+    "sourceEstimated": "本会话尚无回复 — 数字为使用模型分词器的估算值。",
     "tooltipEstimated": "模型上下文长度未知，使用默认值。点击可手动修正。",
     "tooltipClickToFix": "点击可手动修正。",
     "invalidTokens": "请输入有效的 token 数量",
