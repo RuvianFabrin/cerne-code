@@ -4,10 +4,6 @@ import { useI18n } from "vue-i18n";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useSessionStore } from "../stores/session";
 import Dialog from "primevue/dialog";
-import Accordion from "primevue/accordion";
-import AccordionPanel from "primevue/accordionpanel";
-import AccordionHeader from "primevue/accordionheader";
-import AccordionContent from "primevue/accordioncontent";
 import {
   api,
   type CustomProviderConfig,
@@ -718,6 +714,82 @@ async function importSessionsBackup() {
   }
 }
 
+
+// ---- Layout de dois paineis (nav + conteudo) ----------------
+// Substitui o Accordion empilhado: a navegacao virou uma lista a esquerda
+// e so o painel ativo aparece a direita, no estilo do design enviado pelo
+// usuario (2026-09-15). Os CONTEUDOS dos paineis nao mudaram.
+const activeSection = ref('language');
+const csQuery = ref('');
+
+/** Item da navegacao: ou tem `chave` (i18n) ou `texto` (literal, ex: nome de
+ * marca que nao se traduz). `requerConfig` esconde o item enquanto a config do
+ * provider nao carregou (mesma condicao do `v-if` que existia nos paineis). */
+type CsItem = {
+  id: string;
+  icon: string;
+  chave?: string;
+  texto?: string;
+  requerConfig?: boolean;
+};
+
+const csGrupos: { label: string; itens: CsItem[] }[] = [
+  { label: t('settings.groupGeneral'), itens: [
+    { id: 'language', icon: 'translate', chave: 'settings.language' },
+    { id: 'appearance', icon: 'format_size', chave: 'settings.appearance' },
+  ] },
+  { label: t('settings.groupProviders'), itens: [
+    { id: 'openrouter', icon: 'cloud', texto: 'OpenRouter' },
+    { id: 'llama-cpp-local', icon: 'memory', chave: 'settings.llamaCppLocal' },
+    { id: 'custom-providers', icon: 'extension', chave: 'settings.customProviders' },
+  ] },
+  { label: t('settings.groupIntegrations'), itens: [
+    { id: 'mcp-servers', icon: 'hub', chave: 'settings.mcpServers' },
+    { id: 'memory', icon: 'neurology', chave: 'settings.memoryTitle' },
+    { id: 'web-search', icon: 'manage_search', chave: 'settings.webSearch' },
+  ] },
+  { label: t('settings.groupAdvanced'), itens: [
+    { id: 'local-endpoints', icon: 'dns', chave: 'settings.localEndpoints', requerConfig: true },
+    { id: 'voice', icon: 'mic', chave: 'settings.voiceTitle', requerConfig: true },
+  ] },
+];
+
+function tituloDe(item: CsItem): string {
+  return item.texto ?? t(item.chave as string);
+}
+
+/** Grupo com os itens que passam no filtro de busca e existem nesta
+ * configuracao (`requerConfig` = so aparece com config carregada). */
+const csGruposVisiveis = computed(() => {
+  const q = csQuery.value.trim().toLowerCase();
+  return csGrupos
+    .map((g) => ({
+      label: g.label,
+      itens: g.itens.filter((i) => {
+        if (i.requerConfig && !providerStore.config) return false;
+        return !q || tituloDe(i).toLowerCase().includes(q);
+      }),
+    }))
+    .filter((g) => g.itens.length > 0);
+});
+
+const csTituloAtivo = computed(() => {
+  for (const g of csGrupos) {
+    const item = g.itens.find((i) => i.id === activeSection.value);
+    if (item) return tituloDe(item);
+  }
+  return t('settings.title');
+});
+
+// Se a secao ativa deixar de existir (config descarregada, por exemplo),
+// cai pra primeira disponivel em vez de mostrar area vazia.
+watch(csGruposVisiveis, (grupos) => {
+  const ids = grupos.flatMap((g) => g.itens.map((i) => i.id));
+  if (!ids.includes(activeSection.value) && ids.length > 0) {
+    activeSection.value = ids[0];
+  }
+});
+
 </script>
 
 <template>
@@ -725,27 +797,62 @@ async function importSessionsBackup() {
     :visible="visible"
     @update:visible="(v) => emit('update:visible', v)"
     modal
-    maximizable
-    :header="$t('settings.title')"
-    :style="{ width: '860px' }"
+    :style="{ width: '980px' }"
     class="settings-dialog"
   >
-  <div class="settings">
-    <div class="settings-inner">
-      <Accordion multiple>
-      <AccordionPanel value="language">
-        <AccordionHeader>{{ $t("settings.language") }}</AccordionHeader>
-        <AccordionContent>
+      <div class="cs">
+        <aside class="cs-nav">
+          <div class="cs-search">
+            <span class="msi">search</span>
+            <input
+              v-model="csQuery"
+              type="text"
+              class="cs-search-input"
+              :placeholder="$t('settings.searchPlaceholder')"
+            />
+          </div>
+          <div class="cs-nav-scroll">
+            <template v-for="grupo in csGruposVisiveis" :key="grupo.label">
+              <p class="cs-nav-label">{{ grupo.label }}</p>
+              <button
+                v-for="item in grupo.itens"
+                :key="item.id"
+                type="button"
+                class="cs-nav-item"
+                :class="{ active: activeSection === item.id }"
+                @click="activeSection = item.id"
+              >
+                <span class="msi">{{ item.icon }}</span>
+                <span class="cs-nav-text">{{ tituloDe(item) }}</span>
+              </button>
+            </template>
+          </div>
+        </aside>
+
+        <div class="cs-main">
+          <header class="cs-head">
+            <h2 class="cs-head-title">{{ csTituloAtivo }}</h2>
+            <!-- O Dialog perdeu o `:header` (o titulo virou este), entao o X de
+                 fechar precisa ser proprio — sem ele so sobraria Esc/clicar
+                 fora. O botao de maximizar tambem saiu junto com o header. -->
+            <button
+              type="button"
+              class="cs-close"
+              :aria-label="$t('settings.close')"
+              @click="emit('update:visible', false)"
+            >
+              <span class="msi">close</span>
+            </button>
+          </header>
+          <div class="cs-body">
+      <section v-show="activeSection === 'language'" class="cs-panel">
         <p class="hint">{{ $t("settings.languageHint") }}</p>
         <select :value="locale" class="text-input" @change="onLocaleChange(($event.target as HTMLSelectElement).value)">
           <option v-for="l in SUPPORTED_LOCALES" :key="l.code" :value="l.code">{{ l.label }}</option>
         </select>
-        </AccordionContent>
-      </AccordionPanel>
+        </section>
 
-      <AccordionPanel value="appearance">
-        <AccordionHeader>{{ $t("settings.appearance") }}</AccordionHeader>
-        <AccordionContent>
+      <section v-show="activeSection === 'appearance'" class="cs-panel">
         <p class="hint">{{ $t("settings.appearanceHint") }}</p>
 
         <div class="font-setting-row">
@@ -801,12 +908,9 @@ async function importSessionsBackup() {
         </div>
 
         <button class="btn-secondary" @click="resetFontSettings">{{ $t("settings.fontReset") }}</button>
-        </AccordionContent>
-      </AccordionPanel>
+        </section>
 
-      <AccordionPanel value="openrouter">
-        <AccordionHeader>OpenRouter</AccordionHeader>
-        <AccordionContent>
+      <section v-show="activeSection === 'openrouter'" class="cs-panel">
         <p class="hint">{{ $t("settings.apiKeyVaultHint") }}</p>
         <div v-if="providerStore.hasOpenrouterKey && !editingOpenrouterKey" class="key-status-row">
           <span class="key-status-chip">
@@ -827,12 +931,9 @@ async function importSessionsBackup() {
           <span class="msi">search</span>
           {{ $t("settings.viewModels") }}
         </button>
-        </AccordionContent>
-      </AccordionPanel>
+        </section>
 
-      <AccordionPanel value="llama-cpp-local">
-        <AccordionHeader>{{ $t("settings.llamaCppLocal") }}</AccordionHeader>
-        <AccordionContent>
+      <section v-show="activeSection === 'llama-cpp-local'" class="cs-panel">
         <p class="hint" v-html="$t('settings.llamaCppHint')"></p>
         <div class="fork-list">
           <LlamaForkRow
@@ -862,12 +963,9 @@ async function importSessionsBackup() {
           <button class="btn-primary" @click="addFork">{{ $t("settings.addFork") }}</button>
         </div>
         <p v-if="forkError" class="error-text">{{ forkError }}</p>
-        </AccordionContent>
-      </AccordionPanel>
+        </section>
 
-      <AccordionPanel value="custom-providers">
-        <AccordionHeader>{{ $t("settings.customProviders") }}</AccordionHeader>
-        <AccordionContent>
+      <section v-show="activeSection === 'custom-providers'" class="cs-panel">
         <p class="hint" v-html="$t('settings.customProvidersHint')"></p>
         <div class="skill-list">
           <div v-for="provider in providerStore.customProviders" :key="provider.id" class="skill-row mcp-row">
@@ -930,12 +1028,9 @@ async function importSessionsBackup() {
           <p v-if="customTestStatus === 'error'" class="error-text">{{ customTestError }}</p>
         </div>
         <p v-if="customError" class="error-text">{{ customError }}</p>
-        </AccordionContent>
-      </AccordionPanel>
+        </section>
 
-      <AccordionPanel value="mcp-servers">
-        <AccordionHeader>{{ $t("settings.mcpServers") }}</AccordionHeader>
-        <AccordionContent>
+      <section v-show="activeSection === 'mcp-servers'" class="cs-panel">
         <p class="hint">
           {{ $t("settings.mcpHintBefore") }}
           <code>mcp__{{ '{servidor}' }}__{{ '{tool}' }}</code>{{ $t("settings.mcpHintAfter") }}
@@ -1024,12 +1119,9 @@ async function importSessionsBackup() {
           <p v-if="mcpTestStatus === 'error'" class="error-text">{{ mcpTestError }}</p>
         </div>
         <p v-if="mcpError" class="error-text">{{ mcpError }}</p>
-        </AccordionContent>
-      </AccordionPanel>
+        </section>
 
-      <AccordionPanel value="memory">
-        <AccordionHeader>{{ $t("settings.memoryTitle") }}</AccordionHeader>
-        <AccordionContent>
+      <section v-show="activeSection === 'memory'" class="cs-panel">
         <p class="hint">{{ $t("settings.memoryHint") }}</p>
         <textarea
           v-model="memoryContent"
@@ -1044,17 +1136,16 @@ async function importSessionsBackup() {
             {{ $t("settings.memorySaved") }}
           </span>
         </div>
-        </AccordionContent>
-      </AccordionPanel>
+        </section>
 
       <!-- Escondido a pedido do usuário (2026-08-20), antes de subir o Cerne
            Code — backup .zip e backup via git ainda não foram confirmados
            testando. Código intacto, só a UI fica invisível até serem
            confirmados; então é só tirar
            esse `v-if="false"`. -->
-      <AccordionPanel v-if="false" value="backup">
-        <AccordionHeader>{{ $t("settings.backupTitle") }}</AccordionHeader>
-        <AccordionContent>
+      <!-- Desativado (era v-if="false" antes desta mudanca de layout tambem).
+           Mantido aqui em vez de apagado: e a UI de backup por .zip, caso volte. -->
+              <section v-if="false" class="cs-panel">
         <p class="hint">{{ $t("settings.backupHint") }}</p>
         <div class="mcp-form-actions">
           <button v-if="sessionStore.currentSession" class="btn-secondary" @click="exportCurrentSession">
@@ -1127,12 +1218,9 @@ async function importSessionsBackup() {
           </p>
           <p v-if="gitBackupError" class="error-text">{{ gitBackupError }}</p>
         </div>
-        </AccordionContent>
-      </AccordionPanel>
+        </section>
 
-      <AccordionPanel value="web-search">
-        <AccordionHeader>{{ $t("settings.webSearch") }}</AccordionHeader>
-        <AccordionContent>
+      <section v-show="activeSection === 'web-search'" class="cs-panel">
         <p class="hint" v-html="$t('settings.webSearchHint')"></p>
         <div class="field">
           <label>Provider</label>
@@ -1176,12 +1264,9 @@ async function importSessionsBackup() {
         </p>
         <p v-if="searchTestStatus === 'error'" class="error-text">{{ searchTestError }}</p>
         <p v-if="searchError" class="error-text">{{ searchError }}</p>
-        </AccordionContent>
-      </AccordionPanel>
+        </section>
 
-      <AccordionPanel v-if="providerStore.config" value="local-endpoints">
-        <AccordionHeader>{{ $t("settings.localEndpoints") }}</AccordionHeader>
-        <AccordionContent>
+      <section v-if="providerStore.config" v-show="activeSection === 'local-endpoints'" class="cs-panel">
         <div class="field">
           <label>Ollama</label>
           <div class="endpoint-row">
@@ -1200,12 +1285,9 @@ async function importSessionsBackup() {
           <label>{{ $t("settings.llamaCppRouter") }}</label>
           <input v-model="providerStore.config.llama_cpp_base_url" class="text-input" @change="providerStore.saveConfig" />
         </div>
-        </AccordionContent>
-      </AccordionPanel>
+        </section>
 
-      <AccordionPanel v-if="providerStore.config" value="voice">
-        <AccordionHeader>{{ $t("settings.voiceTitle") }}</AccordionHeader>
-        <AccordionContent>
+      <section v-if="providerStore.config" v-show="activeSection === 'voice'" class="cs-panel">
         <p class="hint">{{ $t("settings.voiceHint") }}</p>
 
         <h3 class="subhead">{{ $t("settings.voiceTts") }}</h3>
@@ -1303,10 +1385,10 @@ async function importSessionsBackup() {
             <input v-model="providerStore.config.stt_model" class="text-input" @change="providerStore.saveConfig" />
           </div>
         </template>
-        </AccordionContent>
-      </AccordionPanel>
-      </Accordion>
-    </div>
+        </section>
+          </div>
+        </div>
+      </div>
 
     <ModelBrowserDialog
       v-model:visible="modelBrowser.visible"
@@ -1315,20 +1397,232 @@ async function importSessionsBackup() {
       :custom-provider-id="modelBrowser.customProviderId"
       :title="modelBrowser.title"
     />
-  </div>
   </Dialog>
 </template>
 
 <style scoped>
-.settings {
-  flex: 1;
-  overflow-y: auto;
+/* O Dialog do PrimeVue vem com padding proprio — zerado aqui pro layout de
+   dois paineis encostar nas bordas (o nav tem borda e fundo proprios). */
+.settings-dialog :deep(.p-dialog-content) {
+  padding: 0;
+  overflow: hidden;
 }
 
-.settings-inner {
-  max-width: 640px;
-  margin: 0 auto;
-  padding: 32px 24px 60px;
+/* Layout de dois paineis (nav a esquerda, conteudo a direita), no estilo do
+   design que o usuario mandou (GitHub Copilot desktop) em 2026-09-15.
+   Antes era um Accordion empilhado com tudo num scroll unico. */
+.cs {
+  display: flex;
+  height: min(660px, 76vh);
+}
+
+/* ---------- painel de navegacao ---------- */
+.cs-nav {
+  flex: 0 0 218px;
+  display: flex;
+  flex-direction: column;
+  border-right: var(--cerne-border);
+  padding: 12px 10px 14px;
+  min-width: 0;
+}
+
+.cs-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border: var(--cerne-border);
+  border-radius: 8px;
+  padding: 0 8px;
+  margin-bottom: 12px;
+  background: #fafafa;
+  flex-shrink: 0;
+}
+
+.cs-search .msi {
+  font-size: 16px;
+  color: #a1a1aa;
+}
+
+.cs-search-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  padding: 7px 0;
+  font-family: inherit;
+  font-size: 12.5px;
+  color: #18181b;
+}
+
+.cs-search-input::placeholder {
+  color: #a1a1aa;
+}
+
+.cs-nav-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+/* Rotulo de grupo (Geral, Provedores...) — maiusculo e discreto, igual ao
+   design de referencia. */
+.cs-nav-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #a1a1aa;
+  margin: 12px 0 4px;
+  padding: 0 8px;
+}
+
+.cs-nav-label:first-child {
+  margin-top: 0;
+}
+
+.cs-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #3f3f46;
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.cs-nav-item .msi {
+  font-size: 17px;
+  color: #a1a1aa;
+  flex-shrink: 0;
+}
+
+.cs-nav-item:hover {
+  background: #f4f4f5;
+}
+
+.cs-nav-item.active {
+  background: #eef2ff;
+  color: var(--cerne-accent, #6366f1);
+  font-weight: 600;
+}
+
+.cs-nav-item.active .msi {
+  color: var(--cerne-accent, #6366f1);
+}
+
+.cs-nav-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- area de conteudo ---------- */
+.cs-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.cs-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 22px 12px;
+  border-bottom: var(--cerne-border);
+  flex-shrink: 0;
+}
+
+.cs-head-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0;
+  color: #18181b;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cs-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: #a1a1aa;
+  padding: 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.cs-close:hover {
+  background: #f4f4f5;
+  color: #18181b;
+}
+
+.cs-close .msi {
+  font-size: 19px;
+}
+
+.cs-body {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 18px 22px 40px;
+}
+
+.cs-panel {
+  max-width: 620px;
+}
+
+/* Em tela estreita o nav vira uma faixa horizontal rolavel em vez de sumir —
+   todas as secoes continuam alcancaveis. */
+@media (max-width: 720px) {
+  .cs {
+    flex-direction: column;
+    height: min(620px, 78vh);
+  }
+
+  .cs-nav {
+    flex: 0 0 auto;
+    border-right: none;
+    border-bottom: var(--cerne-border);
+    padding-bottom: 10px;
+  }
+
+  .cs-nav-scroll {
+    flex-direction: row;
+    gap: 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-bottom: 2px;
+  }
+
+  .cs-nav-label {
+    display: none;
+  }
+
+  .cs-nav-item {
+    width: auto;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
 }
 
 .browse-models-btn {
@@ -1351,37 +1645,6 @@ async function importSessionsBackup() {
 .endpoint-row .text-input {
   flex: 1;
   min-width: 0;
-}
-
-h1 {
-  font-size: 20px;
-  font-weight: 700;
-  margin: 0 0 24px;
-}
-
-/* Cada seção de Configurações (OpenRouter, llama.cpp local, ...) virou um
-   painel de acordeão, todos fechados por padrão — pedido do usuário
-   (2026-08-20): "traz tudo fechado para dar uma organizada nessa design",
-   a tela tinha crescido demais (11 seções sempre abertas, scroll gigante). */
-:deep(.p-accordionpanel) {
-  border-bottom: var(--cerne-border);
-}
-
-:deep(.p-accordionpanel:last-child) {
-  border-bottom: none;
-}
-
-:deep(.p-accordionheader) {
-  font-size: 14px;
-  font-weight: 700;
-  padding: 14px 4px;
-  background: transparent;
-  border: none;
-  color: #18181b;
-}
-
-:deep(.p-accordioncontent-content) {
-  padding: 0 4px 24px;
 }
 
 .hint {
