@@ -8,6 +8,7 @@ mod encoding;
 mod folders;
 mod git;
 mod history;
+mod image_util;
 mod mcp;
 mod memory;
 mod models;
@@ -1171,9 +1172,17 @@ async fn test_vision(
     }
 }
 
-/// Lê um arquivo de imagem do disco e devolve como data URI base64, pronto
-/// pra entrar no array `images` da mensagem — roda em `spawn_blocking` pelo
-/// mesmo motivo do `extract_attachment_text` (I/O + encode síncronos).
+/// Lê uma imagem do disco e devolve como data URI **já otimizado**
+/// (redimensionado ao limite e recomprimido em JPEG — ver `image_util`).
+/// Roda em `spawn_blocking` pelo mesmo motivo do `extract_attachment_text`
+/// (I/O + encode síncronos).
+///
+/// Antes devolvia o arquivo cru: um print de tela cheia 1920×1080 virava
+/// ~3.179 KB de base64 e 2.765 tokens. Otimizado, ~50 KB e 1.229 tokens.
+///
+/// **Se a otimização falhar, devolve o original.** Motivo: um formato que o
+/// `image` não decodifica (BMP, TIFF, HEIC…) é motivo pra mandar a imagem
+/// grande, nunca pra perder a imagem do usuário.
 #[tauri::command]
 async fn read_image_as_data_url(path: String) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -1192,10 +1201,25 @@ async fn read_image_as_data_url(path: String) -> Result<String, String> {
             _ => "image/jpeg",
         };
         let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
-        Ok(format!("data:{mime};base64,{encoded}"))
+        let cru = format!("data:{mime};base64,{encoded}");
+        Ok(image_util::optimize_data_url(&cru).unwrap_or(cru))
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Otimiza um data URI que só existe no navegador — é o caminho de quem **cola**
+/// uma imagem (Ctrl+V), onde os bytes nunca passam pelo disco.
+///
+/// Mesma regra de fallback do `read_image_as_data_url`: se não der pra otimizar,
+/// devolve o que veio.
+#[tauri::command]
+async fn optimize_image_data_url(data_url: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        image_util::optimize_data_url(&data_url).unwrap_or(data_url)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Switching a session to/away from llama.cpp should manage the local
@@ -2013,6 +2037,7 @@ pub fn run() {
             check_vision_support,
             test_vision,
             read_image_as_data_url,
+            optimize_image_data_url,
             get_session,
             get_session_messages,
             get_session_tasks,

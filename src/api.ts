@@ -415,6 +415,10 @@ export const api = {
   testVision: (kind: string, customProviderId: string | null, model: string) =>
     invoke<boolean>("test_vision", { kind, customProviderId, model }),
   readImageAsDataUrl: (path: string) => invoke<string>("read_image_as_data_url", { path }),
+  /** Otimiza (redimensiona + JPEG) um data URI que só existe no navegador —
+   * caminho de quem cola imagem com Ctrl+V. Se falhar, o backend devolve o
+   * original, então nunca perde a imagem. */
+  optimizeImageDataUrl: (dataUrl: string) => invoke<string>("optimize_image_data_url", { dataUrl }),
   getSession: (id: string) => invoke<Session>("get_session", { id }),
   getSessionMessages: (id: string) => invoke<ChatMessage[]>("get_session_messages", { id }),
   getSessionTasks: (id: string) => invoke<TaskItem[]>("get_session_tasks", { id }),

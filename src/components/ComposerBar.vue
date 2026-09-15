@@ -445,7 +445,16 @@ async function onPaste(e: ClipboardEvent) {
       continue;
     }
     const reader = new FileReader();
-    reader.onload = () => updateAttachment(id, { status: "ready", dataUrl: reader.result as string });
+    reader.onload = async () => {
+      const cru = reader.result as string;
+      // Otimiza no backend antes de guardar: redimensiona ao mesmo limite e
+      // recomprime em JPEG, igual ao caminho de anexar arquivo (ver
+      // `image_util` no Rust). Um print de tela cheia cai de ~2.765 pra ~1.229
+      // tokens (e o base64 de vários MB vira dezenas de KB). Se a otimização
+      // falhar, o backend devolve o original — a imagem nunca se perde.
+      const dataUrl = await api.optimizeImageDataUrl(cru).catch(() => cru);
+      updateAttachment(id, { status: "ready", dataUrl });
+    };
     reader.onerror = () => updateAttachment(id, { status: "error", error: t("composer.pasteImageFailed") });
     reader.readAsDataURL(file);
   }

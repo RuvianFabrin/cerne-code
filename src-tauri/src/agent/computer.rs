@@ -746,19 +746,22 @@ async fn exec_scroll_wayland(args: &Value) -> Result<ComputerOutcome> {
 
 fn rgba_to_base64(img: image::RgbaImage) -> Result<String> {
     use base64::Engine;
-    let mut dyn_img = image::DynamicImage::ImageRgba8(img);
-    if dyn_img.width() > 1280 {
-        let ratio = 1280.0 / dyn_img.width() as f32;
-        let new_h = (dyn_img.height() as f32 * ratio) as u32;
-        dyn_img = dyn_img.resize(1280, new_h, image::imageops::FilterType::Triangle);
-    }
-    let rgb = dyn_img.to_rgb8();
-    let mut buf = std::io::Cursor::new(Vec::new());
-    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 80);
-    encoder
-        .encode(&rgb, rgb.width(), rgb.height(), image::ColorType::Rgb8.into())
-        .map_err(|e| anyhow!("falha ao codificar JPEG: {e}"))?;
-    Ok(base64::engine::general_purpose::STANDARD.encode(buf.into_inner()))
+    // Redimensiona/recomprime pelo mesmo caminho e **mesmo limite** do que o
+    // usuário anexa (ver `crate::image_util`): se cada um tivesse o seu número,
+    // um desfaria o trabalho do outro. Filtro `Triangle` mantido de propósito —
+    // é o que já rodava aqui em produção e não vale mexer sem poder testar a
+    // visão do agente ponta a ponta.
+    //
+    // Mudança pequena de comportamento: o limite agora olha o **maior lado**
+    // (antes só a largura), então uma captura em retrato também é reduzida. Em
+    // screenshot de tela normal (paisagem) o resultado é idêntico.
+    let jpeg = crate::image_util::encode_jpeg(
+        image::DynamicImage::ImageRgba8(img),
+        crate::image_util::MAX_IMAGE_EDGE,
+        crate::image_util::JPEG_QUALITY,
+        image::imageops::FilterType::Triangle,
+    )?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(jpeg))
 }
 
 fn capture_screen_base64(window_title: Option<&str>) -> Result<(String, u32, u32, String)> {
