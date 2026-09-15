@@ -106,10 +106,16 @@ fn run_git(project_root: &Path, args: &[&str]) -> Result<String> {
         ));
     }
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = crate::agent::shell::strip_ansi(&crate::agent::shell::decode_output(
+            &output.stderr,
+        ));
         return Err(anyhow!("git {} falhou: {}", args.join(" "), stderr.trim()));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    // `strip_ansi`: o git coloriza a saída quando `color.ui=always` (ou quando
+    // configurado assim pelo usuário), e os códigos apareciam crus no diff.
+    Ok(crate::agent::shell::strip_ansi(&crate::agent::shell::decode_output(
+        &output.stdout,
+    )))
 }
 
 // ---------------------------------------------------------------------

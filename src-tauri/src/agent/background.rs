@@ -422,8 +422,25 @@ fn spawn_reader<R>(
     R: AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
-        let mut lines = BufReader::new(reader).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
+        // `read_until` em vez de `lines()`: `lines()` exige UTF-8 válido e
+        // devolve `Err` no primeiro byte inválido — o que **encerrava o loop**
+        // (`while let Ok(Some(..))` simplesmente saía). Ou seja: um comando em
+        // segundo plano que imprimisse um acento no codepage do console parava
+        // de ser capturado no meio, em silêncio. Agora lê os bytes crus e
+        // decodifica com `decode_output`, que nunca aborta a leitura.
+        let mut reader = BufReader::new(reader);
+        let mut raw: Vec<u8> = Vec::new();
+        loop {
+            raw.clear();
+            match reader.read_until(b'\n', &mut raw).await {
+                Ok(0) => break,   // EOF
+                Ok(_) => {}
+                Err(_) => break,
+            }
+            // `strip_ansi` pelo mesmo motivo do `run_command`: build/teste
+            // colorido despejava código de escape no painel de background.
+            let line = super::shell::strip_ansi(&super::shell::decode_output(&raw));
+            let line = line.trim_end_matches(['\n', '\r']).to_string();
             let joined = {
                 let mut buf = output.lock().unwrap();
                 buf.push_back(match prefix {

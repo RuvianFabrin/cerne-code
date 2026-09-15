@@ -1186,8 +1186,16 @@ async fn execute_project_tool(
                 match tokio::time::timeout(RUN_COMMAND_TIMEOUT, child.wait_with_output()).await {
                     Ok(output) => {
                         let output = output?;
-                        let stdout = String::from_utf8_lossy(&output.stdout);
-                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        // `decode_output` em vez de `from_utf8_lossy` direto:
+                        // o prologue do shell (ver `shell.rs`) já faz a saída
+                        // vir em UTF-8, mas se algo escapar o decodificador
+                        // tenta o estrito primeiro. `strip_ansi` tira os
+                        // códigos de cor que vite/cargo/npm emitem — eles
+                        // apareciam crus no bloco "OUT" do chat.
+                        let stdout =
+                            super::shell::strip_ansi(&super::shell::decode_output(&output.stdout));
+                        let stderr =
+                            super::shell::strip_ansi(&super::shell::decode_output(&output.stderr));
                         format!(
                             "exit_code: {}\nstdout:\n{}\nstderr:\n{}",
                             output.status.code().unwrap_or(-1),
