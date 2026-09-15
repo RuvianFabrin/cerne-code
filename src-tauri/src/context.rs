@@ -109,9 +109,11 @@ const IMAGE_AREA_DIVISOR: u64 = 750;
 /// barato. Se não conseguir (formato exótico, data URI malformado), cai num
 /// chute conservador — melhor um número aproximado que ignorar a imagem.
 ///
-/// Por que não usar um valor fixo: medido numa sessão real do usuário
-/// (2026-09-13), um print de ~50 KB custava ~2.582 tokens de verdade, enquanto
-/// o palpite fixo de 800 que existia antes subestimava em 3×.
+/// Por que não usar um valor fixo: medindo as **76 imagens reais** do histórico
+/// do usuário (2026-09-15), o custo varia de **73 a 2.765 tokens** (de um
+/// recorte de 179×307 até um print de tela cheia 1920×1080). O palpite fixo de
+/// 800 que existia antes errava nos dois sentidos: superestimava recortes
+/// pequenos (598 reais num deles) e subestimava print de tela cheia em ~3,5×.
 fn estimate_image_tokens(data_uri: &str) -> u32 {
     use base64::Engine as _;
 
