@@ -109,7 +109,9 @@ jobs:
             libxdo-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev
+            librsvg2-dev \
+            libpipewire-0.3-dev \
+            libdbus-1-dev
 
       - name: Instalar Rust
         uses: dtolnay/rust-toolchain@stable

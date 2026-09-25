@@ -511,11 +511,15 @@ use o equivalente):
 ```bash
 sudo apt install build-essential curl wget file libssl-dev \
   libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev \
-  librsvg2-dev libsecret-1-0 gnome-keyring
+  librsvg2-dev libsecret-1-0 gnome-keyring libpipewire-0.3-dev libdbus-1-dev
 ```
 
 > O `libsecret` + `gnome-keyring` são necessários pro cofre de chaves (onde a
 > chave de API é guardada). Sem eles o app abre, mas não consegue salvar a chave.
+> `libpipewire-0.3-dev` e `libdbus-1-dev` são necessários só pra **compilar**
+> (captura de tela e o cofre de chaves via Secret Service linkam contra eles
+> em tempo de build) — sem essas duas o `cargo build`/`npm run tauri build`
+> nem sai do lugar.
 
 Depois:
 
