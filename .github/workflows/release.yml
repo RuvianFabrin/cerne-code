@@ -240,6 +240,16 @@ jobs:
           path: dist-installers
           merge-multiple: true
 
+      # O download preserva a estrutura de pastas original de cada artifact
+      # (ex: dist-installers/deb/*.deb, dist-installers/release/bundle/nsis/*.exe,
+      # dist-installers/universal-apple-darwin/release/bundle/dmg/*.dmg) - achata
+      # tudo num nivel so, senao o glob `files:` do softprops/action-gh-release
+      # (que so casa um nivel) nao acha nada ("does not match any files").
+      - name: Achatar estrutura de instaladores
+        run: |
+          find dist-installers -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' -o -name '*.exe' -o -name '*.dmg' \) -exec mv -t dist-installers {} +
+          find dist-installers -mindepth 1 -type d -empty -delete
+
       - name: Listar o que foi baixado (debug)
         run: ls -la dist-installers
 
