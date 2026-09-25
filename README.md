@@ -545,7 +545,7 @@ sudo apt install build-essential curl wget file libssl-dev \
   libwebkit2gtk-4.1-dev libxdo-dev libayatana-appindicator3-dev \
   librsvg2-dev libsecret-1-0 gnome-keyring libpipewire-0.3-dev libdbus-1-dev \
   libclang-dev libgbm-dev libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
-  libdrm-dev
+  libdrm-dev xdg-utils
 ```
 
 > O `libsecret` + `gnome-keyring` são necessários pro cofre de chaves (onde a

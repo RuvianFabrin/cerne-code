@@ -47,7 +47,8 @@ jobs:
             libpipewire-0.3-dev \
             libdbus-1-dev \
             libclang-dev \
-            libgbm-dev
+            libgbm-dev \
+            xdg-utils
 
       # No macOS builda os dois targets (arm64 + intel) pra virar um
       # universal binary depois - macos-latest hoje e Apple Silicon, entao
