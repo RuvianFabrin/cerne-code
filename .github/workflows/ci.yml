@@ -45,7 +45,9 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libpipewire-0.3-dev \
-            libdbus-1-dev
+            libdbus-1-dev \
+            libclang-dev \
+            libgbm-dev
 
       # No macOS builda os dois targets (arm64 + intel) pra virar um
       # universal binary depois - macos-latest hoje e Apple Silicon, entao

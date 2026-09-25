@@ -111,7 +111,13 @@ jobs:
             libayatana-appindicator3-dev \
             librsvg2-dev \
             libpipewire-0.3-dev \
-            libdbus-1-dev
+            libdbus-1-dev \
+            libclang-dev \
+            libgbm-dev \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libegl1-mesa-dev \
+            libdrm-dev
 
       - name: Instalar Rust
         uses: dtolnay/rust-toolchain@stable
