@@ -23,6 +23,79 @@ const { t } = useI18n();
 const fileBrowserVisible = ref(false);
 const repoDiffVisible = ref(false);
 
+// Modal de configuração do modo Long Horizon DESTA sessão (ícone de
+// engrenagem, só aparece com o modo ligado) — memória/projeto editáveis,
+// carregados na abertura e salvos por botão explícito (não a cada tecla,
+// pra não gravar em disco a cada caractere digitado).
+const longHorizonSettingsVisible = ref(false);
+const longHorizonActiveTab = ref<"memoria" | "projeto" | "tarefas">("memoria");
+const longHorizonMemoriaContent = ref("");
+const longHorizonProjetoContent = ref("");
+const longHorizonSettingsSaved = ref(false);
+
+async function openLongHorizonSettings() {
+  const id = sessionStore.currentId;
+  if (!id) return;
+  [longHorizonMemoriaContent.value, longHorizonProjetoContent.value, taskQueueJson.value] = await Promise.all([
+    api.readSessionLongHorizonMemoria(id),
+    api.readSessionLongHorizonProjeto(id),
+    api.readSessionTaskQueue(id),
+  ]);
+  taskQueueSaveError.value = "";
+  longHorizonActiveTab.value = "memoria";
+  longHorizonSettingsVisible.value = true;
+}
+
+async function saveLongHorizonSettings() {
+  const id = sessionStore.currentId;
+  if (!id) return;
+  await Promise.all([
+    api.writeSessionLongHorizonMemoria(id, longHorizonMemoriaContent.value),
+    api.writeSessionLongHorizonProjeto(id, longHorizonProjetoContent.value),
+  ]);
+  longHorizonSettingsSaved.value = true;
+  setTimeout(() => (longHorizonSettingsSaved.value = false), 2000);
+}
+
+// Aba "Tarefas" do mesmo modal — JSON colado pelo usuário (convenção
+// `{"tarefas": [...]}`), validado no backend antes de gravar (ver
+// `write_session_task_queue`/`task_queue::parse_tasks`).
+const taskQueueJson = ref("");
+const taskQueueSaveError = ref("");
+
+async function saveTaskQueue() {
+  const id = sessionStore.currentId;
+  if (!id) return;
+  try {
+    await api.writeSessionTaskQueue(id, taskQueueJson.value);
+    taskQueueSaveError.value = "";
+    longHorizonSettingsSaved.value = true;
+    setTimeout(() => (longHorizonSettingsSaved.value = false), 2000);
+  } catch (e) {
+    taskQueueSaveError.value = String(e);
+  }
+}
+
+const taskQueueRunning = computed(() => !!sessionStore.currentId && sessionStore.taskQueueRunningIds.has(sessionStore.currentId));
+
+const taskQueueCanStart = computed(() => {
+  const s = sessionStore.currentSession;
+  return !!s && s.execution_mode === "yolo" && s.long_horizon.enabled;
+});
+
+const taskQueueStartTooltip = computed(() =>
+  taskQueueCanStart.value ? t("composer.taskQueueStart") : t("composer.taskQueueRequirements"),
+);
+
+async function toggleTaskQueue() {
+  if (taskQueueRunning.value) {
+    await sessionStore.stopTaskQueue();
+  } else {
+    if (!taskQueueCanStart.value) return;
+    await sessionStore.startTaskQueue();
+  }
+}
+
 // "+" virou um menu (Popover) agrupando anexar arquivo/persona/Método
 // Fable/MCP — pedido do usuário (2026-08-20), esses ficavam soltos no
 // rodapé do composer poluindo a barra. Mesmo padrão de Popover já usado em
@@ -934,6 +1007,24 @@ watch(
         <button class="attach-btn" v-tooltip.top="$t('composer.plusMenuTooltip')" @click="togglePlusMenu">
           <span class="msi">add</span>
         </button>
+        <button
+          v-if="sessionStore.currentSession?.long_horizon.enabled"
+          class="attach-btn"
+          v-tooltip.top="$t('composer.longHorizonSettingsTooltip')"
+          @click="openLongHorizonSettings"
+        >
+          <span class="msi">settings</span>
+        </button>
+        <button
+          v-if="sessionStore.currentSession?.task_queue_enabled"
+          class="attach-btn"
+          :class="{ 'task-queue-running': taskQueueRunning }"
+          :disabled="!taskQueueRunning && !taskQueueCanStart"
+          v-tooltip.top="taskQueueRunning ? $t('composer.taskQueueStop') : taskQueueStartTooltip"
+          @click="toggleTaskQueue"
+        >
+          <span class="msi">{{ taskQueueRunning ? "stop" : "play_arrow" }}</span>
+        </button>
         <Popover ref="plusMenuRef">
           <div class="plus-menu">
             <button class="plus-menu-item" @click="addAttachments(); plusMenuRef?.hide()">
@@ -989,6 +1080,28 @@ watch(
             >
               <span class="msi">route</span>
               <span class="plus-menu-label">{{ $t("composer.fableLabel") }}</span>
+              <span class="plus-menu-switch"><span class="plus-menu-switch-dot" /></span>
+            </button>
+            <button
+              v-if="sessionStore.currentSession"
+              class="plus-menu-item plus-menu-toggle"
+              :class="{ 'plus-menu-toggle-on': sessionStore.currentSession.long_horizon.enabled }"
+              v-tooltip.right="$t('composer.longHorizonTooltip')"
+              @click="sessionStore.updateLongHorizonEnabled(!sessionStore.currentSession.long_horizon.enabled)"
+            >
+              <span class="msi">all_inclusive</span>
+              <span class="plus-menu-label">{{ $t("composer.longHorizonLabel") }}</span>
+              <span class="plus-menu-switch"><span class="plus-menu-switch-dot" /></span>
+            </button>
+            <button
+              v-if="sessionStore.currentSession"
+              class="plus-menu-item plus-menu-toggle"
+              :class="{ 'plus-menu-toggle-on': sessionStore.currentSession.task_queue_enabled }"
+              v-tooltip.right="$t('composer.taskQueueTooltip')"
+              @click="sessionStore.updateTaskQueueEnabled(!sessionStore.currentSession.task_queue_enabled)"
+            >
+              <span class="msi">playlist_play</span>
+              <span class="plus-menu-label">{{ $t("composer.taskQueueLabel") }}</span>
               <span class="plus-menu-switch"><span class="plus-menu-switch-dot" /></span>
             </button>
             <button
@@ -1074,6 +1187,123 @@ watch(
         </div>
       </div>
       <p v-else class="hint">{{ $t("composer.mcpToolsEmpty") }}</p>
+    </Dialog>
+
+    <Dialog
+      v-model:visible="longHorizonSettingsVisible"
+      modal
+      :style="{ width: 'min(820px, 94vw)' }"
+      class="lh-dialog"
+    >
+      <div class="lh">
+        <aside class="lh-nav">
+          <p class="lh-nav-label">{{ $t("composer.longHorizonSettingsTitle") }}</p>
+          <button
+            type="button"
+            class="lh-nav-item"
+            :class="{ active: longHorizonActiveTab === 'memoria' }"
+            @click="longHorizonActiveTab = 'memoria'"
+          >
+            <span class="msi">psychology</span>
+            <span class="lh-nav-text">{{ $t("composer.longHorizonMemoriaLabel") }}</span>
+          </button>
+          <button
+            type="button"
+            class="lh-nav-item"
+            :class="{ active: longHorizonActiveTab === 'projeto' }"
+            @click="longHorizonActiveTab = 'projeto'"
+          >
+            <span class="msi">checklist</span>
+            <span class="lh-nav-text">{{ $t("composer.longHorizonProjetoLabel") }}</span>
+          </button>
+          <button
+            type="button"
+            class="lh-nav-item"
+            :class="{ active: longHorizonActiveTab === 'tarefas' }"
+            @click="longHorizonActiveTab = 'tarefas'"
+          >
+            <span class="msi">playlist_play</span>
+            <span class="lh-nav-text">{{ $t("composer.taskQueueTabLabel") }}</span>
+          </button>
+          <p class="lh-nav-status">
+            {{ $t("composer.longHorizonSettingsHint", {
+              iteracao: sessionStore.currentSession?.long_horizon.iteracao_atual ?? 0,
+              desfecho: sessionStore.currentSession?.long_horizon.ultimo_desfecho ?? $t('composer.longHorizonNoOutcome'),
+            }) }}
+          </p>
+        </aside>
+
+        <div class="lh-main">
+          <header class="lh-head">
+            <h2 class="lh-head-title">
+              {{ longHorizonActiveTab === "memoria"
+                ? $t("composer.longHorizonMemoriaLabel")
+                : longHorizonActiveTab === "projeto"
+                ? $t("composer.longHorizonProjetoLabel")
+                : $t("composer.taskQueueTabLabel") }}
+            </h2>
+            <button
+              type="button"
+              class="lh-close"
+              :aria-label="$t('settings.close')"
+              @click="longHorizonSettingsVisible = false"
+            >
+              <span class="msi">close</span>
+            </button>
+          </header>
+          <div class="lh-body">
+            <textarea
+              v-show="longHorizonActiveTab === 'memoria'"
+              v-model="longHorizonMemoriaContent"
+              class="text-input lh-textarea"
+              :placeholder="$t('composer.longHorizonMemoriaPlaceholder')"
+            />
+            <textarea
+              v-show="longHorizonActiveTab === 'projeto'"
+              v-model="longHorizonProjetoContent"
+              class="text-input lh-textarea"
+              :placeholder="$t('composer.longHorizonProjetoPlaceholder')"
+            />
+            <div v-if="longHorizonActiveTab === 'tarefas'" class="task-queue-tab">
+              <p class="hint">
+                {{ $t("composer.taskQueueTabHint") }}
+                <code class="task-queue-format">{{ '{"tarefas": [{"id": 1, "descricao": "...", "status": "fazer"}]}' }}</code>
+              </p>
+              <textarea
+                v-model="taskQueueJson"
+                class="text-input lh-textarea task-queue-textarea"
+                :placeholder="$t('composer.taskQueueTabPlaceholder')"
+                spellcheck="false"
+              />
+              <p v-if="taskQueueSaveError" class="error-text">{{ taskQueueSaveError }}</p>
+              <p v-if="!taskQueueCanStart" class="hint task-queue-req-hint">{{ $t("composer.taskQueueRequirements") }}</p>
+            </div>
+          </div>
+          <div class="lh-footer">
+            <template v-if="longHorizonActiveTab === 'tarefas'">
+              <button class="btn-primary" @click="saveTaskQueue">{{ $t("sidebar.save") }}</button>
+              <button
+                class="btn-secondary"
+                :class="{ 'task-queue-running': taskQueueRunning }"
+                :disabled="!taskQueueRunning && !taskQueueCanStart"
+                @click="toggleTaskQueue"
+              >
+                <span class="msi">{{ taskQueueRunning ? "stop" : "play_arrow" }}</span>
+                {{ taskQueueRunning ? $t("composer.taskQueueStop") : $t("composer.taskQueueStart") }}
+              </button>
+            </template>
+            <button v-else class="btn-primary" @click="saveLongHorizonSettings">{{ $t("sidebar.save") }}</button>
+            <span v-if="longHorizonSettingsSaved" class="mcp-test-success">
+              <span class="msi">check_circle</span>
+              {{ $t("composer.longHorizonSaved") }}
+            </span>
+            <span v-if="longHorizonActiveTab === 'tarefas' && sessionStore.taskQueueLastEvent" class="task-queue-event" :class="sessionStore.taskQueueLastEvent.status">
+              <span class="msi">{{ sessionStore.taskQueueLastEvent.status === "stuck" || sessionStore.taskQueueLastEvent.status === "error" ? "warning" : "info" }}</span>
+              {{ sessionStore.taskQueueLastEvent.message ?? sessionStore.taskQueueLastEvent.status }}
+            </span>
+          </div>
+        </div>
+      </div>
     </Dialog>
   </div>
   <!-- Resumo em texto do que está selecionado (modelo/modo/raciocínio) —
@@ -1706,5 +1936,265 @@ watch(
   font-size: 12px;
   font-weight: 500;
   color: #dc2626;
+}
+
+/* Modal "Long Horizon — esta sessão": mesmo layout de dois painéis
+   (navegação à esquerda, conteúdo grande à direita) que Settings.vue usa —
+   pedido do usuário (2026-09-20): duas textareas pequenas empilhadas
+   ficavam apertadas, memória/projeto merecem o espaço inteiro cada uma. */
+.lh-dialog :deep(.p-dialog-content) {
+  padding: 0;
+  overflow: hidden;
+}
+
+.lh {
+  display: flex;
+  height: min(560px, 76vh);
+}
+
+.lh-nav {
+  flex: 0 0 200px;
+  display: flex;
+  flex-direction: column;
+  border-right: var(--cerne-border);
+  padding: 12px 10px 14px;
+  min-width: 0;
+}
+
+.lh-nav-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: #a1a1aa;
+  margin: 0 0 8px;
+  padding: 0 8px;
+}
+
+.lh-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  background: transparent;
+  text-align: left;
+  padding: 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #3f3f46;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  flex-shrink: 0;
+}
+
+.lh-nav-item .msi {
+  font-size: 18px;
+  color: #a1a1aa;
+  flex-shrink: 0;
+}
+
+.lh-nav-item:hover {
+  background: #f4f4f5;
+}
+
+.lh-nav-item.active {
+  background: #eef2ff;
+  color: var(--cerne-accent, #6366f1);
+  font-weight: 600;
+}
+
+.lh-nav-item.active .msi {
+  color: var(--cerne-accent, #6366f1);
+}
+
+.lh-nav-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lh-nav-status {
+  margin-top: auto;
+  padding: 8px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #71717a;
+}
+
+.lh-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.lh-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 20px 12px;
+  border-bottom: var(--cerne-border);
+  flex-shrink: 0;
+}
+
+.lh-head-title {
+  font-size: 15px;
+  font-weight: 700;
+  margin: 0;
+  color: #18181b;
+}
+
+.btn-primary {
+  border: none;
+  background: #18181b;
+  color: #ffffff;
+  border-radius: 8px;
+  padding: 7px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.mcp-test-success {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #16a34a;
+}
+
+.mcp-test-success .msi {
+  font-size: 15px;
+}
+
+.lh-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: #a1a1aa;
+  padding: 4px;
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.lh-close:hover {
+  background: #f4f4f5;
+  color: #18181b;
+}
+
+.lh-close .msi {
+  font-size: 19px;
+}
+
+.lh-body {
+  flex: 1;
+  min-height: 0;
+  padding: 16px 20px;
+  display: flex;
+}
+
+.lh-textarea {
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  font-family: inherit;
+  line-height: 1.6;
+}
+
+.task-queue-tab {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-queue-textarea {
+  font-family: var(--cerne-mono, monospace);
+  font-size: 12px;
+}
+
+.task-queue-req-hint {
+  color: #b45309;
+}
+
+.task-queue-format {
+  display: block;
+  margin-top: 6px;
+  font-family: var(--cerne-mono, monospace);
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.04);
+  padding: 4px 6px;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.task-queue-running .msi {
+  color: #dc2626;
+}
+
+.task-queue-event {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  margin-left: auto;
+}
+
+.task-queue-event .msi {
+  font-size: 15px;
+}
+
+.task-queue-event.stuck .msi,
+.task-queue-event.error .msi {
+  color: #dc2626;
+}
+
+.task-queue-event.finished .msi,
+.task-queue-event.confirmed .msi {
+  color: #16a34a;
+}
+
+.lh-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px 16px;
+  border-top: var(--cerne-border);
+  flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  .lh {
+    flex-direction: column;
+    height: min(620px, 82vh);
+  }
+
+  .lh-nav {
+    flex: 0 0 auto;
+    flex-direction: row;
+    flex-wrap: wrap;
+    border-right: none;
+    border-bottom: var(--cerne-border);
+  }
+
+  .lh-nav-label,
+  .lh-nav-status {
+    display: none;
+  }
+
+  .lh-nav-item {
+    flex: 1;
+    justify-content: center;
+  }
 }
 </style>

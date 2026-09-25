@@ -17,6 +17,7 @@ import {
   onContextUsage,
   onPendingEdit,
   onPermissionRequest,
+  onTaskQueueStatus,
   onToolCall,
   onToolResult,
   onTurnStats,
@@ -24,6 +25,7 @@ import {
   type AgentsSkillsPlan,
   type AskQuestion,
   type ChatMessage,
+  type CliBackendId,
   type ContextUsage,
   type ExecutionMode,
   type Folder,
@@ -35,6 +37,7 @@ import {
   type Session,
   type SkillMeta,
   type TaskItem,
+  type TaskQueueStatusEvent,
   type TodoItem,
   type TurnStats,
 } from "../api";
@@ -46,7 +49,20 @@ interface ReloadData {
   tasks: TaskItem[];
   pendingEdits: PendingEdit[];
   contextUsage: ContextUsage | null;
+  // Carga lenta do histórico (2026-09-20): quando os dois vêm presentes,
+  // `messages` é a janela INTEIRA (não só o que mudou) e estes dois valores
+  // atualizam o cursor de paginação. `undefined` = não mexer no cursor já
+  // existente (usado no caminho "since", que reconstrói a mesma janela sem
+  // mover a borda de onde ela começa).
+  messagesOldestIndex?: number;
+  hasMoreMessages?: boolean;
 }
+
+// Quantas mensagens a carga inicial (ou "carregar anteriores") busca de uma
+// vez — pedido do usuário (2026-09-20): sessões muito longas (modo Long
+// Horizon, que nunca poda o histórico) não devem carregar/renderizar tudo
+// de uma vez só de abrir a sessão.
+const MESSAGES_PAGE_SIZE = 60;
 
 export const useSessionStore = defineStore("session", {
   state: () => ({
@@ -61,6 +77,11 @@ export const useSessionStore = defineStore("session", {
     // uma vez em initListeners, recebem evento de QUALQUER sessão) — nunca
     // filtrado por currentId, ao contrário da maioria dos outros handlers.
     processingSessionIds: new Set<string>() as Set<string>,
+    // Ids de sessão com a fila de tarefas rodando AGORA (mesmo padrão de
+    // `processingSessionIds` acima) — atualizado pelo listener global de
+    // `agent:task_queue_status`, nunca filtrado por currentId na escrita.
+    taskQueueRunningIds: new Set<string>() as Set<string>,
+    taskQueueLastEvent: null as TaskQueueStatusEvent | null,
     // Compartilhados entre ComposerBar.vue (menu `/`, seletor de persona) e
     // AgentsSkillsPanel.vue (aba de gerenciamento) — cada um tinha sua
     // PRÓPRIA cópia local antes, carregada só uma vez ao montar, então uma
@@ -73,6 +94,13 @@ export const useSessionStore = defineStore("session", {
     currentFork: "turboquant",
     currentCustomProviderId: "",
     messages: [] as ChatMessage[],
+    // Carga lenta do histórico (2026-09-20): índice absoluto da PRIMEIRA
+    // mensagem hoje em `messages` — `null` até a primeira carga acontecer.
+    // `hasMoreMessages` diz se existe algo mais antigo pra "carregar
+    // mensagens anteriores" buscar (ver `loadOlderMessages`).
+    messagesOldestIndex: null as number | null,
+    hasMoreMessages: false,
+    loadingOlderMessages: false,
     tasks: [] as TaskItem[],
     pendingEdits: [] as PendingEdit[],
     // Por SESSÃO (não um valor único) — bug real encontrado testando ao
@@ -168,6 +196,18 @@ export const useSessionStore = defineStore("session", {
         this.todoSnapshots.push({ turn: userTurns, todos });
       });
 
+      await onTaskQueueStatus((event) => {
+        if (event.status === "processing") {
+          this.taskQueueRunningIds.add(event.session_id);
+        } else {
+          // "confirmed" também tira do rodando? Não — só os estados
+          // terminais (finished/stuck/error) encerram o loop de verdade;
+          // "confirmed" é só o fim de UM item, a fila continua pro próximo.
+          if (event.status !== "confirmed") this.taskQueueRunningIds.delete(event.session_id);
+        }
+        if (event.session_id === this.currentId) this.taskQueueLastEvent = event;
+      });
+
       await onAgentStatus((sessionId, status) => {
         if (status === "thinking" || status === "starting_server" || status === "compacting") {
           this.processingSessionIds.add(sessionId);
@@ -257,7 +297,7 @@ export const useSessionStore = defineStore("session", {
       });
 
       await onToolResult((payload) => {
-        const { session_id: sessionId, id, status, detail, additions, deletions, duration_ms } = payload;
+        const { session_id: sessionId, id, status, detail, additions, deletions, duration_ms, images } = payload;
         if (sessionId !== this.currentId) return;
         const applyResult = (t: TaskItem) => {
           t.status = status;
@@ -265,6 +305,7 @@ export const useSessionStore = defineStore("session", {
           t.additions = additions;
           t.deletions = deletions;
           t.duration_ms = duration_ms;
+          t.images = images;
         };
         const task = this.tasks.find((t: TaskItem) => t.id === id);
         if (task) applyResult(task);
@@ -446,8 +487,17 @@ export const useSessionStore = defineStore("session", {
       projectRoot: string | null,
       forkId: string | null,
       customProviderId?: string | null,
+      externalCliBackend?: CliBackendId | null,
     ) {
-      const session = await api.createSession(title, provider, model, projectRoot, forkId, customProviderId);
+      const session = await api.createSession(
+        title,
+        provider,
+        model,
+        projectRoot,
+        forkId,
+        customProviderId,
+        externalCliBackend,
+      );
       this.sessions.unshift(session);
       await this.selectSession(session.id);
       if (forkId) this.currentFork = forkId;
@@ -457,6 +507,11 @@ export const useSessionStore = defineStore("session", {
 
     async selectSession(id: string) {
       this.currentId = id;
+      // Cursor de paginação é POR SESSÃO — trocar de sessão sem zerar faria
+      // `fetchReloadData` pedir "desde o índice X" na sessão NOVA, um índice
+      // que não tem nada a ver com o histórico dela.
+      this.messagesOldestIndex = null;
+      this.hasMoreMessages = false;
       this.streamingText = "";
       this.liveBlocks = [];
       this.thinkingText = "";
@@ -471,24 +526,55 @@ export const useSessionStore = defineStore("session", {
       this.turnStartedAt = null;
       this.turnStats = {};
       this.pipelineStatus = null;
+      this.taskQueueLastEvent = null;
       await this.reloadCurrent();
       await this.applyRememberedContextLength();
+      // Sincroniza com o backend (não só com eventos já vistos) — cobre o
+      // caso de trocar pra uma sessão cuja fila já estava rodando antes
+      // desta janela abrir (ou reabrir o app com uma fila deixada rodando).
+      if (await api.isTaskQueueRunning(id)) this.taskQueueRunningIds.add(id);
+      else this.taskQueueRunningIds.delete(id);
     },
 
-    // Busca os 5 pedaços do estado de uma sessão em PARALELO (em vez de 5
-    // `await` sequenciais) — separado de `applyReloadData` pra quem precisa
-    // buscar primeiro e só trocar o estado depois num momento preciso
-    // (`onAgentDone` acima, pra não deixar um buraco visual entre limpar o
-    // streaming e o histórico persistido chegar).
+    // Busca os pedaços do estado de uma sessão em PARALELO — separado de
+    // `applyReloadData` pra quem precisa buscar primeiro e só trocar o
+    // estado depois num momento preciso (`onAgentDone` acima, pra não deixar
+    // um buraco visual entre limpar o streaming e o histórico persistido
+    // chegar).
+    //
+    // Mensagens (2026-09-20, carga lenta): se já existe uma janela carregada
+    // pra esta sessão (`messagesOldestIndex !== null` — `selectSession` zera
+    // isso ao trocar de sessão), busca só "desde ali" em vez de recarregar
+    // tudo — o histórico do Long Horizon nunca é podado, então uma sessão
+    // longa pode ter milhares de mensagens; recarregar tudo a cada turno
+    // seria cada vez mais lento E perderia as páginas antigas que o usuário
+    // já tinha carregado via "carregar mensagens anteriores" (o `since`
+    // reconstrói a MESMA janela, borda antiga incluída, só que atualizada
+    // até o fim — nada some do que já estava visível).
     async fetchReloadData(sessionId: string): Promise<ReloadData> {
-      const [session, messages, tasks, pendingEdits, contextUsage] = await Promise.all([
+      const janelaExistente = this.messagesOldestIndex;
+      const [session, messagesResult, tasks, pendingEdits, contextUsage] = await Promise.all([
         api.getSession(sessionId),
-        api.getSessionMessages(sessionId),
+        janelaExistente !== null
+          ? api.getSessionMessagesSince(sessionId, janelaExistente)
+          : api.getSessionMessagesPage(sessionId, undefined, MESSAGES_PAGE_SIZE),
         api.getSessionTasks(sessionId),
         api.listPendingEdits(sessionId),
         api.getSessionContextUsage(sessionId),
       ]);
-      return { session, messages, tasks, pendingEdits, contextUsage };
+      if (Array.isArray(messagesResult)) {
+        // Caminho "since": mesma janela, cursor (oldestIndex/hasMore) não muda.
+        return { session, messages: messagesResult, tasks, pendingEdits, contextUsage };
+      }
+      return {
+        session,
+        messages: messagesResult.messages,
+        tasks,
+        pendingEdits,
+        contextUsage,
+        messagesOldestIndex: messagesResult.next_before,
+        hasMoreMessages: messagesResult.has_more,
+      };
     },
 
     applyReloadData(data: ReloadData) {
@@ -496,6 +582,9 @@ export const useSessionStore = defineStore("session", {
       if (data.session.llama_fork) this.currentFork = data.session.llama_fork;
       if (data.session.custom_provider_id) this.currentCustomProviderId = data.session.custom_provider_id;
       this.messages = data.messages;
+      // undefined = caminho "since", a janela não mudou de borda, não mexe.
+      if (data.messagesOldestIndex !== undefined) this.messagesOldestIndex = data.messagesOldestIndex;
+      if (data.hasMoreMessages !== undefined) this.hasMoreMessages = data.hasMoreMessages;
       this.tasks = data.tasks;
       this.pendingEdits = data.pendingEdits;
       this.contextUsage = data.contextUsage;
@@ -507,12 +596,50 @@ export const useSessionStore = defineStore("session", {
       this.applyReloadData(data);
     },
 
+    // "Carregar mensagens anteriores" (2026-09-20, pedido do usuário): busca
+    // a página mais antiga que a já carregada e PREPENDE — nunca troca
+    // `this.messages` inteiro, só cresce por cima. Existe pra sessões muito
+    // longas (Long Horizon nunca poda o histórico) não precisarem carregar
+    // tudo de uma vez só de abrir a sessão.
+    //
+    // Botão manual em vez de scroll infinito automático: decisão consciente
+    // por tempo/risco desta rodada, não definitivo — dá pra trocar por
+    // scroll automático depois se fizer falta na prática.
+    async loadOlderMessages() {
+      if (!this.currentId || this.messagesOldestIndex === null || this.loadingOlderMessages) return;
+      if (!this.hasMoreMessages) return;
+      this.loadingOlderMessages = true;
+      try {
+        const page = await api.getSessionMessagesPage(
+          this.currentId,
+          this.messagesOldestIndex,
+          MESSAGES_PAGE_SIZE,
+        );
+        this.messages = [...page.messages, ...this.messages];
+        this.messagesOldestIndex = page.next_before;
+        this.hasMoreMessages = page.has_more;
+      } finally {
+        this.loadingOlderMessages = false;
+      }
+    },
+
     /** The only way to actually change what an existing session sends to —
      * editing global config alone does nothing, sessions pin provider+model
      * at creation. */
     async updateProviderModel(provider: ProviderKind, model: string, forkId: string | null, customProviderId?: string | null) {
       if (!this.currentId || !model) return;
-      const updated = await api.updateSessionProviderModel(this.currentId, provider, model, forkId, customProviderId);
+      // `customProviderId` reusa o mesmo slot pra "qual CLI externo" quando
+      // provider === "cli" (ver ProviderPicker.vue/ComposerBar.vue) — separa
+      // aqui antes de gravar, pra não misturar os dois campos persistidos.
+      const isCli = provider === "cli";
+      const updated = await api.updateSessionProviderModel(
+        this.currentId,
+        provider,
+        model,
+        forkId,
+        isCli ? null : customProviderId,
+        isCli ? (customProviderId as CliBackendId | null | undefined) : null,
+      );
       this.currentSession = updated;
       if (forkId) this.currentFork = forkId;
       if (customProviderId) this.currentCustomProviderId = customProviderId;
@@ -626,6 +753,24 @@ export const useSessionStore = defineStore("session", {
      * vez deve valer em QUALQUER sessão futura com o mesmo modelo, não só a
      * atual. `applyRememberedContextLength` (chamada ao entrar numa sessão)
      * é quem lê esse valor de volta. */
+    // Botão "compactar agora" (ContextGauge.vue) — mesma compactação que já
+    // acontece sozinha perto do teto, só que na hora. `messages` encolhe
+    // (igual à compactação automática), então zera o cursor de paginação e
+    // recarrega do zero em vez de tentar "continuar de onde parou" com um
+    // índice que não existe mais depois de compactar.
+    async compactNow(): Promise<boolean> {
+      if (!this.currentId) return false;
+      const compacted = await api.compactSessionNow(this.currentId);
+      if (compacted) {
+        this.messagesOldestIndex = null;
+        this.hasMoreMessages = false;
+        await this.reloadCurrent();
+        this.contextUsage = await api.getSessionContextUsage(this.currentId);
+        this.lastCompactionNote = "Contexto compactado";
+      }
+      return compacted;
+    },
+
     async updateContextLength(contextLength: number | null) {
       if (!this.currentId || !this.currentSession) return;
       const updated = await api.updateSessionContextLength(this.currentId, contextLength);
@@ -682,6 +827,40 @@ export const useSessionStore = defineStore("session", {
       if (idx !== -1) this.sessions[idx] = updated;
     },
 
+    async updateLongHorizonEnabled(enabled: boolean) {
+      if (!this.currentId) return;
+      const updated = await api.updateSessionLongHorizonEnabled(this.currentId, enabled);
+      this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === updated.id);
+      if (idx !== -1) this.sessions[idx] = updated;
+    },
+
+    async updateTaskQueueEnabled(enabled: boolean) {
+      if (!this.currentId) return;
+      const updated = await api.updateSessionTaskQueueEnabled(this.currentId, enabled);
+      this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === updated.id);
+      if (idx !== -1) this.sessions[idx] = updated;
+    },
+
+    async startTaskQueue() {
+      if (!this.currentId) return;
+      this.taskQueueRunningIds.add(this.currentId);
+      this.taskQueueLastEvent = null;
+      try {
+        await api.startTaskQueue(this.currentId);
+      } catch (e) {
+        this.taskQueueRunningIds.delete(this.currentId);
+        throw e;
+      }
+    },
+
+    async stopTaskQueue() {
+      if (!this.currentId) return;
+      await api.stopTaskQueue(this.currentId);
+      this.taskQueueRunningIds.delete(this.currentId);
+    },
+
     async updatePersona(personaId: string | null) {
       if (!this.currentId) return;
       const updated = await api.updateSessionPersona(this.currentId, personaId);
@@ -705,6 +884,8 @@ export const useSessionStore = defineStore("session", {
         this.currentId = null;
         this.currentSession = null;
         this.messages = [];
+        this.messagesOldestIndex = null;
+        this.hasMoreMessages = false;
         this.tasks = [];
       }
     },

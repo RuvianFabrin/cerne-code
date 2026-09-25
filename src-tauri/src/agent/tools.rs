@@ -142,6 +142,60 @@ pub fn always_tool_specs() -> Vec<ToolSpec> {
     ]
 }
 
+/// Só disponíveis quando `Session.long_horizon.enabled == true` (ver
+/// `run_turn` em `mod.rs`, montagem condicional do catálogo). Substituem
+/// `write_file`/`edit_file` pra este propósito específico porque
+/// `memoria.md`/`projeto.md` vivem na pasta de dados do app
+/// (`<sessão>/long_horizon/`), fora da pasta do projeto — as ferramentas de
+/// arquivo normais são restritas a `project_root`/`extra_read_paths`, e essa
+/// restrição é intencional (raio de escrita do agente), não um limite a
+/// contornar abrindo a pasta interna do Cerne como se fosse projeto do
+/// usuário.
+pub fn long_horizon_tool_specs() -> Vec<ToolSpec> {
+    vec![
+        spec(
+            "update_long_horizon_memoria",
+            "SUBSTITUI o conteudo inteiro de memoria.md desta sessao (modo Long Horizon) - fatos que NAO mudam: decisoes ja tomadas, erros ja descobertos e por que, convencoes do projeto. Use com moderacao (cresce devagar): so quando algo aqui evitaria a PROXIMA resposta (que nao vai lembrar desta conversa) repetir um erro ou uma pergunta. Isto SUBSTITUI o arquivo, nao acrescenta - inclua o conteudo antigo relevante junto do novo.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "conteudo": { "type": "string", "description": "Conteudo COMPLETO do novo memoria.md" }
+                },
+                "required": ["conteudo"]
+            }),
+        ),
+        spec(
+            "update_long_horizon_projeto",
+            "SUBSTITUI o conteudo inteiro de projeto.md desta sessao (modo Long Horizon) - o estado do trabalho AGORA: o que ja foi feito, o que falta, qual e o proximo passo concreto. Chame isto ao FINAL de toda resposta nao-trivial neste modo, antes de parar - a proxima resposta so ve o que estiver aqui, nao o historico desta conversa.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "conteudo": { "type": "string", "description": "Conteudo COMPLETO do novo projeto.md (reescreve, nao acrescenta)" }
+                },
+                "required": ["conteudo"]
+            }),
+        ),
+    ]
+}
+
+/// Só disponível quando `AppConfig.image_gen.base_url` está configurado
+/// (ver `agent::image_gen`) — uma API local OpenAI-compatible de geração de
+/// imagem que o próprio usuário roda (Qwen-Image, Krea, etc).
+pub fn image_gen_tool_specs() -> Vec<ToolSpec> {
+    vec![spec(
+        "generate_image",
+        "Gera uma ou mais imagens a partir de um prompt de texto, usando a conexao de geracao de imagem configurada em Configuracoes. As imagens aparecem na resposta E sao salvas em disco (pasta 'generated_images' na raiz do projeto, se a sessao tiver uma). Use pra pedidos explicitos de gerar/criar imagem - nao serve pra editar uma imagem existente.",
+        json!({
+            "type": "object",
+            "properties": {
+                "prompt": { "type": "string", "description": "Descricao da imagem a gerar, em detalhe" },
+                "n": { "type": "integer", "description": "Quantas variacoes gerar de uma vez (padrao 1)" }
+            },
+            "required": ["prompt"]
+        }),
+    )]
+}
+
 /// Only available when the session has a project folder attached.
 pub fn project_tool_specs() -> Vec<ToolSpec> {
     vec![

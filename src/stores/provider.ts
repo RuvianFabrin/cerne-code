@@ -2,14 +2,16 @@ import { defineStore } from "pinia";
 import {
   api,
   type AppConfig,
+  type CliReadiness,
   type CustomProviderConfig,
+  type ImageGenPreset,
   type LlamaForkConfig,
   type ModelInfo,
   type ProviderKind,
 } from "../api";
 import { i18n } from "../i18n";
 
-export const PROVIDER_KINDS: ProviderKind[] = ["openrouter", "llama_cpp", "ollama", "lm_studio", "custom"];
+export const PROVIDER_KINDS: ProviderKind[] = ["openrouter", "llama_cpp", "ollama", "lm_studio", "custom", "cli"];
 
 // Funcao (nao objeto estatico) pra reagir a troca de idioma - chamada de
 // dentro de computed/template, entao o acesso a `i18n.global.locale`
@@ -22,9 +24,13 @@ export function providerLabel(kind: ProviderKind): string {
 // chave é o fork, pra "custom" é o id do provider customizado (senão trocar
 // de conexão custom não invalidaria a lista antiga). Providers sem essa
 // noção (Ollama/OpenRouter/LM Studio) usam a própria `kind` como chave.
+// "cli" reusa o slot de `customProviderId` pra guardar qual dos 4 CLIs
+// externos (claude/codex/gemini/qwen) — mesma ideia de "sub-conexão", sem
+// precisar de mais um parâmetro em toda função deste arquivo.
 function modelsCacheKey(kind: ProviderKind, forkId?: string, customProviderId?: string): string {
   if (kind === "llama_cpp") return `llama_cpp:${forkId ?? ""}`;
   if (kind === "custom") return `custom:${customProviderId ?? ""}`;
+  if (kind === "cli") return `cli:${customProviderId ?? ""}`;
   return kind;
 }
 
@@ -56,7 +62,9 @@ export const useProviderStore = defineStore("provider", {
     favorites: {} as Record<string, string[]>,
     favoritesLoaded: {} as Record<string, boolean>,
     forks: [] as LlamaForkConfig[],
+    imageGenPresets: [] as ImageGenPreset[],
     customProviders: [] as CustomProviderConfig[],
+    cliReadiness: [] as CliReadiness[],
     hasOpenrouterKey: false,
     openrouterKeyPreview: null as string | null,
     loading: false,
@@ -70,7 +78,9 @@ export const useProviderStore = defineStore("provider", {
         this.hasOpenrouterKey = await api.hasOpenrouterKey();
         this.openrouterKeyPreview = await api.openrouterKeyPreview();
         this.forks = await api.listLlamaForks();
+        this.imageGenPresets = await api.listImageGenPresets();
         this.customProviders = await api.listCustomProviders();
+        this.cliReadiness = await api.checkExternalCliReadiness();
         await this.refreshModels(this.config.active_provider, undefined, this.config.active_custom_provider_id ?? undefined);
       } catch (e) {
         this.error = String(e);
@@ -80,6 +90,14 @@ export const useProviderStore = defineStore("provider", {
     },
     async refreshModels(kind: ProviderKind, forkId?: string, customProviderId?: string) {
       const key = modelsCacheKey(kind, forkId, customProviderId);
+      // "cli" nunca fala HTTP — a lista de modelos é a curada em
+      // `external_cli::CliBackendId::known_models` (ver `checkExternalCliReadiness`,
+      // já carregada em `cliReadiness`), não um catálogo consultável.
+      if (kind === "cli") {
+        const backend = this.cliReadiness.find((b) => b.backend === customProviderId);
+        this.models[key] = (backend?.models ?? []).map((id) => ({ id, label: id }));
+        return;
+      }
       this.modelsLoading[key] = true;
       try {
         const models =
@@ -156,7 +174,7 @@ export const useProviderStore = defineStore("provider", {
       this.config.active_provider = kind;
       this.config.active_model = modelId;
       if (kind === "llama_cpp" && forkId) this.config.active_llama_fork = forkId;
-      if (kind === "custom" && customProviderId) this.config.active_custom_provider_id = customProviderId;
+      if ((kind === "custom" || kind === "cli") && customProviderId) this.config.active_custom_provider_id = customProviderId;
       await api.setConfig(this.config);
     },
     async saveOpenrouterKey(key: string) {
@@ -178,6 +196,12 @@ export const useProviderStore = defineStore("provider", {
     },
     async removeLlamaFork(id: string) {
       this.forks = await api.removeLlamaFork(id);
+    },
+    async addImageGenPreset(preset: ImageGenPreset) {
+      this.imageGenPresets = await api.addImageGenPreset(preset);
+    },
+    async removeImageGenPreset(id: string) {
+      this.imageGenPresets = await api.removeImageGenPreset(id);
     },
     async addCustomProvider(provider: CustomProviderConfig, apiKey?: string) {
       this.customProviders = await api.addCustomProvider(provider, apiKey);

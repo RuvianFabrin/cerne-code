@@ -178,9 +178,9 @@ const shownText = computed(() =>
         <img v-for="(src, i) in message.images" :key="i" :src="src" class="message-image" />
       </div>
       <div ref="contentEl">
-        <MarkdownContent :content="shownText" :dark="isUser" />
+        <MarkdownContent :content="shownText" />
       </div>
-      <button v-if="hasMore" class="show-more-btn" :class="{ dark: isUser }" @click="expanded = !expanded">
+      <button v-if="hasMore" class="show-more-btn" @click="expanded = !expanded">
         <span class="msi">{{ expanded ? "expand_less" : "expand_more" }}</span>
         {{ expanded ? t("taskStep.showLess") : t("taskStep.showMoreLines", { count: lines.length - PREVIEW_LINES }) }}
       </button>
@@ -228,8 +228,8 @@ const shownText = computed(() =>
 
 .bubble.user {
   max-width: 72ch;
-  background: #18181b;
-  color: #fafafa;
+  background: #e4e4e7;
+  color: #18181b;
   padding: 10px 14px;
   border-radius: 12px;
 }
@@ -260,10 +260,6 @@ const shownText = computed(() =>
   font-weight: 600;
   color: #6366f1;
   cursor: pointer;
-}
-
-.show-more-btn.dark {
-  color: #a5b4fc;
 }
 
 .show-more-btn:hover {

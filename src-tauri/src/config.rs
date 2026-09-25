@@ -6,6 +6,7 @@ use std::path::PathBuf;
 const KEYRING_SERVICE: &str = "cerne";
 const KEYRING_USER: &str = "openrouter_api_key";
 const KEYRING_USER_BACKUP_GIT_TOKEN: &str = "backup_git_token";
+const KEYRING_USER_IMAGE_GEN: &str = "image_gen_api_key";
 
 fn config_path(app_data_dir: &PathBuf) -> PathBuf {
     app_data_dir.join("config.json")
@@ -112,6 +113,33 @@ pub fn openrouter_key_preview() -> Option<String> {
 
 pub fn clear_openrouter_key() -> Result<()> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Chave da conexão de geração de imagem — opcional (a API do usuário pode
+/// ser local sem autenticação), mesmo mecanismo de cofre do SO que
+/// `openrouter_key`/`custom::set_key` já usam.
+pub fn set_image_gen_key(key: &str) -> Result<()> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER_IMAGE_GEN)?;
+    entry.set_password(key)?;
+    Ok(())
+}
+
+pub fn get_image_gen_key() -> Option<String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER_IMAGE_GEN).ok()?;
+    entry.get_password().ok()
+}
+
+pub fn has_image_gen_key() -> bool {
+    get_image_gen_key().is_some()
+}
+
+pub fn clear_image_gen_key() -> Result<()> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER_IMAGE_GEN)?;
     match entry.delete_credential() {
         Ok(()) => Ok(()),
         Err(keyring::Error::NoEntry) => Ok(()),

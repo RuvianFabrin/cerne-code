@@ -232,8 +232,9 @@ fn apply_reasoning(
                 body["chat_template_kwargs"] = json!({ "enable_thinking": true });
             }
             // On só é oferecido pela UI pra providers locais; se chegar aqui
-            // por algum outro caminho, não faz nada (Auto de fato).
-            ProviderKind::Openrouter | ProviderKind::Custom => {}
+            // por algum outro caminho, não faz nada (Auto de fato). `Cli`
+            // nunca passa por aqui (não é HTTP, ver `external_cli::dispatch`).
+            ProviderKind::Openrouter | ProviderKind::Custom | ProviderKind::Cli => {}
         },
         Some(ReasoningEffort::Off) => match kind {
             ProviderKind::Ollama => {
@@ -254,6 +255,8 @@ fn apply_reasoning(
                     body["chat_template_kwargs"] = json!({ "enable_thinking": false });
                 }
             }
+            // `Cli` nunca chega aqui (não é HTTP).
+            ProviderKind::Cli => {}
         },
         Some(effort) => {
             let level = match effort {
@@ -685,6 +688,9 @@ pub async fn get_context_length(
                 .map(|v| v as u32)
         }
         ProviderKind::LlamaCpp => None, // resolved separately from the preset's .ini (see llama_cpp::preset_context_length)
+        // CLI externo não é HTTP — não há "janela de contexto" consultável
+        // (o CLI gerencia isso sozinho por dentro).
+        ProviderKind::Cli => None,
     }
 }
 
@@ -782,6 +788,9 @@ pub async fn supports_vision(cfg: &ProviderConfig, api_key: Option<String>, mode
         // ver tela de Configuracoes) - continua false por padrao ate o
         // usuario marcar explicitamente que aquela conexao aceita imagem.
         ProviderKind::Custom => cfg.supports_vision_override,
+        // CLI externo tem sua própria política de anexos (ou nenhuma); o
+        // Cerne não sabe nem controla isso.
+        ProviderKind::Cli => false,
     }
 }
 

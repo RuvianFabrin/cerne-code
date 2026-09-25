@@ -40,6 +40,11 @@ pub struct AppState {
     pub config: Mutex<AppConfig>,
     pub pending_edits: Mutex<HashMap<String, PendingEdit>>,
     pub llama_children: Mutex<HashMap<String, Child>>,
+    /// Mesma ideia de `llama_children`, mas pros servidores de geração de
+    /// imagem (`agent::image_gen::ImageGenPreset`) — ao contrário do
+    /// llama.cpp, vários podem rodar ao mesmo tempo (portas diferentes),
+    /// então nenhum "para os outros antes de subir este" acontece aqui.
+    pub image_gen_children: Mutex<HashMap<String, Child>>,
     pub background_jobs: agent::background::BackgroundJobs,
     pub mcp_clients: mcp::McpClients,
     /// Perguntas (`ask`) que pausaram um turno esperando resposta do usuario —
@@ -63,6 +68,11 @@ pub struct AppState {
     /// precisa esperar o proximo checkpoint cooperativo, o abort da tokio
     /// task derruba a chamada HTTP em andamento imediatamente).
     pub running_turns: Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>,
+    /// Mesma ideia de `running_turns`, mas pra fila de tarefas inteira (ver
+    /// `agent::task_queue::run_queue`) — `.abort()` derruba o loop inteiro na
+    /// hora, mesmo no meio de um `run_turn` em andamento, sem precisar de
+    /// checagem cooperativa de cancelamento dentro do loop.
+    pub running_task_queues: Mutex<HashMap<String, tauri::async_runtime::JoinHandle<()>>>,
     /// Registro em memória de execuções de agente/skill em andamento ou
     /// recém-terminadas (`task`/`verify_completion`) — Fase A1 do roteiro de
     /// Agentes/Skills. Não persistido: é só pra UI consultar em tempo real,
@@ -90,6 +100,164 @@ fn set_config(state: State<AppState>, new_config: AppConfig) -> Result<(), Strin
     config::save_config(&state.app_data_dir, &new_config).map_err(|e| e.to_string())?;
     *state.config.lock().unwrap() = new_config;
     Ok(())
+}
+
+/// Só leitura — devolve o padrão de fábrica do modo Long Horizon
+/// (`LongHorizonConfig::default()`, mesmo texto de `DEFAULT_LONG_HORIZON_PROMPT`).
+/// O botão "Restaurar padrão" de Configurações chama isto e depois `set_config`
+/// com o resultado — não existe um comando de "reset" que já persiste sozinho,
+/// pra manter uma única forma de gravar `AppConfig` (`set_config`).
+#[tauri::command]
+fn get_default_long_horizon_config() -> crate::models::LongHorizonConfig {
+    crate::models::LongHorizonConfig::default()
+}
+
+/// Lista os 4 CLIs externos suportados com status "instalado?" (procurado no
+/// PATH, ou no override configurado) — alimenta a seção "CLIs externos" de
+/// Configurações. `set_config`/`get_config` já cobrem ler/gravar os
+/// overrides de binário/argumentos em si (fazem parte de `AppConfig`).
+#[tauri::command]
+fn check_external_cli_readiness(state: State<AppState>) -> Vec<agent::external_cli::CliReadiness> {
+    let cfg = state.config.lock().unwrap().external_cli.clone();
+    agent::external_cli::check_readiness(&cfg)
+}
+
+#[tauri::command]
+fn set_image_gen_key(key: String) -> Result<(), String> {
+    config::set_image_gen_key(&key).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn has_image_gen_key() -> bool {
+    config::has_image_gen_key()
+}
+
+#[tauri::command]
+fn clear_image_gen_key() -> Result<(), String> {
+    config::clear_image_gen_key().map_err(|e| e.to_string())
+}
+
+/// Gera uma imagem de teste de verdade (mesma chamada que `generate_image`
+/// faria) em vez de só checar um endpoint de "/models" — servidores de
+/// imagem não têm um contrato padrão pra isso, mas todos precisam responder
+/// a uma geração real de qualquer forma. Devolve a imagem em `data:` URL pra
+/// Configurações mostrar uma prévia (prova visual de que funcionou, não só
+/// "200 OK").
+#[tauri::command]
+async fn test_image_gen_connection(
+    base_url: String,
+    api_key: Option<String>,
+    model: String,
+) -> Result<String, String> {
+    use base64::Engine;
+    let images = agent::image_gen::generate(&base_url, api_key.as_deref(), &model, "teste", 1)
+        .await
+        .map_err(|e| e.to_string())?;
+    let first = images.first().ok_or("nenhuma imagem devolvida")?;
+    Ok(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(&first.bytes)
+    ))
+}
+
+#[tauri::command]
+fn list_image_gen_presets(state: State<AppState>) -> Result<Vec<agent::image_gen::ImageGenPreset>, String> {
+    agent::image_gen::load_presets(&state.app_data_dir).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn add_image_gen_preset(
+    state: State<AppState>,
+    preset: agent::image_gen::ImageGenPreset,
+) -> Result<Vec<agent::image_gen::ImageGenPreset>, String> {
+    agent::image_gen::add_preset(&state.app_data_dir, preset).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn remove_image_gen_preset(
+    state: State<AppState>,
+    id: String,
+) -> Result<Vec<agent::image_gen::ImageGenPreset>, String> {
+    agent::image_gen::remove_preset(&state.app_data_dir, &id).map_err(|e| e.to_string())
+}
+
+/// Sobe o servidor do preset (idempotente — se já estiver rodando e
+/// saudável, não faz nada) e, ao terminar com sucesso, já aponta
+/// `AppConfig.image_gen.base_url` pra ele e persiste — mesmo espírito do
+/// que `ensure_llama_ready` faz pro llama.cpp, mas sem parar outros
+/// presets: vários servidores de imagem podem coexistir (portas
+/// diferentes), diferente dos forks llama.cpp que disputam a mesma GPU.
+#[tauri::command]
+async fn start_image_gen_preset(state: State<'_, AppState>, preset_id: String) -> Result<(), String> {
+    let already_running = {
+        let mut children = state.image_gen_children.lock().unwrap();
+        match children.get_mut(&preset_id) {
+            Some(child) => match child.try_wait() {
+                Ok(None) => true,
+                _ => {
+                    children.remove(&preset_id);
+                    false
+                }
+            },
+            None => false,
+        }
+    };
+
+    let presets = agent::image_gen::load_presets(&state.app_data_dir).map_err(|e| e.to_string())?;
+    let preset = presets
+        .into_iter()
+        .find(|p| p.id == preset_id)
+        .ok_or_else(|| format!("preset desconhecido: {preset_id}"))?;
+
+    if !already_running {
+        let child = agent::image_gen::start_server(&preset).await.map_err(|e| e.to_string())?;
+        state.image_gen_children.lock().unwrap().insert(preset_id.clone(), child);
+    }
+
+    let mut cfg = state.config.lock().unwrap();
+    cfg.image_gen.base_url = format!("http://127.0.0.1:{}/v1", preset.port);
+    cfg.image_gen.model = String::new();
+    config::save_config(&state.app_data_dir, &cfg).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_image_gen_preset(state: State<AppState>, preset_id: String) -> Result<(), String> {
+    if let Some(mut child) = state.image_gen_children.lock().unwrap().remove(&preset_id) {
+        child.start_kill().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Mesma ideia de `llama_server_health`: o tracking do AppState é
+/// autoritativo pra "este app subiu esse preset"; o probe HTTP por cima só
+/// confirma que o processo tracked não travou/morreu silenciosamente.
+#[tauri::command]
+async fn image_gen_preset_health(state: State<'_, AppState>, preset_id: String) -> Result<bool, String> {
+    let tracked_and_alive = {
+        let mut children = state.image_gen_children.lock().unwrap();
+        match children.get_mut(&preset_id) {
+            Some(child) => matches!(child.try_wait(), Ok(None)),
+            None => false,
+        }
+    };
+    if !tracked_and_alive {
+        return Ok(false);
+    }
+    let presets = agent::image_gen::load_presets(&state.app_data_dir).map_err(|e| e.to_string())?;
+    let Some(preset) = presets.into_iter().find(|p| p.id == preset_id) else {
+        return Ok(false);
+    };
+    let client = reqwest::Client::new();
+    let url = format!("http://127.0.0.1:{}/health", preset.port);
+    let healthy = client
+        .get(&url)
+        .timeout(std::time::Duration::from_millis(1200))
+        .send()
+        .await
+        .map(|resp| resp.status().is_success())
+        .unwrap_or(false);
+    Ok(healthy)
 }
 
 #[tauri::command]
@@ -134,6 +302,13 @@ pub(crate) fn build_provider_config(
     custom_provider_id: Option<&str>,
     fork_id: Option<&str>,
 ) -> Result<(models::ProviderConfig, Option<String>), String> {
+    if kind == ProviderKind::Cli {
+        // CLI externo não é HTTP — não passa por `build_provider_config`
+        // (ver `agent::external_cli::dispatch`, chamado direto de
+        // `agent::run_turn`). Chegar aqui é sempre um bug de outra camada.
+        return Err("provider Cli nao usa build_provider_config (ver agent::external_cli)".to_string());
+    }
+
     if kind == ProviderKind::Custom {
         let id = custom_provider_id
             .ok_or_else(|| "custom_provider_id obrigatorio pro provider customizado".to_string())?;
@@ -185,7 +360,7 @@ pub(crate) fn build_provider_config(
         ProviderKind::Openrouter => cfg.openrouter_base_url.clone(),
         ProviderKind::Ollama => cfg.ollama_base_url.clone(),
         ProviderKind::LmStudio => cfg.lmstudio_base_url.clone(),
-        ProviderKind::LlamaCpp | ProviderKind::Custom => unreachable!(),
+        ProviderKind::LlamaCpp | ProviderKind::Custom | ProviderKind::Cli => unreachable!(),
     };
     let api_key = if matches!(kind, ProviderKind::Openrouter) {
         config::get_openrouter_key()
@@ -288,6 +463,10 @@ fn model_context_override_key(
         ProviderKind::Openrouter => "openrouter".to_string(),
         ProviderKind::Ollama => "ollama".to_string(),
         ProviderKind::LmStudio => "lm_studio".to_string(),
+        // CLI externo não tem "janela de contexto" consultável (ver
+        // `providers::get_context_length`) — esta chave nunca chega a ser
+        // usada de verdade pra `Cli`, mas precisa de um valor determinístico.
+        ProviderKind::Cli => "cli".to_string(),
     };
     format!("{provider_key}::{model}")
 }
@@ -623,6 +802,21 @@ fn kill_all_llama_children_blocking(state: &AppState) {
     state.llama_children.lock().unwrap().clear();
 }
 
+/// Mesma ideia de `kill_all_llama_children_blocking`, pros servidores de
+/// geração de imagem — `uv run uvicorn` gera um processo filho (o `uv`
+/// propriamente) que por sua vez roda o `uvicorn`; matar só o PID rastreado
+/// sem `/T` deixaria o `uvicorn` de verdade órfão segurando a GPU.
+fn kill_all_image_gen_children_blocking(state: &AppState) {
+    let pids: Vec<u32> = {
+        let children = state.image_gen_children.lock().unwrap();
+        children.values().filter_map(|c| c.id()).collect()
+    };
+    for pid in pids {
+        agent::shell::kill_pid_tree_blocking(pid);
+    }
+    state.image_gen_children.lock().unwrap().clear();
+}
+
 #[tauri::command]
 fn list_sessions(state: State<AppState>) -> Result<Vec<Session>, String> {
     sessions::list_sessions(&state.app_data_dir).map_err(|e| e.to_string())
@@ -637,6 +831,7 @@ async fn create_session(
     project_root: Option<String>,
     fork_id: Option<String>,
     custom_provider_id: Option<String>,
+    external_cli_backend: Option<String>,
 ) -> Result<Session, String> {
     let context_length = resolve_session_context_length(
         state.clone(),
@@ -655,6 +850,7 @@ async fn create_session(
         context_length,
         fork_id.clone(),
         custom_provider_id,
+        external_cli_backend,
     )
     .map_err(|e| e.to_string())?;
     apply_llama_lifecycle(&state, provider, fork_id.as_deref()).await;
@@ -669,6 +865,7 @@ async fn update_session_provider_model(
     model: String,
     fork_id: Option<String>,
     custom_provider_id: Option<String>,
+    external_cli_backend: Option<String>,
 ) -> Result<Session, String> {
     let context_length = resolve_session_context_length(
         state.clone(),
@@ -686,6 +883,7 @@ async fn update_session_provider_model(
         context_length,
         fork_id.clone(),
         custom_provider_id,
+        external_cli_backend,
     )
     .map_err(|e| e.to_string())?;
     apply_llama_lifecycle(&state, provider, fork_id.as_deref()).await;
@@ -1345,6 +1543,29 @@ fn get_session_messages(state: State<AppState>, id: String) -> Result<Vec<ChatMe
     sessions::load_messages(&state.app_data_dir, &id).map_err(|e| e.to_string())
 }
 
+/// Carga lenta do histórico (2026-09-20) — `before=None` pega a página mais
+/// recente. Ver `sessions::load_messages_page` e `models::MessagesPage`.
+#[tauri::command]
+fn get_session_messages_page(
+    state: State<AppState>,
+    id: String,
+    before: Option<usize>,
+    limit: usize,
+) -> Result<models::MessagesPage, String> {
+    sessions::load_messages_page(&state.app_data_dir, &id, before, limit).map_err(|e| e.to_string())
+}
+
+/// Recarrega a sessão sem perder a janela já carregada. Ver
+/// `sessions::load_messages_since`.
+#[tauri::command]
+fn get_session_messages_since(
+    state: State<AppState>,
+    id: String,
+    since: usize,
+) -> Result<Vec<ChatMessage>, String> {
+    sessions::load_messages_since(&state.app_data_dir, &id, since).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn get_session_tasks(state: State<AppState>, id: String) -> Result<Vec<TaskItem>, String> {
     sessions::load_tasks(&state.app_data_dir, &id).map_err(|e| e.to_string())
@@ -1616,6 +1837,119 @@ fn update_session_fable_method(
     enabled: bool,
 ) -> Result<Session, String> {
     sessions::update_fable_method(&state.app_data_dir, &id, enabled).map_err(|e| e.to_string())
+}
+
+/// Botão "compactar agora" perto do medidor de contexto — dispara a MESMA
+/// compactação que acontece automaticamente perto do teto, só que na hora,
+/// independente de quão cheio o contexto está. Devolve se compactou de
+/// verdade (`false` = nada a compactar, não é erro).
+#[tauri::command]
+async fn compact_session_now(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
+    agent::compact_now(app, &state, session_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_session_task_queue_enabled(
+    state: State<AppState>,
+    id: String,
+    enabled: bool,
+) -> Result<Session, String> {
+    sessions::update_task_queue_enabled(&state.app_data_dir, &id, enabled).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn read_session_task_queue(state: State<AppState>, id: String) -> Result<String, String> {
+    sessions::read_task_queue(&state.app_data_dir, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_session_task_queue(state: State<AppState>, id: String, json_text: String) -> Result<(), String> {
+    sessions::write_task_queue(&state.app_data_dir, &id, &json_text).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn is_task_queue_running(state: State<AppState>, id: String) -> bool {
+    state.running_task_queues.lock().unwrap().contains_key(&id)
+}
+
+/// Dispara o loop inteiro (`agent::task_queue::run_queue`) numa task
+/// detached, igual ao `send_message` faz pra um turno normal — o handle
+/// registrado em `running_task_queues` é o que `stop_task_queue` aborta.
+/// Recusa se já tiver uma fila rodando nesta sessão (idempotente: chamar
+/// play duas vezes não duplica o loop).
+#[tauri::command]
+fn start_task_queue(app: tauri::AppHandle, state: State<AppState>, session_id: String) -> Result<(), String> {
+    if state.running_task_queues.lock().unwrap().contains_key(&session_id) {
+        return Err("a fila de tarefas ja esta rodando nesta sessao".to_string());
+    }
+    let handle = {
+        let app = app.clone();
+        let session_id = session_id.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = agent::task_queue::run_queue(app.clone(), session_id.clone()).await {
+                agent::task_queue::emit_error(&app, &session_id, e.to_string());
+            }
+            app.state::<AppState>()
+                .running_task_queues
+                .lock()
+                .unwrap()
+                .remove(&session_id);
+        })
+    };
+    state.running_task_queues.lock().unwrap().insert(session_id, handle);
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_task_queue(state: State<AppState>, session_id: String) -> Result<(), String> {
+    let handle = state.running_task_queues.lock().unwrap().remove(&session_id);
+    match handle {
+        Some(handle) => {
+            handle.abort();
+            Ok(())
+        }
+        None => Err("nenhuma fila de tarefas rodando nesta sessao".to_string()),
+    }
+}
+
+#[tauri::command]
+fn update_session_long_horizon_enabled(
+    state: State<AppState>,
+    id: String,
+    enabled: bool,
+) -> Result<Session, String> {
+    sessions::update_long_horizon_enabled(&state.app_data_dir, &id, enabled)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn read_session_long_horizon_memoria(state: State<AppState>, id: String) -> Result<String, String> {
+    sessions::read_long_horizon_memoria(&state.app_data_dir, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_session_long_horizon_memoria(
+    state: State<AppState>,
+    id: String,
+    conteudo: String,
+) -> Result<(), String> {
+    sessions::write_long_horizon_memoria(&state.app_data_dir, &id, &conteudo)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn read_session_long_horizon_projeto(state: State<AppState>, id: String) -> Result<String, String> {
+    sessions::read_long_horizon_projeto(&state.app_data_dir, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_session_long_horizon_projeto(
+    state: State<AppState>,
+    id: String,
+    conteudo: String,
+) -> Result<(), String> {
+    sessions::write_long_horizon_projeto(&state.app_data_dir, &id, &conteudo)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1955,12 +2289,14 @@ pub fn run() {
                 config: Mutex::new(config),
                 pending_edits: Mutex::new(HashMap::new()),
                 llama_children: Mutex::new(HashMap::new()),
+                image_gen_children: Mutex::new(HashMap::new()),
                 background_jobs: agent::background::BackgroundJobs::new(app.handle().clone()),
                 mcp_clients: mcp::McpClients::default(),
                 pending_questions: Mutex::new(HashMap::new()),
                 pending_permissions: Mutex::new(HashMap::new()),
                 pending_agent_plans: Mutex::new(HashMap::new()),
                 running_turns: Mutex::new(HashMap::new()),
+                running_task_queues: Mutex::new(HashMap::new()),
                 agent_executions: Mutex::new(HashMap::new()),
                 orchestrated_sessions: Mutex::new(HashMap::new()),
                 auto_continue_counts: Mutex::new(HashMap::new()),
@@ -1970,6 +2306,25 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_config,
             set_config,
+            get_default_long_horizon_config,
+            check_external_cli_readiness,
+            set_image_gen_key,
+            has_image_gen_key,
+            clear_image_gen_key,
+            test_image_gen_connection,
+            list_image_gen_presets,
+            add_image_gen_preset,
+            remove_image_gen_preset,
+            start_image_gen_preset,
+            stop_image_gen_preset,
+            image_gen_preset_health,
+            compact_session_now,
+            update_session_task_queue_enabled,
+            read_session_task_queue,
+            write_session_task_queue,
+            is_task_queue_running,
+            start_task_queue,
+            stop_task_queue,
             export_sessions_backup,
             import_sessions_backup,
             backup_git_status,
@@ -2015,6 +2370,11 @@ pub fn run() {
             update_session_context_length,
             update_session_reasoning_effort,
             update_session_fable_method,
+            update_session_long_horizon_enabled,
+            read_session_long_horizon_memoria,
+            write_session_long_horizon_memoria,
+            read_session_long_horizon_projeto,
+            write_session_long_horizon_projeto,
             update_session_mcp_servers,
             update_session_persona,
             list_personas,
@@ -2040,6 +2400,8 @@ pub fn run() {
             optimize_image_data_url,
             get_session,
             get_session_messages,
+            get_session_messages_page,
+            get_session_messages_since,
             get_session_tasks,
             get_session_context_usage,
             list_agent_executions,
@@ -2087,6 +2449,7 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 let state = app_handle.state::<AppState>();
                 kill_all_llama_children_blocking(&state);
+                kill_all_image_gen_children_blocking(&state);
                 state.background_jobs.kill_all_blocking();
             }
         });

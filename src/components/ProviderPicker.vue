@@ -40,6 +40,11 @@ const providerOptions = computed(() => PROVIDER_KINDS.map((kind) => ({
 
 const forkOptions = computed(() => providerStore.forks.map((f) => ({ id: f.id, label: f.label })));
 const customProviderOptions = computed(() => providerStore.customProviders.map((p) => ({ id: p.id, label: p.label })));
+// Reusa o slot de `customProviderId` pra guardar qual dos 4 CLIs externos
+// está selecionado (mesma convenção de `modelsCacheKey` em stores/provider.ts).
+const cliBackendOptions = computed(() =>
+  providerStore.cliReadiness.map((b) => ({ id: b.backend, label: b.label, installed: b.installed })),
+);
 
 const modelOptions = computed(() => {
   const visible = providerStore.visibleModelsFor(props.provider, props.fork, props.customProviderId);
@@ -150,6 +155,28 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
       size="small"
     />
     <Select
+      v-if="provider === 'cli'"
+      :modelValue="customProviderId"
+      @update:modelValue="(v) => setCustomProviderId(v as string)"
+      :options="cliBackendOptions"
+      optionLabel="label"
+      optionValue="id"
+      :placeholder="$t('providerPicker.cliBackend')"
+      class="picker-select fork-select"
+      size="small"
+    >
+      <template #option="{ option }">
+        <div class="cli-backend-option">
+          <span>{{ option.label }}</span>
+          <span
+            class="cli-installed-dot"
+            :class="{ installed: option.installed }"
+            v-tooltip.top="option.installed ? $t('providerPicker.cliInstalled') : $t('providerPicker.cliNotInstalled')"
+          />
+        </div>
+      </template>
+    </Select>
+    <Select
       :modelValue="model"
       @update:modelValue="(v) => setModel(v as string)"
       :options="modelOptions"
@@ -190,7 +217,7 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
          dois juntos duplicava a mesma checagem lado a lado (achado testando
          ao vivo, 2026-08-17). -->
     <button
-      v-if="model && provider !== 'llama_cpp' && !hideVisionTest"
+      v-if="model && provider !== 'llama_cpp' && provider !== 'cli' && !hideVisionTest"
       class="vision-btn"
       :class="visionStatus"
       :disabled="visionStatus === 'checking'"
@@ -323,5 +350,25 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
 
 .cap-badge .msi {
   font-size: 14px;
+}
+
+.cli-backend-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.cli-installed-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #d4d4d8;
+  flex-shrink: 0;
+}
+
+.cli-installed-dot.installed {
+  background: #22c55e;
 }
 </style>

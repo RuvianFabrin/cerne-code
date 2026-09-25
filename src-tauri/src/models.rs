@@ -30,6 +30,26 @@ pub struct ChatMessage {
     pub display_content: Option<String>,
 }
 
+/// Uma página do histórico de uma sessão, do mais antigo pro mais recente
+/// dentro da página — `sessions::load_messages_page` pagina de trás pra
+/// frente (a página mais recente primeiro, "carregar mais" busca as
+/// anteriores). Existe pra sessões que ficam MUITO longas (ex.: modo Long
+/// Horizon, onde o histórico nunca é podado — ver `agent/long_horizon.rs`)
+/// não precisarem carregar/renderizar tudo de uma vez no chat.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessagesPage {
+    pub messages: Vec<ChatMessage>,
+    /// `true` quando existem mensagens mais antigas do que as retornadas
+    /// nesta página — a UI mostra "carregar mensagens anteriores" enquanto
+    /// isso for `true`.
+    pub has_more: bool,
+    /// Índice absoluto pra passar como `before` na PRÓXIMA chamada (pedir a
+    /// página ainda mais antiga). A UI não precisa recalcular isso a partir
+    /// do tamanho da página — evita um bug de desvio de índice se o cálculo
+    /// dos dois lados divergir.
+    pub next_before: usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
@@ -135,6 +155,11 @@ pub enum ProviderKind {
     /// open source não pode assumir chave/endpoint de nenhum provider de
     /// terceiro.
     Custom,
+    /// CLI de agente externo (Claude Code, Codex, Gemini CLI, Qwen Code)
+    /// rodado como subprocesso — ver `agent::external_cli`. Não fala HTTP:
+    /// `base_url`/`has_api_key` de `ProviderConfig` ficam vazios/irrelevantes
+    /// pra este kind, e `Session.external_cli_backend` diz qual dos quatro.
+    Cli,
 }
 
 impl ProviderKind {
@@ -153,6 +178,13 @@ impl ProviderKind {
             }
             _ => None,
         }
+    }
+
+    /// `Cli` nunca é um provider HTTP — usado nos pontos que precisam
+    /// desviar do caminho normal (`provider_config_for`, seletor de TTS/STT,
+    /// que não fazem sentido pra um CLI de agente externo).
+    pub fn is_cli(self) -> bool {
+        matches!(self, ProviderKind::Cli)
     }
 
     /// Roda num processo/GPU da própria máquina do usuário (llama.cpp/
@@ -265,6 +297,101 @@ pub struct AppConfig {
     /// 2026-08-20: STT em português via Voicebox.
     #[serde(default)]
     pub voicebox_stt_language: String,
+    /// Configuração global do modo Long Horizon (contexto limpo por passo +
+    /// estado em disco). Separado de `Session.long_horizon` (que é só
+    /// ligado/desligado + progresso POR SESSÃO) — este é o prompt padrão e os
+    /// parâmetros numéricos, editáveis em Configurações, valendo pra toda
+    /// sessão nova que ligar o modo.
+    #[serde(default)]
+    pub long_horizon: LongHorizonConfig,
+    /// Overrides de binário/argumentos por CLI externo (`ProviderKind::Cli`)
+    /// — ver `agent::external_cli::ExternalCliConfig`. Editável em
+    /// Configurações; sem nenhum override, usa o nome default de cada CLI
+    /// procurado no PATH.
+    #[serde(default)]
+    pub external_cli: crate::agent::external_cli::ExternalCliConfig,
+    /// Conexão de geração de imagem (ver `agent::image_gen`) — uma API
+    /// OpenAI-compatible (`POST {base_url}/images/generations`) que o
+    /// próprio usuário roda local (Qwen-Image, Krea, etc). `base_url` vazio
+    /// = ferramenta `generate_image` não fica disponível pro modelo.
+    #[serde(default)]
+    pub image_gen: ImageGenConfig,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ImageGenConfig {
+    #[serde(default)]
+    pub base_url: String,
+    /// Nem todo servidor exige — alguns têm um único modelo carregado e
+    /// ignoram o campo; enviado só quando não vazio (ver `image_gen::generate`).
+    #[serde(default)]
+    pub model: String,
+}
+
+/// Texto padrão injetado no system prompt quando o modo Long Horizon está
+/// ligado numa sessão (ver `agent/mod.rs`, mesmo padrão do `FABLE_METHOD_PROMPT`
+/// — arquivo `.md` embutido no binário via `include_str!`, não string Rust
+/// solta). Vive como constante aqui (não em `config.rs`) porque é o valor
+/// usado por `LongHorizonConfig::default()`, logo abaixo — "restaurar padrão"
+/// (Settings) e "valor de fábrica" (sessão nova sem config.json) têm que ser
+/// exatamente o mesmo texto, sem duplicar em dois lugares.
+pub const DEFAULT_LONG_HORIZON_PROMPT: &str = include_str!("agent/long_horizon_prompt.md");
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LongHorizonConfig {
+    /// Injetado no system prompt (mesmo ponto de injeção do Método Fable)
+    /// quando `Session.long_horizon.enabled == true`. Editável em
+    /// Configurações; "Restaurar padrão" devolve `DEFAULT_LONG_HORIZON_PROMPT`.
+    #[serde(default = "default_long_horizon_prompt")]
+    pub system_prompt: String,
+    /// Teto de iterações do laço de contexto limpo antes de desistir e
+    /// devolver o controle ao usuário — mesmo papel do `--max-iteracoes` do
+    /// protótipo Python (padrão lá: 20).
+    #[serde(default = "default_long_horizon_max_iteracoes")]
+    pub max_iteracoes: u32,
+    /// Quantas idas e voltas de ferramenta cabem DENTRO de um passo antes do
+    /// harness cortar o sub-diálogo — mesmo papel do `--teto-tool` do
+    /// protótipo (padrão lá: 12), motivo documentado lá: sem teto, um
+    /// sub-diálogo de ferramentas já foi medido chegando a ~800 mil tokens
+    /// numa iteração só.
+    #[serde(default = "default_long_horizon_teto_tool")]
+    pub teto_tool_por_passo: u32,
+    /// Quantas respostas IDÊNTICAS seguidas (byte a byte) cortam o passo
+    /// cedo em vez de esgotar o orçamento repetindo a mesma falha — mesmo
+    /// papel do `TETO_DE_REPETICAO_IDENTICA` do protótipo (padrão lá: 2).
+    #[serde(default = "default_long_horizon_teto_falha_repetida")]
+    pub teto_falha_repetida: u32,
+}
+
+fn default_long_horizon_prompt() -> String {
+    DEFAULT_LONG_HORIZON_PROMPT.to_string()
+}
+fn default_long_horizon_max_iteracoes() -> u32 {
+    20
+}
+// Generosos de propósito (2026-09-20, pedido do usuário): o valor do
+// protótipo Python (12/2) veio de um harness sem ferramenta nenhuma de
+// verificação embutida — no Cerne, um modelo grande faz releitura/checagem
+// de propósito (rodar o mesmo teste de novo, reler o mesmo arquivo depois de
+// editar) que parece repetição mas é trabalho real. Mesmo raciocínio do
+// DOOM_LOOP_THRESHOLD (3 -> 20) logo acima: o guard existe pra pegar o caso
+// realmente travado, não pra interromper verificação legítima.
+fn default_long_horizon_teto_tool() -> u32 {
+    40
+}
+fn default_long_horizon_teto_falha_repetida() -> u32 {
+    5
+}
+
+impl Default for LongHorizonConfig {
+    fn default() -> Self {
+        Self {
+            system_prompt: default_long_horizon_prompt(),
+            max_iteracoes: default_long_horizon_max_iteracoes(),
+            teto_tool_por_passo: default_long_horizon_teto_tool(),
+            teto_falha_repetida: default_long_horizon_teto_falha_repetida(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -329,6 +456,9 @@ impl Default for AppConfig {
             voicebox_base_url: default_voicebox_base_url(),
             voicebox_tts_profile: String::new(),
             voicebox_stt_language: String::new(),
+            long_horizon: LongHorizonConfig::default(),
+            external_cli: crate::agent::external_cli::ExternalCliConfig::default(),
+            image_gen: ImageGenConfig::default(),
         }
     }
 }
@@ -434,6 +564,12 @@ pub struct Session {
     /// do `llama_fork` pra `LlamaCpp`.
     #[serde(default)]
     pub custom_provider_id: Option<String>,
+    /// Qual CLI externo (ver `agent::external_cli::CliBackendId`) esta sessão
+    /// usa — só relevante quando `provider == Cli`, mesma ideia do
+    /// `llama_fork`/`custom_provider_id` acima. `model` continua sendo o id
+    /// do modelo dentro desse CLI (ex: "claude-sonnet-5").
+    #[serde(default)]
+    pub external_cli_backend: Option<String>,
     /// Pastas extras (fora de `project_root`) que as ferramentas podem acessar
     /// via caminho absoluto. Cada entrada tem um modo: `Read` (só leitura —
     /// `read_file`/`list_dir`/`grep`/`ast_grep`) ou `ReadWrite` (leitura +
@@ -506,6 +642,63 @@ pub struct Session {
     /// nível único, mesmo espírito do guard que `task` já tem).
     #[serde(default)]
     pub parent_session_id: Option<String>,
+    /// Modo Long Horizon (ver projeto `cerne-long-horizon` no cofre): contexto
+    /// limpo por passo + estado em disco, em vez de acumular o histórico da
+    /// conversa inteira a cada turno. `default()` = desligado, então sessões
+    /// gravadas antes desse campo existir desserializam com o modo desligado
+    /// (mesmo padrão de retrocompatibilidade de `fable_method`/`folder_id`).
+    #[serde(default)]
+    pub long_horizon: LongHorizonState,
+    /// Fila de tarefas (ver `agent::task_queue`): roda uma lista de itens
+    /// colada pelo usuário (`task_queue/tarefas.json`) contra o Long Horizon,
+    /// um item por vez, sem interação até acabar ou até dar Stop. Ligado
+    /// separado do Long Horizon em si porque um usuário pode querer usar o
+    /// Long Horizon manualmente (digitando ele mesmo) sem a fila automática.
+    #[serde(default)]
+    pub task_queue_enabled: bool,
+}
+
+/// Estado do modo Long Horizon **desta sessão**. Separado de `LongHorizonConfig`
+/// (em `config.rs`, global — prompt padrão e parâmetros numéricos): este struct
+/// é só o que varia sessão a sessão (ligado/desligado, progresso).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct LongHorizonState {
+    /// Ligado pelo toggle no menu "+" do composer. Desligado por padrão —
+    /// ligar o modo é escolha explícita do usuário por sessão, nunca automático.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Quantas iterações do laço de contexto limpo já rodaram nesta sessão.
+    /// Só cresce enquanto `enabled == true`; não reseta ao desligar (histórico).
+    #[serde(default)]
+    pub iteracao_atual: u32,
+    /// Como a última iteração terminou: "sucesso" (respondeu sem bater
+    /// nenhum guard), "estagnado" (resposta final idêntica à anterior,
+    /// `teto_falha_repetida` vezes seguidas), "teto_de_ferramenta" (passou
+    /// do limite de chamadas de ferramenta no passo) ou "travou" (o
+    /// detector de loop geral do Cerne, `is_doom_loop`, disparou). `None`
+    /// antes da primeira iteração. Texto livre, não enum — os quatro
+    /// valores são uma convenção entre `agent/mod.rs` e `agent/long_horizon.rs`.
+    #[serde(default)]
+    pub ultimo_desfecho: Option<String>,
+    /// Conteúdo da última resposta final (sem tool calls) desta sessão —
+    /// usado só pra comparar com a próxima e detectar estagnação (resposta
+    /// idêntica byte a byte se repetindo). Não é pra exibir na UI.
+    #[serde(default)]
+    pub ultima_resposta: Option<String>,
+    /// Quantas respostas finais IDÊNTICAS seguidas já aconteceram. Zera
+    /// sempre que a resposta muda; vira "estagnado" ao bater
+    /// `LongHorizonConfig.teto_falha_repetida`.
+    #[serde(default)]
+    pub respostas_identicas_seguidas: u32,
+    /// `true` quando o último turno terminou normalmente ("sucesso"), fez
+    /// alguma chamada de ferramenta de verdade (não foi só bate-papo), mas
+    /// NUNCA chamou `update_long_horizon_memoria`/`projeto` — achado ao vivo
+    /// (2026-09-20): o modelo escreve na resposta final "vou atualizar
+    /// projeto.md" mas não chama a ferramenta, e o turno termina do mesmo
+    /// jeito (sem tool call pendente = turno completo pro harness). O
+    /// próximo briefing cobra isso explicitamente quando este campo é `true`.
+    #[serde(default)]
+    pub ultimo_turno_sem_persistir_estado: bool,
 }
 
 /// Pasta pra organizar sessões na barra lateral (T29). Só 2 níveis: uma
@@ -621,6 +814,14 @@ pub struct TaskItem {
     /// chamada de fora, nao os passos de dentro).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution_id: Option<String>,
+    /// Imagens devolvidas pela ferramenta (data URLs) — `computer_use_screenshot`
+    /// e `generate_image` são os dois casos hoje. Achado ao vivo (2026-09-24):
+    /// a mensagem `tool` persistida já carrega isso em `ChatMessage.images`,
+    /// mas nada na UI lia de lá pra mostrar — a imagem gerada salvava em
+    /// disco só, invisível no chat. Este campo é o que `TaskStepGroup.vue`
+    /// de fato renderiza.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
 }
 
 /// Uma execução isolada de agente/skill (`task`/`verify_completion` hoje —

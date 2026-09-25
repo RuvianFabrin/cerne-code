@@ -93,6 +93,25 @@ function cancel() {
   editing.value = false;
   error.value = "";
 }
+
+const compacting = ref(false);
+const compactDone = ref(false);
+
+async function compactNow() {
+  if (compacting.value) return;
+  compacting.value = true;
+  try {
+    const didCompact = await sessionStore.compactNow();
+    if (didCompact) {
+      compactDone.value = true;
+      setTimeout(() => (compactDone.value = false), 2000);
+    }
+  } catch (e) {
+    error.value = String(e);
+  } finally {
+    compacting.value = false;
+  }
+}
 </script>
 
 <template>
@@ -109,7 +128,17 @@ function cancel() {
         <span class="gauge-fill" :style="{ width: percent + '%' }" />
       </span>
     </button>
-    <div v-else class="context-edit">
+    <button
+      v-if="!editing && sessionStore.currentSession?.provider !== 'cli'"
+      class="compact-now-btn"
+      :class="{ done: compactDone }"
+      :disabled="compacting"
+      v-tooltip.top="$t('contextGauge.compactNowTooltip')"
+      @click="compactNow"
+    >
+      <span class="msi" :class="{ spin: compacting }">{{ compactDone ? "check" : compacting ? "progress_activity" : "compress" }}</span>
+    </button>
+    <div v-else-if="editing" class="context-edit">
       <input
         ref="inputRef"
         v-model="inputValue"
@@ -242,6 +271,46 @@ function cancel() {
   padding: 2px 6px;
   border-radius: 6px;
   border: 1px solid #fecaca;
+}
+
+.compact-now-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: var(--cerne-border);
+  border-radius: 999px;
+  background: #ffffff;
+  cursor: pointer;
+  color: #52525b;
+  flex-shrink: 0;
+}
+
+.compact-now-btn:hover:not(:disabled) {
+  background: #f4f4f5;
+}
+
+.compact-now-btn:disabled {
+  cursor: default;
+}
+
+.compact-now-btn.done {
+  color: #16a34a;
+  border-color: #86efac;
+}
+
+.compact-now-btn .msi {
+  font-size: 13px;
+}
+
+.compact-now-btn .msi.spin {
+  animation: compact-spin 1.5s linear infinite;
+}
+
+@keyframes compact-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .usage-badges {

@@ -37,9 +37,36 @@ function isNearBottom(): boolean {
   return el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;
 }
 
+// Carga lenta do histórico (2026-09-20, pedido do usuário): rolar perto do
+// TOPO puxa a página anterior — preserva a posição visual do scroll
+// (captura scrollHeight ANTES, prepend muda a altura, corrige scrollTop
+// DEPOIS do DOM atualizar) pra não dar aquele "pulo" desagradável que
+// prepender conteúdo normalmente causa.
+const NEAR_TOP_PX = 200;
+
 function onChatScroll() {
   autoStick.value = isNearBottom();
   showJumpToBottom.value = !autoStick.value;
+
+  const el = scrollRef.value;
+  if (
+    el &&
+    el.scrollTop <= NEAR_TOP_PX &&
+    sessionStore.hasMoreMessages &&
+    !sessionStore.loadingOlderMessages
+  ) {
+    void loadOlderPreservingScroll();
+  }
+}
+
+async function loadOlderPreservingScroll() {
+  const el = scrollRef.value;
+  if (!el) return;
+  const heightBefore = el.scrollHeight;
+  const topBefore = el.scrollTop;
+  await sessionStore.loadOlderMessages();
+  await nextTick();
+  el.scrollTop = el.scrollHeight - heightBefore + topBefore;
 }
 
 function scrollToBottom(behavior: ScrollBehavior = "auto") {
@@ -104,7 +131,7 @@ const timeline = computed<TimelineItem[]>(() => {
       }
     } else if (
       m.role === "system" &&
-      (m.name === "background_job_done" || m.name === "auto_continue_stopped")
+      (m.name === "background_job_done" || m.name === "auto_continue_stopped" || m.name === "long_horizon_reset")
     ) {
       // T14: nota de conclusão de job em segundo plano, ou aviso do guard
       // anti-loop do auto-continue — role "system" pra não entrar na
@@ -112,6 +139,9 @@ const timeline = computed<TimelineItem[]>(() => {
       // marcador (`name`) pra diferenciar do system prompt real (que também
       // é role "system", mas nunca deveria aparecer aqui — só essas
       // mensagens específicas são intencionalmente visíveis).
+      // "long_horizon_reset" (2026-09-20): avisa que um novo passo do modo
+      // Long Horizon começou — histórico continua intacto no scroll, só o
+      // payload mandado ao modelo foi resumido (ver agent/long_horizon.rs).
       items.push({ kind: "background-note", key: `bn-${i}`, message: m });
     }
   });
@@ -266,6 +296,22 @@ watch(
           </div>
           <div class="chat-scroll" ref="scrollRef" @scroll="onChatScroll">
             <div class="chat-inner">
+            <!-- Carga lenta do histórico (2026-09-20, pedido do usuário):
+                 rolar perto do topo puxa a página anterior automaticamente
+                 (ver onChatScroll); este indicador é só feedback visual de
+                 que algo está (ou pode ser) carregado — sessões muito longas
+                 (Long Horizon nunca poda o histórico) não renderizam tudo de
+                 uma vez só de abrir. -->
+            <div v-if="sessionStore.loadingOlderMessages" class="loading-older-messages">
+              {{ $t("chat.loadingOlderMessages") }}
+            </div>
+            <button
+              v-else-if="sessionStore.hasMoreMessages"
+              class="load-older-messages-btn"
+              @click="loadOlderPreservingScroll"
+            >
+              {{ $t("chat.loadOlderMessages") }}
+            </button>
             <template v-for="item in timeline" :key="item.key">
               <div v-if="item.kind === 'message'" :ref="item.message.role === 'user' ? (el) => registerMessageEl(item.key, el) : undefined">
                 <MessageBubble :message="item.message" />
@@ -446,6 +492,28 @@ watch(
   max-width: 960px;
   margin: 0 auto;
   padding: 24px 24px 24px;
+}
+
+.loading-older-messages,
+.load-older-messages-btn {
+  display: block;
+  width: 100%;
+  text-align: center;
+  font-size: 12px;
+  color: #71717a;
+  padding: 8px 0 16px;
+}
+
+.load-older-messages-btn {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.load-older-messages-btn:hover {
+  color: #18181b;
+  text-decoration: underline;
 }
 
 .composer-wrap {

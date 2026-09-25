@@ -501,6 +501,8 @@ onMounted(() => {
   loadSearchConfig();
   loadGitBackupStatus();
   loadMemoryContent();
+  loadImageGenKeyStatus();
+  refreshImageGenPresetStatus();
 });
 
 // Achado testando ao vivo (2026-08-18): `onMounted` só roda a primeira vez
@@ -694,6 +696,169 @@ async function saveMemoryContent() {
   setTimeout(() => (memorySaved.value = false), 2000);
 }
 
+// "Restaurar padrão" do modo Long Horizon: busca o valor de fábrica no
+// backend (fonte única, evita duplicar o texto do prompt aqui no frontend —
+// ver DEFAULT_LONG_HORIZON_PROMPT em models.rs) e persiste via o
+// set_config genérico, igual a qualquer outro campo de AppConfig.
+const longHorizonResetDone = ref(false);
+
+async function resetLongHorizonConfig() {
+  if (!providerStore.config) return;
+  providerStore.config.long_horizon = await api.getDefaultLongHorizonConfig();
+  await providerStore.saveConfig();
+  longHorizonResetDone.value = true;
+  setTimeout(() => (longHorizonResetDone.value = false), 2000);
+}
+
+// Overrides por CLI externo (aba "CLIs externos"): campos de texto locais
+// separados de `providerStore.config.external_cli` porque `extra_args` é
+// `string[]` no backend, mas o input é uma string só (separada por espaço) —
+// converte na hora de salvar, não a cada tecla.
+const externalCliBinOverride = ref<Record<string, string>>({});
+const externalCliExtraArgs = ref<Record<string, string>>({});
+
+watch(
+  () => providerStore.config?.external_cli,
+  (cfg) => {
+    if (!cfg) return;
+    for (const backend of ["claude", "codex", "gemini", "qwen"] as const) {
+      externalCliBinOverride.value[backend] = cfg[backend]?.bin_path ?? "";
+      externalCliExtraArgs.value[backend] = (cfg[backend]?.extra_args ?? []).join(" ");
+    }
+  },
+  { immediate: true },
+);
+
+async function saveExternalCliOverride(backend: "claude" | "codex" | "gemini" | "qwen") {
+  if (!providerStore.config) return;
+  const binPath = externalCliBinOverride.value[backend]?.trim() || null;
+  const extraArgs = (externalCliExtraArgs.value[backend] ?? "").trim().split(/\s+/).filter(Boolean);
+  providerStore.config.external_cli[backend] = { bin_path: binPath, extra_args: extraArgs };
+  await providerStore.saveConfig();
+  providerStore.cliReadiness = await api.checkExternalCliReadiness();
+}
+
+// Geração de imagem (aba "Geração de imagem"): chave em cofre separado do
+// resto de `AppConfig` (mesmo motivo de toda chave de API no Cerne — nunca
+// fica em texto puro no config.json), então precisa do próprio
+// carregar/salvar/limpar em vez de seguir direto em providerStore.config.
+const imageGenApiKeyInput = ref("");
+const imageGenHasKey = ref(false);
+const imageGenTestStatus = ref<"idle" | "testing" | "success" | "error">("idle");
+const imageGenTestPreview = ref("");
+const imageGenTestError = ref("");
+
+async function loadImageGenKeyStatus() {
+  imageGenHasKey.value = await api.hasImageGenKey();
+}
+
+async function saveImageGenKey() {
+  if (!imageGenApiKeyInput.value.trim()) return;
+  await api.setImageGenKey(imageGenApiKeyInput.value.trim());
+  imageGenApiKeyInput.value = "";
+  imageGenHasKey.value = true;
+}
+
+async function clearImageGenKey() {
+  await api.clearImageGenKey();
+  imageGenHasKey.value = false;
+}
+
+async function testImageGenConnection() {
+  if (!providerStore.config) return;
+  imageGenTestStatus.value = "testing";
+  imageGenTestError.value = "";
+  imageGenTestPreview.value = "";
+  try {
+    const preview = await api.testImageGenConnection(
+      providerStore.config.image_gen.base_url,
+      imageGenApiKeyInput.value.trim() || undefined,
+      providerStore.config.image_gen.model,
+    );
+    imageGenTestPreview.value = preview;
+    imageGenTestStatus.value = "success";
+  } catch (e) {
+    imageGenTestError.value = String(e);
+    imageGenTestStatus.value = "error";
+  }
+}
+
+// Presets de geração de imagem (mesma ideia dos forks llama.cpp): o
+// usuário cadastra a pasta do projeto Python uma vez, e o Cerne sobe/derruba
+// o `uv run uvicorn` sozinho a partir daqui.
+const newImageGenPresetId = ref("");
+const newImageGenPresetLabel = ref("");
+const newImageGenPresetWorkingDir = ref("");
+const newImageGenPresetPipeline = ref("zimage");
+const newImageGenPresetModelPath = ref("");
+const newImageGenPresetPort = ref(8000);
+const imageGenPresetError = ref("");
+const imageGenPresetBusy = ref<string | null>(null);
+// Estado "rodando" por preset id — carregado uma vez ao montar (ver
+// refreshImageGenPresetStatus) e atualizado a cada start/stop; não faz
+// polling contínuo (mesmo espírito do StatusDot do llama.cpp: reflete o
+// que ESTE app sabe que subiu, não fica sondando o tempo todo).
+const imageGenPresetRunning = ref<Record<string, boolean>>({});
+
+async function pickImageGenWorkingDir() {
+  const selected = await open({ directory: true, multiple: false });
+  if (typeof selected === "string") newImageGenPresetWorkingDir.value = selected;
+}
+
+async function addImageGenPreset() {
+  if (!newImageGenPresetId.value.trim() || !newImageGenPresetWorkingDir.value.trim()) return;
+  imageGenPresetError.value = "";
+  try {
+    await providerStore.addImageGenPreset({
+      id: newImageGenPresetId.value.trim(),
+      label: newImageGenPresetLabel.value.trim() || newImageGenPresetId.value.trim(),
+      working_dir: newImageGenPresetWorkingDir.value.trim(),
+      model_pipeline: newImageGenPresetPipeline.value,
+      model_path: newImageGenPresetModelPath.value.trim(),
+      port: newImageGenPresetPort.value,
+    });
+    newImageGenPresetId.value = "";
+    newImageGenPresetLabel.value = "";
+    newImageGenPresetWorkingDir.value = "";
+    newImageGenPresetModelPath.value = "";
+    newImageGenPresetPort.value = 8000;
+  } catch (e) {
+    imageGenPresetError.value = String(e);
+  }
+}
+
+async function startImageGenPreset(id: string) {
+  imageGenPresetBusy.value = id;
+  imageGenPresetError.value = "";
+  try {
+    await api.startImageGenPreset(id);
+    imageGenPresetRunning.value[id] = true;
+    // O comando já grava base_url/model em AppConfig no backend — recarrega
+    // pra refletir na aba "Manual" sem precisar reabrir Configurações.
+    providerStore.config = await api.getConfig();
+  } catch (e) {
+    imageGenPresetError.value = String(e);
+  } finally {
+    imageGenPresetBusy.value = null;
+  }
+}
+
+async function stopImageGenPreset(id: string) {
+  imageGenPresetError.value = "";
+  try {
+    await api.stopImageGenPreset(id);
+    imageGenPresetRunning.value[id] = false;
+  } catch (e) {
+    imageGenPresetError.value = String(e);
+  }
+}
+
+async function refreshImageGenPresetStatus() {
+  for (const preset of providerStore.imageGenPresets) {
+    imageGenPresetRunning.value[preset.id] = await api.imageGenPresetHealth(preset.id).catch(() => false);
+  }
+}
+
 async function importSessionsBackup() {
   backupStatus.value = "";
   backupError.value = "";
@@ -742,6 +907,8 @@ const csGrupos: { label: string; itens: CsItem[] }[] = [
     { id: 'openrouter', icon: 'cloud', texto: 'OpenRouter' },
     { id: 'llama-cpp-local', icon: 'memory', chave: 'settings.llamaCppLocal' },
     { id: 'custom-providers', icon: 'extension', chave: 'settings.customProviders' },
+    { id: 'external-cli', icon: 'terminal', chave: 'settings.externalCliTitle', requerConfig: true },
+    { id: 'image-gen', icon: 'image', chave: 'settings.imageGenTitle', requerConfig: true },
   ] },
   { label: t('settings.groupIntegrations'), itens: [
     { id: 'mcp-servers', icon: 'hub', chave: 'settings.mcpServers' },
@@ -751,6 +918,7 @@ const csGrupos: { label: string; itens: CsItem[] }[] = [
   { label: t('settings.groupAdvanced'), itens: [
     { id: 'local-endpoints', icon: 'dns', chave: 'settings.localEndpoints', requerConfig: true },
     { id: 'voice', icon: 'mic', chave: 'settings.voiceTitle', requerConfig: true },
+    { id: 'long-horizon', icon: 'all_inclusive', chave: 'settings.longHorizonTitle', requerConfig: true },
   ] },
 ];
 
@@ -1028,6 +1196,149 @@ watch(csGruposVisiveis, (grupos) => {
           <p v-if="customTestStatus === 'error'" class="error-text">{{ customTestError }}</p>
         </div>
         <p v-if="customError" class="error-text">{{ customError }}</p>
+        </section>
+
+      <section v-if="providerStore.config" v-show="activeSection === 'external-cli'" class="cs-panel">
+        <p class="hint">{{ $t("settings.externalCliHint") }}</p>
+        <div class="skill-list">
+          <div v-for="backend in providerStore.cliReadiness" :key="backend.backend" class="skill-row mcp-row cli-row">
+            <div class="skill-info">
+              <span class="skill-name">
+                {{ backend.label }}
+                <span
+                  class="cli-status-badge"
+                  :class="{ installed: backend.installed }"
+                >
+                  <span class="msi">{{ backend.installed ? "check_circle" : "help" }}</span>
+                  {{ backend.installed ? $t("providerPicker.cliInstalled") : $t("settings.externalCliNotFound") }}
+                </span>
+              </span>
+              <span class="skill-desc">{{ $t("settings.externalCliBinLabel") }}: {{ backend.bin }}</span>
+            </div>
+            <div class="mcp-form cli-override-form">
+              <input
+                v-model="externalCliBinOverride[backend.backend]"
+                class="text-input"
+                :placeholder="$t('settings.externalCliBinPlaceholder', { name: backend.label })"
+                @change="saveExternalCliOverride(backend.backend)"
+              />
+              <input
+                v-model="externalCliExtraArgs[backend.backend]"
+                class="text-input"
+                :placeholder="$t('settings.externalCliExtraArgsPlaceholder')"
+                @change="saveExternalCliOverride(backend.backend)"
+              />
+            </div>
+          </div>
+        </div>
+        </section>
+
+      <section v-if="providerStore.config" v-show="activeSection === 'image-gen'" class="cs-panel">
+        <p class="hint">{{ $t("settings.imageGenHint") }}</p>
+
+        <h3 class="subhead">{{ $t("settings.imageGenPresetsTitle") }}</h3>
+        <div class="skill-list">
+          <div v-for="preset in providerStore.imageGenPresets" :key="preset.id" class="skill-row mcp-row">
+            <div class="skill-info">
+              <span class="skill-name">
+                {{ preset.label }}
+                <span
+                  class="cli-status-badge"
+                  :class="{ installed: imageGenPresetRunning[preset.id] }"
+                >
+                  <span class="msi">{{ imageGenPresetRunning[preset.id] ? "check_circle" : "radio_button_unchecked" }}</span>
+                  {{ imageGenPresetRunning[preset.id] ? $t("settings.imageGenRunning") : $t("settings.imageGenStopped") }}
+                </span>
+              </span>
+              <span class="skill-desc">{{ preset.model_pipeline }} · {{ preset.working_dir }} · :{{ preset.port }}</span>
+            </div>
+            <div class="mcp-actions">
+              <button
+                class="btn-secondary"
+                :disabled="imageGenPresetBusy === preset.id"
+                @click="imageGenPresetRunning[preset.id] ? stopImageGenPreset(preset.id) : startImageGenPreset(preset.id)"
+              >
+                {{ imageGenPresetBusy === preset.id
+                  ? $t("settings.imageGenStarting")
+                  : imageGenPresetRunning[preset.id] ? $t("settings.imageGenStop") : $t("settings.imageGenStart") }}
+              </button>
+              <button class="btn-secondary" @click="providerStore.removeImageGenPreset(preset.id)">{{ $t("settings.remove") }}</button>
+            </div>
+          </div>
+          <p v-if="providerStore.imageGenPresets.length === 0" class="hint">{{ $t("settings.imageGenNoPresetsYet") }}</p>
+        </div>
+        <p v-if="imageGenPresetError" class="error-text">{{ imageGenPresetError }}</p>
+
+        <div class="mcp-form">
+          <div class="mcp-form-row">
+            <input v-model="newImageGenPresetId" class="text-input" placeholder="id (ex: zimage)" />
+            <input v-model="newImageGenPresetLabel" class="text-input" :placeholder="$t('settings.labelOptional')" />
+          </div>
+          <div class="mcp-form-row">
+            <button class="btn-secondary" @click="pickImageGenWorkingDir">{{ $t("settings.imageGenPickFolder") }}</button>
+            <span class="folder-path">{{ newImageGenPresetWorkingDir || $t("settings.imageGenWorkingDirPlaceholder") }}</span>
+          </div>
+          <div class="mcp-form-row">
+            <select v-model="newImageGenPresetPipeline" class="text-input">
+              <option value="zimage">zimage (Z-Image-Turbo)</option>
+              <option value="qwen-image">qwen-image (Qwen-Image 2.1)</option>
+              <option value="krea2">krea2 (Krea 2 Turbo)</option>
+            </select>
+            <input v-model.number="newImageGenPresetPort" type="number" class="text-input" placeholder="8000" />
+          </div>
+          <input
+            v-model="newImageGenPresetModelPath"
+            class="text-input"
+            :placeholder="$t('settings.imageGenModelPathPlaceholder')"
+          />
+          <div class="mcp-form-actions">
+            <button class="btn-primary" @click="addImageGenPreset">{{ $t("settings.add") }}</button>
+          </div>
+        </div>
+
+        <h3 class="subhead">{{ $t("settings.imageGenManualTitle") }}</h3>
+        <p class="hint">{{ $t("settings.imageGenManualHint") }}</p>
+        <div class="field">
+          <label>{{ $t("settings.imageGenBaseUrl") }}</label>
+          <input
+            v-model="providerStore.config.image_gen.base_url"
+            class="text-input"
+            placeholder="http://127.0.0.1:8000/v1"
+            @change="providerStore.saveConfig"
+          />
+        </div>
+        <div class="field">
+          <label>{{ $t("settings.imageGenModel") }}</label>
+          <input
+            v-model="providerStore.config.image_gen.model"
+            class="text-input"
+            :placeholder="$t('settings.imageGenModelPlaceholder')"
+            @change="providerStore.saveConfig"
+          />
+        </div>
+        <div class="field">
+          <label>{{ $t("settings.imageGenApiKey") }}</label>
+          <input
+            v-model="imageGenApiKeyInput"
+            type="password"
+            class="text-input"
+            :placeholder="imageGenHasKey ? $t('settings.newApiKeyPlaceholder') : $t('settings.imageGenApiKeyOptionalPlaceholder')"
+          />
+        </div>
+        <div class="mcp-form-actions">
+          <button class="btn-secondary" v-if="imageGenApiKeyInput" @click="saveImageGenKey">{{ $t("sidebar.save") }}</button>
+          <button class="btn-secondary" v-if="imageGenHasKey" @click="clearImageGenKey">{{ $t("settings.remove") }}</button>
+          <button class="btn-secondary" :disabled="imageGenTestStatus === 'testing'" @click="testImageGenConnection">
+            {{ imageGenTestStatus === "testing" ? $t("settings.testing") : $t("settings.testConnection") }}
+          </button>
+        </div>
+        <p v-if="imageGenHasKey" class="hint">{{ $t("settings.imageGenKeyConfigured") }}</p>
+        <div v-if="imageGenTestStatus === 'success'" class="mcp-test-success">
+          <span class="msi">check_circle</span>
+          {{ $t("settings.imageGenTestSuccess") }}
+          <img v-if="imageGenTestPreview" :src="imageGenTestPreview" class="image-gen-preview" alt="" />
+        </div>
+        <p v-if="imageGenTestStatus === 'error'" class="error-text">{{ imageGenTestError }}</p>
         </section>
 
       <section v-show="activeSection === 'mcp-servers'" class="cs-panel">
@@ -1385,6 +1696,61 @@ watch(csGruposVisiveis, (grupos) => {
             <input v-model="providerStore.config.stt_model" class="text-input" @change="providerStore.saveConfig" />
           </div>
         </template>
+        </section>
+
+      <section v-if="providerStore.config" v-show="activeSection === 'long-horizon'" class="cs-panel">
+        <p class="hint">{{ $t("settings.longHorizonHint") }}</p>
+
+        <div class="field">
+          <label>{{ $t("settings.longHorizonPromptLabel") }}</label>
+          <textarea
+            v-model="providerStore.config.long_horizon.system_prompt"
+            class="text-input memory-textarea"
+            rows="12"
+            @change="providerStore.saveConfig"
+          />
+        </div>
+
+        <div class="field">
+          <label>{{ $t("settings.longHorizonMaxIteracoes") }}</label>
+          <input
+            v-model.number="providerStore.config.long_horizon.max_iteracoes"
+            type="number"
+            min="1"
+            class="text-input"
+            @change="providerStore.saveConfig"
+          />
+        </div>
+        <div class="field">
+          <label>{{ $t("settings.longHorizonTetoTool") }}</label>
+          <input
+            v-model.number="providerStore.config.long_horizon.teto_tool_por_passo"
+            type="number"
+            min="1"
+            class="text-input"
+            @change="providerStore.saveConfig"
+          />
+        </div>
+        <div class="field">
+          <label>{{ $t("settings.longHorizonTetoFalhaRepetida") }}</label>
+          <input
+            v-model.number="providerStore.config.long_horizon.teto_falha_repetida"
+            type="number"
+            min="1"
+            class="text-input"
+            @change="providerStore.saveConfig"
+          />
+        </div>
+
+        <div class="mcp-form-actions">
+          <button class="btn-secondary" @click="resetLongHorizonConfig">
+            {{ $t("settings.longHorizonReset") }}
+          </button>
+          <span v-if="longHorizonResetDone" class="mcp-test-success">
+            <span class="msi">check_circle</span>
+            {{ $t("settings.longHorizonResetDone") }}
+          </span>
+        </div>
         </section>
           </div>
         </div>
@@ -1913,6 +2279,58 @@ watch(csGruposVisiveis, (grupos) => {
 
 .vision-badge .msi {
   font-size: 14px;
+}
+
+.cli-row {
+  flex-wrap: wrap;
+}
+
+.cli-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: var(--cerne-sans, inherit);
+  background: #fafafa;
+  border: 1px solid #e4e4e7;
+  color: #71717a;
+  vertical-align: middle;
+}
+
+.cli-status-badge.installed {
+  background: #ecfdf3;
+  border-color: #86efac;
+  color: #15803d;
+}
+
+.cli-status-badge .msi {
+  font-size: 13px;
+}
+
+.cli-override-form {
+  display: flex;
+  gap: 8px;
+  flex: 1;
+  min-width: 260px;
+  margin-left: auto;
+}
+
+.cli-override-form .text-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.image-gen-preview {
+  display: block;
+  margin-top: 8px;
+  max-width: 160px;
+  max-height: 160px;
+  border-radius: 8px;
+  border: var(--cerne-border);
 }
 
 .vision-checkbox {

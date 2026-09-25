@@ -235,6 +235,9 @@ function isWriteTool(task: TaskItem): boolean {
         <div class="step-detail-label">{{ friendlyStepLabel(t.label) }}</div>
         <div v-if="t.detail" class="step-detail-body">{{ t.detail }}</div>
         <div v-else-if="t.status === 'running'" class="step-detail-body step-detail-pending">{{ $t("taskStep.processing") }}</div>
+        <div v-if="t.images?.length" class="step-image-row">
+          <img v-for="(src, i) in t.images" :key="i" :src="src" class="step-image" />
+        </div>
         <div v-if="t.execution_id" class="nested-execution">
           <p v-if="loadingExecutions.has(t.execution_id)" class="hint">{{ $t("taskStep.processing") }}</p>
           <template v-else-if="executionById(t.execution_id)">
@@ -313,6 +316,21 @@ function isWriteTool(task: TaskItem): boolean {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.step-image-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.step-image {
+  max-width: 220px;
+  max-height: 220px;
+  border-radius: 8px;
+  object-fit: cover;
+  border: var(--cerne-border);
 }
 
 .file-chip {

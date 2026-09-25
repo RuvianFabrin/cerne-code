@@ -6,7 +6,7 @@ import Dialog from "primevue/dialog";
 import { useProviderStore } from "../stores/provider";
 import { useSessionStore } from "../stores/session";
 import ProviderPicker from "./ProviderPicker.vue";
-import type { ProviderKind } from "../api";
+import type { CliBackendId, ProviderKind } from "../api";
 
 const { t } = useI18n();
 const props = defineProps<{ visible: boolean }>();
@@ -53,12 +53,13 @@ async function create() {
     projectRoot.value,
     provider.value === "llama_cpp" ? fork.value : null,
     provider.value === "custom" ? customProviderId.value : null,
+    provider.value === "cli" ? (customProviderId.value as CliBackendId) : null,
   );
   providerStore.setActiveSelection(
     provider.value,
     model.value,
     provider.value === "llama_cpp" ? fork.value : undefined,
-    provider.value === "custom" ? customProviderId.value : undefined,
+    provider.value === "custom" || provider.value === "cli" ? customProviderId.value : undefined,
   );
   emit("update:visible", false);
 }

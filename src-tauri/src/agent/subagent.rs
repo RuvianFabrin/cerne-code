@@ -174,6 +174,7 @@ pub async fn run(
                     duration_ms: None,
                     command,
                     execution_id: None,
+                    images: Vec::new(),
                 },
             );
 
@@ -245,6 +246,7 @@ pub async fn run(
                     deletions,
                     duration_ms: Some(elapsed_ms),
                     execution_id: Some(execution_id.to_string()),
+                    images: Vec::new(),
                 },
             );
             super::update_execution_step(

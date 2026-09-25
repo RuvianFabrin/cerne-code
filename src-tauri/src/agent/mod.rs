@@ -1,5 +1,9 @@
 mod analyst;
 mod ast_tools;
+pub mod external_cli;
+pub mod image_gen;
+pub mod long_horizon;
+pub mod task_queue;
 pub mod background;
 pub mod computer;
 #[cfg(target_os = "linux")]
@@ -21,6 +25,7 @@ use crate::models::{
 };
 use crate::{history, providers, sessions, skills, AppState};
 use anyhow::Result;
+use base64::Engine;
 use serde::Serialize;
 use std::path::Path;
 use tauri::{AppHandle, Emitter, Manager};
@@ -28,14 +33,24 @@ use tauri::{AppHandle, Emitter, Manager};
 const MAX_AGENTIC_STEPS: usize = 50;
 
 /// Quantas chamadas seguidas da MESMA ferramenta com os MESMOS argumentos
-/// contam como "o modelo travou num loop" — mesma ideia e valor do
-/// `DOOM_LOOP_THRESHOLD` do opencode (`packages/opencode/src/session/
-/// processor.ts`, ver seção 2.3.2/6.7 do research doc): olha só as ultimas
-/// N chamadas, nao um contador global, entao uma chamada diferente no meio
-/// reseta a deteccao. Cerne para e avisa em vez de pedir permissao pra
-/// continuar como o opencode faz — ainda nao ha infraestrutura de permissao
-/// mid-turn, e "parar e avisar" e mais seguro como default.
-const DOOM_LOOP_THRESHOLD: usize = 3;
+/// contam como "o modelo travou num loop" — olha só as ultimas N chamadas,
+/// nao um contador global, entao uma chamada diferente no meio reseta a
+/// deteccao. Cerne para e avisa em vez de pedir permissao pra continuar como
+/// o opencode faz — ainda nao ha infraestrutura de permissao mid-turn, e
+/// "parar e avisar" e mais seguro como default.
+///
+/// **Subido de 3 pra 20 (2026-09-20, pedido do usuario).** O valor original
+/// (mesma ideia e valor do `DOOM_LOOP_THRESHOLD` do opencode,
+/// `packages/opencode/src/session/processor.ts`, secao 2.3.2/6.7 do research
+/// doc) disparava falso-positivo: um modelo grande fazendo VERIFICACAO real
+/// (reler o mesmo arquivo, rodar o mesmo teste, checar o mesmo status varias
+/// vezes de proposito, nao por estar preso) batia o mesmo padrao "3 chamadas
+/// identicas seguidas" que um loop de verdade tambem bate — os dois sao
+/// indistinguiveis so pelos argumentos brutos. 20 e generoso o bastante pra
+/// nao interromper verificacao legitima, mantendo a rede de seguranca pro
+/// caso realmente travado (que tende a repetir MUITO mais que 20 vezes antes
+/// de o usuario perceber, nao um pouco mais que 3).
+const DOOM_LOOP_THRESHOLD: usize = 20;
 
 /// Ferramentas de LEITURA de status que esperam ser chamadas repetidas
 /// vezes com os MESMOS argumentos enquanto o modelo espera algo terminar
@@ -586,6 +601,11 @@ struct ToolResultEvent {
     duration_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     execution_id: Option<String>,
+    /// Imagens devolvidas pela ferramenta (`computer_use_screenshot`,
+    /// `generate_image`) — vazio no caso comum, `skip_serializing_if` pra
+    /// não inflar todo evento de resultado de ferramenta à toa.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    images: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -778,6 +798,15 @@ pub async fn run_turn(
         sessions::save_messages(&app_data_dir, &session_id, &messages)?;
     }
 
+    // CLI externo (Claude Code/Codex/Gemini/Qwen): caminho totalmente
+    // separado do loop agêntico normal — ver `external_cli.rs`. Sem system
+    // prompt do Cerne, sem `tool_specs` (o CLI tem seu próprio loop de
+    // ferramentas), sem streaming de verdade (a resposta chega inteira
+    // quando o processo termina).
+    if session.provider == ProviderKind::Cli {
+        return run_turn_external_cli(app, state, session_id, user_text, images, display_text, session, messages, app_data_dir).await;
+    }
+
     // Monta o system prompt com as informações atuais (pastas, skills, etc.)
     // — refeito a cada turno, não só na primeira mensagem, pra refletir
     // mudanças como adição de pastas extras durante a sessão.
@@ -834,6 +863,15 @@ pub async fn run_turn(
         if session.fable_method {
             prompt.push_str("\n\n");
             prompt.push_str(FABLE_METHOD_PROMPT);
+        }
+        if session.long_horizon.enabled {
+            prompt.push_str("\n\n");
+            prompt.push_str(&state.config.lock().unwrap().long_horizon.system_prompt);
+            prompt.push_str(long_horizon::dynamic_prompt_block());
+        }
+        if session.task_queue_enabled {
+            prompt.push_str("\n\n");
+            prompt.push_str(task_queue::TASK_QUEUE_PROMPT);
         }
         if let Some(ref persona) = active_persona {
             prompt.push_str("\n\n## Perfil ativo\n");
@@ -903,6 +941,11 @@ pub async fn run_turn(
             messages[0].content = prompt;
         }
     }
+    // Modo Long Horizon: aponta pro indice que a mensagem do usuario, logo
+    // abaixo, vai ocupar -- é onde "este turno" começa pra
+    // `long_horizon::build_model_view` (tudo ANTES disso é turno passado,
+    // só entra no payload do modelo via o briefing resumido, nunca cru).
+    let lh_turn_start = messages.len();
     messages.push(ChatMessage {
         role: "user".to_string(),
         content: user_text.clone(),
@@ -1030,6 +1073,12 @@ pub async fn run_turn(
     if session.parent_session_id.is_none() {
         tool_specs.extend(tools::orchestration_tool_specs());
     }
+    if session.long_horizon.enabled {
+        tool_specs.extend(tools::long_horizon_tool_specs());
+    }
+    if !state.config.lock().unwrap().image_gen.base_url.trim().is_empty() {
+        tool_specs.extend(tools::image_gen_tool_specs());
+    }
     let mut mcp_servers = crate::mcp::load_servers(&app_data_dir).unwrap_or_default();
     if let Some(ref enabled) = session.enabled_mcp_servers {
         mcp_servers.retain(|s| enabled.contains(&s.name));
@@ -1089,7 +1138,24 @@ pub async fn run_turn(
     // sequencia pode crescer o contexto alem do limite antes do PROXIMO
     // turno recompactar — aceitavel porque e raro e o alternativa (checar a
     // cada passo) e o que causava a pausa.
-    if maybe_compact(
+    // Modo Long Horizon: NÃO substitui a compactação mutando `messages` (que
+    // é o histórico completo, imutável, que o usuário vê) — em vez disso
+    // monta uma visão separada (`lh_briefing`/`build_model_view`, calculada
+    // de novo a cada chamada ao provider, mais abaixo no laço) só pro
+    // payload mandado ao modelo. `messages` continua só crescendo, igual
+    // qualquer outra sessão. Achado ao vivo (2026-09-20): a versão anterior
+    // deste bloco chamava `apply_reset` mutando `messages` direto, igual a
+    // compactação normal já faz — escondia trabalho já feito do scroll da
+    // conversa, contrariando o objetivo do modo.
+    let mut lh_briefing: Option<String> = None;
+    if session.long_horizon.enabled {
+        if long_horizon::deve_marcar_reset(&messages, lh_turn_start) {
+            long_horizon::insert_reset_marker(&mut messages);
+        }
+        lh_briefing = Some(long_horizon::build_briefing(&app_data_dir, &session_id)?);
+        sessions::advance_long_horizon_iteration(&app_data_dir, &session_id)?;
+        sessions::save_messages(&app_data_dir, &session_id, &messages)?;
+    } else if maybe_compact(
         &app,
         &session_id,
         &cfg,
@@ -1098,6 +1164,7 @@ pub async fn run_turn(
         &mut messages,
         &tool_specs,
         context_length,
+        false,
     )
     .await?
     {
@@ -1111,14 +1178,51 @@ pub async fn run_turn(
     let mut turn_prompt_tokens: u32 = 0;
     let mut turn_completion_tokens: u32 = 0;
 
+    // Teto de chamadas de ferramenta DENTRO deste turno, pro modo Long
+    // Horizon (tarefa 5.4/D2 do projeto cerne-long-horizon) — mais apertado
+    // que o `MAX_AGENTIC_STEPS` geral do Cerne quando configurado assim,
+    // nunca mais frouxo (o teto geral continua valendo como piso de
+    // segurança). `lh_desfecho`/`lh_nova_resposta` viajam até depois do
+    // laço, onde `sessions::finalize_long_horizon_turn` persiste o
+    // resultado — só têm efeito quando `session.long_horizon.enabled`.
+    let lh_teto_tool = if session.long_horizon.enabled {
+        state
+            .config
+            .lock()
+            .unwrap()
+            .long_horizon
+            .teto_tool_por_passo as usize
+    } else {
+        MAX_AGENTIC_STEPS
+    };
+    let mut lh_desfecho = "sucesso".to_string();
+    let mut lh_nova_resposta: Option<String> = None;
+    // Verdadeiro assim que `update_long_horizon_memoria`/`projeto` é chamado
+    // de verdade neste turno — usado pra detectar o caso achado ao vivo
+    // (2026-09-20): o modelo ESCREVE "vou atualizar o projeto.md" na
+    // resposta final, mas termina o turno sem ter chamado a ferramenta.
+    let mut lh_persistiu_estado = false;
+
     'steps: loop {
-        if tool_steps >= MAX_AGENTIC_STEPS {
+        if tool_steps >= MAX_AGENTIC_STEPS || (session.long_horizon.enabled && tool_steps >= lh_teto_tool) {
+            if session.long_horizon.enabled {
+                lh_desfecho = "teto_de_ferramenta".to_string();
+            }
             break;
         }
+        // Recalculada a cada volta (barato: so slice + clone) -- reflete
+        // as chamadas de ferramenta que ja rolaram NESTE turno, sem precisar
+        // manter uma segunda lista sincronizada a mao. `messages` (o
+        // historico de verdade, imutavel) nunca e alterado por isto.
+        let lh_payload = lh_briefing
+            .as_ref()
+            .map(|b| long_horizon::build_model_view(&messages, lh_turn_start, b));
+        let model_messages: &[ChatMessage] = lh_payload.as_deref().unwrap_or(&messages);
+
         emit_context_usage(
             &app,
             &session_id,
-            &messages,
+            model_messages,
             &tool_specs,
             context_length,
             is_estimated_length,
@@ -1139,7 +1243,7 @@ pub async fn run_turn(
             &cfg,
             api_key.clone(),
             &session.model,
-            &messages,
+            model_messages,
             &tool_specs,
             session.reasoning_effort,
             None,
@@ -1169,6 +1273,9 @@ pub async fn run_turn(
         sessions::save_messages(&app_data_dir, &session_id, &messages)?;
 
         if !has_tool_calls {
+            if session.long_horizon.enabled {
+                lh_nova_resposta = Some(assistant.content.clone());
+            }
             break;
         }
 
@@ -1372,6 +1479,7 @@ pub async fn run_turn(
                 // existir (essa struct e montada antes do despacho saber
                 // qual ferramenta e).
                 execution_id: None,
+                images: Vec::new(),
             });
             sessions::save_tasks(&app_data_dir, &session_id, &tasks)?;
 
@@ -1478,6 +1586,76 @@ pub async fn run_turn(
                         }
                     }),
                     None => Err(anyhow::anyhow!("fact obrigatorio")),
+                }
+            } else if call.function.name == "update_long_horizon_memoria" {
+                match args["conteudo"].as_str() {
+                    Some(conteudo) => sessions::write_long_horizon_memoria(&app_data_dir, &session_id, conteudo)
+                        .map(|_| {
+                            lh_persistiu_estado = true;
+                            tools::ToolOutcome {
+                                observation: "memoria.md atualizado.".to_string(),
+                                pending_edit: None,
+                            }
+                        }),
+                    None => Err(anyhow::anyhow!("conteudo obrigatorio")),
+                }
+            } else if call.function.name == "update_long_horizon_projeto" {
+                match args["conteudo"].as_str() {
+                    Some(conteudo) => sessions::write_long_horizon_projeto(&app_data_dir, &session_id, conteudo)
+                        .map(|_| {
+                            lh_persistiu_estado = true;
+                            tools::ToolOutcome {
+                                observation: "projeto.md atualizado.".to_string(),
+                                pending_edit: None,
+                            }
+                        }),
+                    None => Err(anyhow::anyhow!("conteudo obrigatorio")),
+                }
+            } else if call.function.name == "generate_image" {
+                match args["prompt"].as_str() {
+                    Some(prompt) => {
+                        let n = args["n"].as_u64().unwrap_or(1).clamp(1, 8) as u32;
+                        let img_cfg = state.config.lock().unwrap().image_gen.clone();
+                        let api_key = crate::config::get_image_gen_key();
+                        match image_gen::generate(&img_cfg.base_url, api_key.as_deref(), &img_cfg.model, prompt, n).await {
+                            Ok(images) => {
+                                let mut saved_note = String::new();
+                                if let Some(root) = project_path {
+                                    match image_gen::save_images(root, prompt, &images) {
+                                        Ok(paths) => {
+                                            let list = paths
+                                                .iter()
+                                                .map(|p| p.display().to_string())
+                                                .collect::<Vec<_>>()
+                                                .join(", ");
+                                            saved_note = format!(" Salvo em: {list}.");
+                                        }
+                                        Err(e) => {
+                                            saved_note = format!(" (nao foi possivel salvar em disco: {e})");
+                                        }
+                                    }
+                                }
+                                tool_images = images
+                                    .iter()
+                                    .map(|img| {
+                                        format!(
+                                            "data:image/png;base64,{}",
+                                            base64::engine::general_purpose::STANDARD.encode(&img.bytes)
+                                        )
+                                    })
+                                    .collect();
+                                Ok(tools::ToolOutcome {
+                                    observation: format!(
+                                        "{} imagem(ns) gerada(s).{saved_note}",
+                                        images.len()
+                                    ),
+                                    pending_edit: None,
+                                })
+                            }
+                            Err(e) => Err(anyhow::anyhow!("geracao de imagem falhou: {e}")),
+                        }
+                    }
+                    None => Err(anyhow::anyhow!("prompt obrigatorio")),
                 }
             } else if let Some((execution_id, precomputed)) = precomputed_task_results.remove(&call.id) {
                 // Fase A4: essa chamada de `task` ja rodou em paralelo com
@@ -1674,6 +1852,7 @@ pub async fn run_turn(
                             None,
                             session.llama_fork.clone(),
                             session.custom_provider_id.clone(),
+                            session.external_cli_backend.clone(),
                         ) {
                             Ok(child) => {
                                 let updated_child = sessions::update_parent_session_id(
@@ -2017,6 +2196,7 @@ pub async fn run_turn(
                 // o bloco "OUT" (ver TaskStepGroup.vue).
                 task.detail = Some(truncate(&observation, 6000));
                 task.duration_ms = Some(task_started.elapsed().as_millis() as u64);
+                task.images = tool_images.clone();
                 // Sinal real de conclusao por tool call — sem isso a UI so
                 // descobre que uma tool terminou ao inferir pelo proximo
                 // "thinking" (heuristica que quebrava com >1 tool call no
@@ -2032,6 +2212,7 @@ pub async fn run_turn(
                         deletions: task.deletions,
                         duration_ms: task.duration_ms,
                         execution_id: None,
+                        images: task.images.clone(),
                     },
                 );
             }
@@ -2073,21 +2254,50 @@ pub async fn run_turn(
                         status: "loop_detectado".to_string(),
                     },
                 );
+                if session.long_horizon.enabled {
+                    lh_desfecho = "travou".to_string();
+                }
                 break 'steps;
             }
         }
         sessions::save_messages(&app_data_dir, &session_id, &messages)?;
     }
 
-    emit_context_usage(
-        &app,
-        &session_id,
-        &messages,
-        &tool_specs,
-        context_length,
-        is_estimated_length,
-        &session,
-    );
+    if session.long_horizon.enabled {
+        let teto_falha_repetida = state.config.lock().unwrap().long_horizon.teto_falha_repetida;
+        // "Trabalhou sem persistir": só sinaliza quando o turno terminou
+        // limpo (sucesso) E chamou alguma ferramenta de verdade (tool_steps
+        // > 0 — bate-papo puro sem trabalho nao precisa persistir nada) E
+        // nunca chamou update_long_horizon_memoria/projeto nesse meio tempo.
+        let trabalhou_sem_persistir =
+            lh_desfecho == "sucesso" && tool_steps > 0 && !lh_persistiu_estado;
+        if let Ok(updated) = sessions::finalize_long_horizon_turn(
+            &app_data_dir,
+            &session_id,
+            &lh_desfecho,
+            lh_nova_resposta.as_deref(),
+            teto_falha_repetida,
+            trabalhou_sem_persistir,
+        ) {
+            session = updated;
+        }
+    }
+
+    {
+        let lh_payload = lh_briefing
+            .as_ref()
+            .map(|b| long_horizon::build_model_view(&messages, lh_turn_start, b));
+        let model_messages: &[ChatMessage] = lh_payload.as_deref().unwrap_or(&messages);
+        emit_context_usage(
+            &app,
+            &session_id,
+            model_messages,
+            &tool_specs,
+            context_length,
+            is_estimated_length,
+            &session,
+        );
+    }
 
     let _ = app.emit(
         "agent:turn_stats",
@@ -2100,6 +2310,131 @@ pub async fn run_turn(
         },
     );
 
+    let _ = app.emit(
+        "agent:done",
+        DoneEvent {
+            session_id: session_id.clone(),
+        },
+    );
+    Ok(())
+}
+
+/// Turno inteiro quando `session.provider == ProviderKind::Cli`: dispara UMA
+/// chamada não-interativa pro CLI externo (`external_cli::dispatch`) e
+/// devolve o texto final como a resposta do assistente — sem loop de
+/// ferramentas, sem streaming token a token. `full_access` espelha
+/// `session.execution_mode` (pedido do usuário, 2026-09-21): `Yolo` libera o
+/// CLI pra editar/rodar sozinho, qualquer outro modo roda em plano/leitura.
+///
+/// Long Horizon (quando ligado): o CLI externo não tem acesso às ferramentas
+/// `update_long_horizon_memoria`/`projeto` do Cerne (não vê o system prompt
+/// nem o catálogo de ferramentas do Cerne), então não consegue persistir
+/// estado sozinho — o Cerne grava um resumo BASEADO EM REGRA (pedido +
+/// resposta, sem LLM extra) em `projeto.md` depois de cada turno, pra manter
+/// a "fonte de verdade compactada" viva mesmo nesse modo.
+async fn run_turn_external_cli(
+    app: AppHandle,
+    state: &AppState,
+    session_id: String,
+    user_text: String,
+    images: Vec<String>,
+    display_text: Option<String>,
+    mut session: Session,
+    mut messages: Vec<ChatMessage>,
+    app_data_dir: std::path::PathBuf,
+) -> Result<()> {
+    let turn_start = std::time::Instant::now();
+    let turn = messages.iter().filter(|m| m.role == "user").count() as u32 + 1;
+
+    messages.push(ChatMessage {
+        role: "user".to_string(),
+        content: user_text.clone(),
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+        images,
+        display_content: display_text,
+    });
+    sessions::save_messages(&app_data_dir, &session_id, &messages)?;
+
+    let backend = session
+        .external_cli_backend
+        .as_deref()
+        .and_then(external_cli::CliBackendId::from_id)
+        .ok_or_else(|| anyhow::anyhow!("sessao sem CLI externo selecionado (external_cli_backend vazio)"))?;
+    let full_access = session.execution_mode == ExecutionMode::Yolo;
+    let model = if session.model.trim().is_empty() { None } else { Some(session.model.as_str()) };
+    let cli_cfg = state.config.lock().unwrap().external_cli.clone();
+
+    let _ = app.emit(
+        "agent:status",
+        StatusEvent {
+            session_id: session_id.clone(),
+            status: "thinking".to_string(),
+        },
+    );
+
+    let dispatch_result = external_cli::dispatch(backend, &user_text, model, full_access, &cli_cfg).await;
+
+    // Erro propaga via `?` — o caller (`lib.rs::send_message`) já emite
+    // `agent:error` pra qualquer `Err` de `run_turn`, igual ao caminho
+    // normal (não duplica aqui).
+    let content = dispatch_result?;
+
+    messages.push(ChatMessage {
+        role: "assistant".to_string(),
+        content: content.clone(),
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+        images: Vec::new(),
+        display_content: None,
+    });
+    sessions::save_messages(&app_data_dir, &session_id, &messages)?;
+
+    if session.long_horizon.enabled {
+        let pedido = truncate(&user_text, 600);
+        let resposta = truncate(&content, 1200);
+        let resumo = format!(
+            "## Turno {turn} — CLI externo ({label}, modo {modo})\n\n\
+             **Pedido:** {pedido}\n\n\
+             **Resposta do CLI:** {resposta}\n\n\
+             _Resumo gerado automaticamente pelo Cerne (sem LLM) — o CLI externo não \
+             tem acesso às ferramentas de memória do Long Horizon, então não persiste \
+             estado sozinho. Edite esta seção manualmente na engrenagem se precisar \
+             corrigir algo._",
+            label = backend.label(),
+            modo = if full_access { "acesso completo" } else { "somente leitura" },
+        );
+        let anterior = sessions::read_long_horizon_projeto(&app_data_dir, &session_id).unwrap_or_default();
+        let novo_projeto = if anterior.trim().is_empty() {
+            resumo
+        } else {
+            format!("{}\n\n---\n\n{}", anterior.trim(), resumo)
+        };
+        let _ = sessions::write_long_horizon_projeto(&app_data_dir, &session_id, &novo_projeto);
+        if let Ok(updated) = sessions::finalize_long_horizon_turn(
+            &app_data_dir,
+            &session_id,
+            "sucesso",
+            Some(&content),
+            state.config.lock().unwrap().long_horizon.teto_falha_repetida,
+            false,
+        ) {
+            session = updated;
+        }
+    }
+
+    let _ = app.emit(
+        "agent:turn_stats",
+        TurnStatsEvent {
+            session_id: session_id.clone(),
+            turn,
+            elapsed_ms: turn_start.elapsed().as_millis() as u64,
+            prompt_tokens: 0,
+            completion_tokens: 0,
+        },
+    );
     let _ = app.emit(
         "agent:done",
         DoneEvent {
@@ -2148,6 +2483,13 @@ async fn maybe_compact(
     messages: &mut Vec<ChatMessage>,
     tool_specs: &[ToolSpec],
     context_length: u32,
+    // `true` pula a checagem de limiar (chamado do botão "compactar agora",
+    // Settings/ContextGauge) — o usuário decidiu compactar, não importa se o
+    // uso ainda está longe do teto. A checagem de histórico mínimo abaixo
+    // continua valendo mesmo forçado: compactar 1-2 mensagens não tem
+    // sentido e o slice `messages.len() - KEEP_LAST_MESSAGES` faria
+    // underflow com menos mensagens do que isso.
+    force: bool,
 ) -> Result<bool> {
     let has_system = messages
         .first()
@@ -2159,16 +2501,19 @@ async fn maybe_compact(
         return Ok(false); // not enough history to bother
     }
 
-    // Estimativa com tokenizador de verdade E incluindo as tool specs — elas
-    // ocupam janela igual ao resto do prompt (vão no mesmo request), então
-    // ignorá-las aqui fazia a compactação disparar tarde demais.
-    let estimate = context::estimate_messages_tokens(messages, tool_specs, model);
-    let reserve = ((context_length as f32) * COMPACT_RESERVE_RATIO)
-        .clamp(COMPACT_RESERVE_MIN_TOKENS as f32, COMPACT_RESERVE_MAX_TOKENS as f32)
-        as u32;
-    let remaining = context_length.saturating_sub(estimate);
-    if remaining > reserve {
-        return Ok(false);
+    if !force {
+        // Estimativa com tokenizador de verdade E incluindo as tool specs —
+        // elas ocupam janela igual ao resto do prompt (vão no mesmo
+        // request), então ignorá-las aqui fazia a compactação disparar
+        // tarde demais.
+        let estimate = context::estimate_messages_tokens(messages, tool_specs, model);
+        let reserve = ((context_length as f32) * COMPACT_RESERVE_RATIO)
+            .clamp(COMPACT_RESERVE_MIN_TOKENS as f32, COMPACT_RESERVE_MAX_TOKENS as f32)
+            as u32;
+        let remaining = context_length.saturating_sub(estimate);
+        if remaining > reserve {
+            return Ok(false);
+        }
     }
 
     let compactable = &messages[start_idx..messages.len() - KEEP_LAST_MESSAGES];
@@ -2290,6 +2635,49 @@ pub(crate) fn provider_config_for(
         .map_err(|e| anyhow::anyhow!(e))
 }
 
+/// Chamado pelo botão "compactar agora" (`ContextGauge.vue`) — mesmo
+/// `maybe_compact` do meio do turno normal, só que com `force: true` (pula
+/// a checagem de limiar) e fora do loop agêntico, então monta `tool_specs`
+/// mínimo só pra passar (não influencia a decisão quando forçado, só o
+/// texto do resumo em si nunca usa `tool_specs`). Não funciona pra
+/// `ProviderKind::Cli` (não é HTTP, não tem "contexto" pra compactar aqui)
+/// nem quando não há histórico suficiente — devolve `false` nesses casos,
+/// não erro, pra UI mostrar "nada pra compactar" em vez de uma mensagem de
+/// falha.
+pub async fn compact_now(app: AppHandle, state: &AppState, session_id: String) -> Result<bool> {
+    let app_data_dir = state.app_data_dir.clone();
+    let session = sessions::get_session(&app_data_dir, &session_id)?;
+    if session.provider == ProviderKind::Cli {
+        return Ok(false);
+    }
+    let mut messages = sessions::load_messages(&app_data_dir, &session_id)?;
+    let (cfg, api_key) = provider_config_for(
+        &session.provider,
+        state,
+        session.custom_provider_id.as_deref(),
+        session.llama_fork.as_deref(),
+    )?;
+    let context_length = session
+        .context_length
+        .unwrap_or(crate::models::DEFAULT_CONTEXT_LENGTH);
+    let compacted = maybe_compact(
+        &app,
+        &session_id,
+        &cfg,
+        api_key,
+        &session.model,
+        &mut messages,
+        &[],
+        context_length,
+        true,
+    )
+    .await?;
+    if compacted {
+        sessions::save_messages(&app_data_dir, &session_id, &messages)?;
+    }
+    Ok(compacted)
+}
+
 fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() > max {
         format!("{}...", s.chars().take(max).collect::<String>())
@@ -2340,6 +2728,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         assert!(skill_allowed_for_persona(&dir, &session, "qualquer-skill"));
@@ -2354,6 +2743,7 @@ mod tests {
             "t".to_string(),
             crate::models::ProviderKind::Openrouter,
             "m".to_string(),
+            None,
             None,
             None,
             None,
@@ -2388,6 +2778,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         let persona = crate::personas::create_persona(
@@ -2405,32 +2796,39 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    #[test]
-    fn no_loop_below_threshold() {
-        let calls = vec![
-            call("grep", "{\"pattern\":\"foo\"}"),
-            call("grep", "{\"pattern\":\"foo\"}"),
-        ];
-        assert!(!is_doom_loop(&calls), "so 2 repeticoes, threshold e 3");
+    /// `n` chamadas de `tool`/`args` idênticas seguidas — helper pra não
+    /// cravar o número de chamadas nos testes abaixo (o threshold já mudou
+    /// de valor uma vez, 2026-09-20, e os testes tem que continuar corretos
+    /// se mudar de novo).
+    fn repeated(tool: &str, args: &str, n: usize) -> Vec<(String, String)> {
+        (0..n).map(|_| call(tool, args)).collect()
     }
 
     #[test]
-    fn detects_same_tool_same_args_three_times_in_a_row() {
-        let calls = vec![
-            call("edit_file", "{\"path\":\"a.rs\",\"old_str\":\"x\"}"),
-            call("edit_file", "{\"path\":\"a.rs\",\"old_str\":\"x\"}"),
-            call("edit_file", "{\"path\":\"a.rs\",\"old_str\":\"x\"}"),
-        ];
+    fn no_loop_below_threshold() {
+        let calls = repeated("grep", "{\"pattern\":\"foo\"}", DOOM_LOOP_THRESHOLD - 1);
+        assert!(
+            !is_doom_loop(&calls),
+            "so {} repeticoes, threshold e {DOOM_LOOP_THRESHOLD}",
+            DOOM_LOOP_THRESHOLD - 1
+        );
+    }
+
+    #[test]
+    fn detects_same_tool_same_args_repeated_up_to_the_threshold() {
+        let calls = repeated(
+            "edit_file",
+            "{\"path\":\"a.rs\",\"old_str\":\"x\"}",
+            DOOM_LOOP_THRESHOLD,
+        );
         assert!(is_doom_loop(&calls));
     }
 
     #[test]
     fn does_not_flag_same_tool_with_different_args() {
-        let calls = vec![
-            call("read_file", "{\"path\":\"a.rs\"}"),
-            call("read_file", "{\"path\":\"b.rs\"}"),
-            call("read_file", "{\"path\":\"c.rs\"}"),
-        ];
+        let calls: Vec<_> = (0..DOOM_LOOP_THRESHOLD)
+            .map(|i| call("read_file", &format!("{{\"path\":\"{i}.rs\"}}")))
+            .collect();
         assert!(
             !is_doom_loop(&calls),
             "argumentos diferentes nao sao um loop, sao progresso real"
@@ -2439,14 +2837,11 @@ mod tests {
 
     #[test]
     fn a_different_call_in_between_resets_the_window() {
-        // repete 2x, faz outra coisa, repete so 1x de novo - nao bate o
-        // threshold de 3 seguidas iguais no final.
-        let calls = vec![
-            call("grep", "{\"pattern\":\"foo\"}"),
-            call("grep", "{\"pattern\":\"foo\"}"),
-            call("read_file", "{\"path\":\"a.rs\"}"),
-            call("grep", "{\"pattern\":\"foo\"}"),
-        ];
+        // repete quase ate o threshold, faz outra coisa, repete so 1x de
+        // novo - nao bate o threshold de chamadas seguidas iguais no final.
+        let mut calls = repeated("grep", "{\"pattern\":\"foo\"}", DOOM_LOOP_THRESHOLD - 1);
+        calls.push(call("read_file", "{\"path\":\"a.rs\"}"));
+        calls.push(call("grep", "{\"pattern\":\"foo\"}"));
         assert!(
             !is_doom_loop(&calls),
             "so olha a JANELA final, uma chamada diferente no meio deveria resetar"
@@ -2455,15 +2850,12 @@ mod tests {
 
     #[test]
     fn only_checks_the_trailing_window_not_the_whole_history() {
-        // As 3 primeiras sao iguais (bateria loop se estivessem no final),
-        // mas a ULTIMA e diferente - a janela final (as ultimas 3) tem uma
-        // diferente, entao nao deveria ser loop.
-        let calls = vec![
-            call("grep", "{\"pattern\":\"foo\"}"),
-            call("grep", "{\"pattern\":\"foo\"}"),
-            call("grep", "{\"pattern\":\"foo\"}"),
-            call("grep", "{\"pattern\":\"bar\"}"),
-        ];
+        // As primeiras (threshold) chamadas sao iguais (bateria loop se
+        // estivessem no final), mas a ULTIMA e diferente - a janela final
+        // (as ultimas `threshold`) tem uma diferente, entao nao deveria ser
+        // loop.
+        let mut calls = repeated("grep", "{\"pattern\":\"foo\"}", DOOM_LOOP_THRESHOLD);
+        calls.push(call("grep", "{\"pattern\":\"bar\"}"));
         assert!(!is_doom_loop(&calls));
     }
 }

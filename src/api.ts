@@ -1,8 +1,32 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-export type ProviderKind = "openrouter" | "llama_cpp" | "ollama" | "lm_studio" | "custom";
+export type ProviderKind = "openrouter" | "llama_cpp" | "ollama" | "lm_studio" | "custom" | "cli";
 export type ExecutionMode = "manual" | "auto" | "yolo";
+
+/** Um dos 4 CLIs externos suportados (ver `agent::external_cli::CliBackendId`). */
+export type CliBackendId = "claude" | "codex" | "gemini" | "qwen";
+
+export interface CliBackendOverride {
+  bin_path: string | null;
+  extra_args: string[];
+}
+
+export interface ExternalCliConfig {
+  claude: CliBackendOverride;
+  codex: CliBackendOverride;
+  gemini: CliBackendOverride;
+  qwen: CliBackendOverride;
+}
+
+/** Status "está instalado?" de um CLI externo — devolvido por `check_external_cli_readiness`. */
+export interface CliReadiness {
+  backend: CliBackendId;
+  label: string;
+  installed: boolean;
+  bin: string;
+  models: string[];
+}
 
 export interface AppConfig {
   active_provider: ProviderKind;
@@ -28,6 +52,21 @@ export interface AppConfig {
   voicebox_base_url: string;
   voicebox_tts_profile: string;
   voicebox_stt_language: string;
+  long_horizon: LongHorizonConfig;
+  external_cli: ExternalCliConfig;
+  image_gen: ImageGenConfig;
+}
+
+export interface ImageGenConfig {
+  base_url: string;
+  model: string;
+}
+
+export interface LongHorizonConfig {
+  system_prompt: string;
+  max_iteracoes: number;
+  teto_tool_por_passo: number;
+  teto_falha_repetida: number;
 }
 
 export type VoiceBackend = "openai_compatible" | "voicebox";
@@ -81,6 +120,19 @@ export interface ChatMessage {
   display_content?: string;
 }
 
+export interface LongHorizonState {
+  enabled: boolean;
+  iteracao_atual: number;
+  ultimo_desfecho: string | null;
+}
+
+// Carga lenta do histórico (2026-09-20) — ver sessions::load_messages_page.
+export interface MessagesPage {
+  messages: ChatMessage[];
+  has_more: boolean;
+  next_before: number;
+}
+
 export interface Session {
   id: string;
   title: string;
@@ -91,6 +143,7 @@ export interface Session {
   context_length: number | null;
   llama_fork: string | null;
   custom_provider_id: string | null;
+  external_cli_backend: CliBackendId | null;
   extra_read_paths: Array<{ path: string; mode: "read" | "read_write" }>;
   execution_mode: ExecutionMode;
   reasoning_effort: "off" | "on" | "low" | "medium" | "high" | null;
@@ -99,6 +152,8 @@ export interface Session {
   persona_id: string | null;
   folder_id: string | null;
   parent_session_id: string | null;
+  long_horizon: LongHorizonState;
+  task_queue_enabled: boolean;
 }
 
 export interface TaskItem {
@@ -114,6 +169,7 @@ export interface TaskItem {
   duration_ms?: number | null;
   command?: string | null;
   execution_id?: string | null;
+  images?: string[];
 }
 
 export interface TurnStats {
@@ -205,6 +261,15 @@ export interface LlamaForkConfig {
   label: string;
   server_exe: string;
   models_ini: string;
+  port: number;
+}
+
+export interface ImageGenPreset {
+  id: string;
+  label: string;
+  working_dir: string;
+  model_pipeline: string;
+  model_path: string;
   port: number;
 }
 
@@ -300,10 +365,17 @@ export interface SearchConfigView {
 export const api = {
   getConfig: () => invoke<AppConfig>("get_config"),
   setConfig: (new_config: AppConfig) => invoke<void>("set_config", { newConfig: new_config }),
+  getDefaultLongHorizonConfig: () =>
+    invoke<LongHorizonConfig>("get_default_long_horizon_config"),
   setOpenrouterKey: (key: string) => invoke<void>("set_openrouter_key", { key }),
   hasOpenrouterKey: () => invoke<boolean>("has_openrouter_key"),
   openrouterKeyPreview: () => invoke<string | null>("openrouter_key_preview"),
   clearOpenrouterKey: () => invoke<void>("clear_openrouter_key"),
+  setImageGenKey: (key: string) => invoke<void>("set_image_gen_key", { key }),
+  hasImageGenKey: () => invoke<boolean>("has_image_gen_key"),
+  clearImageGenKey: () => invoke<void>("clear_image_gen_key"),
+  testImageGenConnection: (baseUrl: string, apiKey: string | undefined, model: string) =>
+    invoke<string>("test_image_gen_connection", { baseUrl, apiKey, model }),
   getDisclaimerAccepted: () => invoke<boolean>("get_disclaimer_accepted"),
   setDisclaimerAccepted: (accepted: boolean) => invoke<void>("set_disclaimer_accepted", { accepted }),
   listProviderModels: (kind: ProviderKind, customProviderId?: string | null) =>
@@ -316,6 +388,12 @@ export const api = {
     invoke<void>("set_model_context_override", { key, contextLength }),
   resolveContextLength: (kind: ProviderKind, model: string, forkId: string | null, customProviderId?: string | null) =>
     invoke<number | null>("resolve_context_length", { kind, model, forkId, customProviderId }),
+  listImageGenPresets: () => invoke<ImageGenPreset[]>("list_image_gen_presets"),
+  addImageGenPreset: (preset: ImageGenPreset) => invoke<ImageGenPreset[]>("add_image_gen_preset", { preset }),
+  removeImageGenPreset: (id: string) => invoke<ImageGenPreset[]>("remove_image_gen_preset", { id }),
+  startImageGenPreset: (presetId: string) => invoke<void>("start_image_gen_preset", { presetId }),
+  stopImageGenPreset: (presetId: string) => invoke<void>("stop_image_gen_preset", { presetId }),
+  imageGenPresetHealth: (presetId: string) => invoke<boolean>("image_gen_preset_health", { presetId }),
   listLlamaForks: () => invoke<LlamaForkConfig[]>("list_llama_forks"),
   addLlamaFork: (fork: LlamaForkConfig) => invoke<LlamaForkConfig[]>("add_llama_fork", { fork }),
   removeLlamaFork: (id: string) => invoke<LlamaForkConfig[]>("remove_llama_fork", { id }),
@@ -340,6 +418,7 @@ export const api = {
     project_root: string | null,
     forkId: string | null,
     customProviderId?: string | null,
+    externalCliBackend?: CliBackendId | null,
   ) =>
     invoke<Session>("create_session", {
       title,
@@ -348,6 +427,7 @@ export const api = {
       projectRoot: project_root,
       forkId,
       customProviderId,
+      externalCliBackend,
     }),
   updateSessionProviderModel: (
     id: string,
@@ -355,7 +435,17 @@ export const api = {
     model: string,
     forkId: string | null,
     customProviderId?: string | null,
-  ) => invoke<Session>("update_session_provider_model", { id, provider, model, forkId, customProviderId }),
+    externalCliBackend?: CliBackendId | null,
+  ) =>
+    invoke<Session>("update_session_provider_model", {
+      id,
+      provider,
+      model,
+      forkId,
+      customProviderId,
+      externalCliBackend,
+    }),
+  checkExternalCliReadiness: () => invoke<CliReadiness[]>("check_external_cli_readiness"),
   updateSessionTitle: (id: string, title: string) => invoke<Session>("update_session_title", { id, title }),
   updateSessionExecutionMode: (id: string, executionMode: ExecutionMode) =>
     invoke<Session>("update_session_execution_mode", { id, executionMode }),
@@ -371,6 +461,24 @@ export const api = {
   ) => invoke<Session>("update_session_reasoning_effort", { id, effort }),
   updateSessionFableMethod: (id: string, enabled: boolean) =>
     invoke<Session>("update_session_fable_method", { id, enabled }),
+  updateSessionLongHorizonEnabled: (id: string, enabled: boolean) =>
+    invoke<Session>("update_session_long_horizon_enabled", { id, enabled }),
+  readSessionLongHorizonMemoria: (id: string) =>
+    invoke<string>("read_session_long_horizon_memoria", { id }),
+  writeSessionLongHorizonMemoria: (id: string, conteudo: string) =>
+    invoke<void>("write_session_long_horizon_memoria", { id, conteudo }),
+  readSessionLongHorizonProjeto: (id: string) =>
+    invoke<string>("read_session_long_horizon_projeto", { id }),
+  writeSessionLongHorizonProjeto: (id: string, conteudo: string) =>
+    invoke<void>("write_session_long_horizon_projeto", { id, conteudo }),
+  updateSessionTaskQueueEnabled: (id: string, enabled: boolean) =>
+    invoke<Session>("update_session_task_queue_enabled", { id, enabled }),
+  readSessionTaskQueue: (id: string) => invoke<string>("read_session_task_queue", { id }),
+  writeSessionTaskQueue: (id: string, jsonText: string) =>
+    invoke<void>("write_session_task_queue", { id, jsonText }),
+  isTaskQueueRunning: (id: string) => invoke<boolean>("is_task_queue_running", { id }),
+  startTaskQueue: (sessionId: string) => invoke<void>("start_task_queue", { sessionId }),
+  stopTaskQueue: (sessionId: string) => invoke<void>("stop_task_queue", { sessionId }),
   updateSessionMcpServers: (id: string, enabledNames: string[] | null) =>
     invoke<Session>("update_session_mcp_servers", { id, enabledNames }),
   updateSessionPersona: (id: string, personaId: string | null) =>
@@ -421,8 +529,13 @@ export const api = {
   optimizeImageDataUrl: (dataUrl: string) => invoke<string>("optimize_image_data_url", { dataUrl }),
   getSession: (id: string) => invoke<Session>("get_session", { id }),
   getSessionMessages: (id: string) => invoke<ChatMessage[]>("get_session_messages", { id }),
+  getSessionMessagesPage: (id: string, before: number | undefined, limit: number) =>
+    invoke<MessagesPage>("get_session_messages_page", { id, before, limit }),
+  getSessionMessagesSince: (id: string, since: number) =>
+    invoke<ChatMessage[]>("get_session_messages_since", { id, since }),
   getSessionTasks: (id: string) => invoke<TaskItem[]>("get_session_tasks", { id }),
   getSessionContextUsage: (id: string) => invoke<ContextUsage>("get_session_context_usage", { id }),
+  compactSessionNow: (sessionId: string) => invoke<boolean>("compact_session_now", { sessionId }),
   listAgentExecutions: () => invoke<AgentExecution[]>("list_agent_executions"),
   listBackgroundJobs: () => invoke<BackgroundJobInfo[]>("list_background_jobs"),
   stopBackgroundJob: (id: string) => invoke<string>("stop_background_job", { id }),
@@ -518,6 +631,17 @@ export function onAgentStatus(cb: (sessionId: string, status: string) => void): 
   return listen<{ session_id: string; status: string }>("agent:status", (e) => cb(e.payload.session_id, e.payload.status));
 }
 
+export interface TaskQueueStatusEvent {
+  session_id: string;
+  status: "processing" | "confirmed" | "stuck" | "finished" | "error";
+  item_id: string | null;
+  message: string | null;
+}
+
+export function onTaskQueueStatus(cb: (event: TaskQueueStatusEvent) => void): Promise<UnlistenFn> {
+  return listen<TaskQueueStatusEvent>("agent:task_queue_status", (e) => cb(e.payload));
+}
+
 // Fase 3: progresso do pipeline determinístico Dev→QA→Analista (run_pipeline).
 export interface PipelineStatus {
   session_id: string;
@@ -555,6 +679,7 @@ export interface ToolResultPayload {
   deletions: number;
   duration_ms: number | null;
   execution_id?: string | null;
+  images?: string[];
 }
 
 export interface AgentExecution {
