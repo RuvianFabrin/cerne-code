@@ -17,6 +17,17 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[features]
+default = ["computer_use"]
+# Captura de tela / automacao de UI (screenshot, click, type, AX-tree). No
+# Linux essas dependencias (xcap/ashpd) puxam PipeWire, e a versao atual da
+# crate exige PipeWire mais novo do que o Ubuntu 22.04 tem - por isso a
+# build "compat" do Linux compila com `--no-default-features` (ver
+# .github/workflows/release-build.yml e release.yml, job "linux (compat)")
+# pra rodar em distros mais antigas, trocando esses recursos por uma
+# mensagem de erro clara (ver `agent/computer.rs`) em vez de o build falhar.
+computer_use = ["dep:xcap", "dep:enigo", "dep:ashpd", "dep:atspi", "dep:zbus"]
+
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
@@ -59,8 +70,8 @@ calamine = "0.36.0"
 pdf-extract = "0.12.0"
 docx-rust = "0.1.11"
 base64 = "0.22.1"
-enigo = "0.6"
-xcap = "0.9"
+enigo = { version = "0.6", optional = true }
+xcap = { version = "0.9", optional = true }
 image = "0.25"
 tokio-tungstenite = { version = "0.24", features = ["connect"] }
 rust_xlsxwriter = "0.84"
@@ -108,13 +119,13 @@ uiautomation = "0.25"
 # xdg-desktop RemoteDesktop (consentimento explicito via dialogo nativo do
 # compositor) combinado com Screencast so pra obter o node id do PipeWire
 # que notify_pointer_motion_absolute exige como referencia de coordenadas.
-ashpd = { version = "0.13", features = ["remote_desktop", "screencast"] }
+ashpd = { version = "0.13", features = ["remote_desktop", "screencast"], optional = true }
 # AX-tree sem visao no Linux (Tarefa 3.3): AT-SPI2 e o equivalente ao UI
 # Automation do Windows pra apps GTK/Qt. zbus e dependencia direta (nao so
 # transitiva via atspi) porque resolvemos o PID de cada app via
 # org.freedesktop.DBus.GetConnectionUnixProcessID manualmente.
-atspi = "0.30"
-zbus = "5"
+atspi = { version = "0.30", optional = true }
+zbus = { version = "5", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # TCC (Accessibility/Screen Recording) pro computer_use no macOS (Tarefa

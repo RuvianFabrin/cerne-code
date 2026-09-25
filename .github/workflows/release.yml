@@ -82,12 +82,13 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
-  build-linux:
-    name: build (linux, container ubuntu:22.04)
+  # Duas variantes Linux (mesmo motivo do release-build.yml: PipeWire do
+  # Ubuntu 22.04 e velho demais pro crate que o computer_use usa) - os
+  # nomes de arquivo dos instaladores levam um sufixo "-compat"/"-full" pra
+  # nao colidir quando os dois forem anexados na MESMA release do GitHub.
+  build-linux-compat:
+    name: build (linux compat, sem computer_use)
     runs-on: ubuntu-latest
-    # Mesmo motivo do release-build.yml: container fixo em vez do runner
-    # rotulado ubuntu-22.04 (em depreciacao), pra travar o glibc minimo em
-    # 2.35 e maximizar quantas distros conseguem rodar o resultado.
     container:
       image: ubuntu:22.04
 
@@ -110,14 +111,7 @@ jobs:
             libssl-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            libpipewire-0.3-dev \
-            libdbus-1-dev \
-            libclang-dev \
-            libgbm-dev \
-            libwayland-dev \
-            libxkbcommon-dev \
-            libegl1-mesa-dev \
-            libdrm-dev
+            libdbus-1-dev
 
       - name: Instalar Rust
         uses: dtolnay/rust-toolchain@stable
@@ -126,7 +120,76 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          key: release-linux-container-22.04
+          key: release-linux-compat-22.04
+
+      - name: Instalar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalar dependencias do frontend
+        run: npm ci
+
+      - name: Build do Tauri (com empacotamento, sem computer_use)
+        run: npm run tauri build -- -- --no-default-features
+
+      # Renomeia pra nao colidir com os arquivos da variante "full" na hora
+      # de anexar os dois na mesma release.
+      - name: Renomear instaladores (sufixo -compat)
+        run: |
+          cd src-tauri/target/release/bundle
+          for f in deb/*.deb rpm/*.rpm appimage/*.AppImage; do
+            [ -f "$f" ] || continue
+            dir=$(dirname "$f"); base=$(basename "$f")
+            ext="${base##*.}"; name="${base%.*}"
+            mv "$f" "$dir/${name}-compat.${ext}"
+          done
+
+      - name: Upload dos instaladores
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-linux-compat
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/rpm/*.rpm
+            src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: ignore
+          retention-days: 3
+
+  build-linux-full:
+    name: build (linux full, com computer_use)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar dependencias de sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libpipewire-0.3-dev \
+            libdbus-1-dev \
+            libclang-dev \
+            libgbm-dev
+
+      - name: Instalar Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache do cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: release-linux-full-ubuntu-latest
 
       - name: Instalar Node
         uses: actions/setup-node@v4
@@ -140,10 +203,20 @@ jobs:
       - name: Build do Tauri (com empacotamento)
         run: npm run tauri build
 
+      - name: Renomear instaladores (sufixo -full)
+        run: |
+          cd src-tauri/target/release/bundle
+          for f in deb/*.deb rpm/*.rpm appimage/*.AppImage; do
+            [ -f "$f" ] || continue
+            dir=$(dirname "$f"); base=$(basename "$f")
+            ext="${base##*.}"; name="${base%.*}"
+            mv "$f" "$dir/${name}-full.${ext}"
+          done
+
       - name: Upload dos instaladores
         uses: actions/upload-artifact@v4
         with:
-          name: installer-linux
+          name: installer-linux-full
           path: |
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/rpm/*.rpm
@@ -153,7 +226,7 @@ jobs:
 
   publish:
     name: Publicar release no GitHub
-    needs: [build, build-linux]
+    needs: [build, build-linux-compat, build-linux-full]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

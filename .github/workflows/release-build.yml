@@ -93,8 +93,18 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-  build-linux:
-    name: linux (container ubuntu:22.04)
+  # Duas variantes Linux, mesmo motivo de sempre: o Tauri v2 (webkit2gtk-4.1)
+  # exige PipeWire mais novo do que o Ubuntu 22.04 tem no repositorio pra
+  # compilar computer_use (captura de tela/automacao de UI, via xcap/ashpd -
+  # ver `agent/computer.rs`, feature Cargo `computer_use`). Nao da pra ter
+  # as duas coisas (glibc velho + PipeWire novo) na MESMA build, entao:
+  #   - "compat": compila com `--no-default-features` (sem computer_use) no
+  #     Ubuntu 22.04, pra rodar no maximo de distros possivel (glibc 2.35+).
+  #   - "full": compila normal (com computer_use) no Ubuntu 24.04 hospedado,
+  #     que ja tem PipeWire novo o bastante - exige distro mais nova, mas
+  #     tem o recurso completo.
+  build-linux-compat:
+    name: linux (compat, sem computer_use)
     runs-on: ubuntu-latest
     # Roda dentro de um CONTAINER ubuntu:22.04 (nao no runner rotulado
     # "ubuntu-22.04", que o GitHub esta descontinuando - deprecation iniciada
@@ -122,6 +132,10 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      # Sem libpipewire-dev/libclang-dev/libgbm-dev/etc de proposito aqui:
+      # `--no-default-features` desliga a feature `computer_use`, entao
+      # xcap/enigo/ashpd/atspi nem entram na build - essas libs so seriam
+      # necessarias pra elas.
       - name: Instalar dependencias de sistema
         run: |
           apt-get install -y \
@@ -133,14 +147,7 @@ jobs:
             libssl-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
-            libpipewire-0.3-dev \
-            libdbus-1-dev \
-            libclang-dev \
-            libgbm-dev \
-            libwayland-dev \
-            libxkbcommon-dev \
-            libegl1-mesa-dev \
-            libdrm-dev
+            libdbus-1-dev
 
       - name: Instalar Rust
         uses: dtolnay/rust-toolchain@stable
@@ -149,7 +156,69 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          key: linux-container-22.04
+          key: linux-compat-22.04
+
+      - name: Instalar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalar dependencias do frontend
+        run: npm ci
+
+      - name: Checar tipos TypeScript (vue-tsc)
+        run: npx vue-tsc --noEmit
+
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --lib --no-default-features
+
+      - name: Build do Tauri (com empacotamento, sem computer_use)
+        run: npm run tauri build -- -- --no-default-features
+
+      - name: Upload dos instaladores gerados
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cerne-code-linux-compat-${{ github.sha }}
+          path: src-tauri/target/release/bundle/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  build-linux-full:
+    name: linux (full, com computer_use)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar dependencias de sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libpipewire-0.3-dev \
+            libdbus-1-dev \
+            libclang-dev \
+            libgbm-dev
+
+      - name: Instalar Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache do cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: linux-full-ubuntu-latest
 
       - name: Instalar Node
         uses: actions/setup-node@v4
@@ -174,7 +243,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cerne-code-linux-${{ github.sha }}
+          name: cerne-code-linux-full-${{ github.sha }}
           path: src-tauri/target/release/bundle/**
           if-no-files-found: warn
           retention-days: 14

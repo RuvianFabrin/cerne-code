@@ -22,6 +22,14 @@
    ```
 
 **Linux** *(não testado)*
+
+Cada arquivo Linux existe em **duas variantes** — escolha pelo sufixo do nome:
+
+- **`-full`**: tem tudo, incluindo `computer_use` (captura de tela e automação de UI — clicar, digitar, ler a tela). Exige distro mais nova (a lib de PipeWire que esse recurso usa só existe em versões recentes).
+- **`-compat`**: roda em mais distros (inclusive mais antigas), mas **sem `computer_use`** — se o agente tentar usar essa função, ela responde com uma mensagem avisando que não está disponível nesta build, em vez de travar o app.
+
+Na dúvida, comece pela `-full`; se o instalador não abrir na sua distro, tente a `-compat`.
+
 - **`.deb`** (Ubuntu/Debian/Mint): `sudo dpkg -i cerne-code_*.deb` — se faltar dependência, `sudo apt --fix-broken install`.
 - **`.rpm`** (Fedora/RHEL/openSUSE): `sudo dnf install ./cerne-code-*.rpm` (ou `sudo rpm -i cerne-code-*.rpm`).
 - **`.AppImage`** (qualquer distro): precisa marcar como executável antes de rodar — não roda com duplo clique direto na maioria dos gerenciadores de arquivo:
@@ -157,6 +165,14 @@ Abaixo você encontra as instruções pra compilar e rodar o projeto a partir do
    ```
 
 **Linux** *(untested)*
+
+Every Linux file comes in **two variants** — pick by the filename suffix:
+
+- **`-full`**: has everything, including `computer_use` (screen capture and UI automation — clicking, typing, reading the screen). Requires a newer distro (the PipeWire library this feature needs only exists in recent releases).
+- **`-compat`**: runs on more distros (including older ones), but **without `computer_use`** — if the agent tries to use it, it gets a clear "not available in this build" message instead of the app crashing.
+
+When in doubt, start with `-full`; if the installer won't run on your distro, try `-compat`.
+
 - **`.deb`** (Ubuntu/Debian/Mint): `sudo dpkg -i cerne-code_*.deb` — if a dependency is missing, `sudo apt --fix-broken install`.
 - **`.rpm`** (Fedora/RHEL/openSUSE): `sudo dnf install ./cerne-code-*.rpm` (or `sudo rpm -i cerne-code-*.rpm`).
 - **`.AppImage`** (any distro): needs to be marked executable before it'll run — double-clicking usually won't work in most file managers:
@@ -279,6 +295,14 @@ pkg-config --modversion glib-2.0   # needs to be 2.70 or higher
    ```
 
 **Linux** *(no probado)*
+
+Cada archivo de Linux viene en **dos variantes** — elige por el sufijo del nombre:
+
+- **`-full`**: tiene todo, incluyendo `computer_use` (captura de pantalla y automatización de UI — clic, escritura, lectura de pantalla). Necesita una distro más reciente (la librería de PipeWire que usa esta función solo existe en versiones recientes).
+- **`-compat`**: funciona en más distros (incluso más antiguas), pero **sin `computer_use`** — si el agente intenta usarla, devuelve un mensaje claro de "no disponible en esta build" en vez de que la app falle.
+
+Si tienes dudas, empieza con `-full`; si el instalador no abre en tu distro, prueba `-compat`.
+
 - **`.deb`** (Ubuntu/Debian/Mint): `sudo dpkg -i cerne-code_*.deb` — si falta una dependencia, `sudo apt --fix-broken install`.
 - **`.rpm`** (Fedora/RHEL/openSUSE): `sudo dnf install ./cerne-code-*.rpm` (o `sudo rpm -i cerne-code-*.rpm`).
 - **`.AppImage`** (cualquier distro): necesita permiso de ejecución antes de correr — hacer doble clic no suele funcionar en la mayoría de los gestores de archivos:
@@ -397,6 +421,14 @@ pkg-config --modversion glib-2.0   # necesita ser 2.70 o mayor
    ```
 
 **Linux**（未测试）
+
+每个 Linux 安装包都有**两个版本**——按文件名后缀区分：
+
+- **`-full`**：功能完整，包含 `computer_use`（屏幕截图和 UI 自动化——点击、输入、读取屏幕）。需要较新的发行版（这个功能依赖的 PipeWire 库只有新版本才有）。
+- **`-compat`**：兼容更多发行版（包括较旧的），但**不包含 `computer_use`**——如果智能体尝试调用它，会收到"此版本不支持"的清晰提示，而不是应用崩溃。
+
+不确定选哪个就先试 `-full`；如果装不上，再试 `-compat`。
+
 - **`.deb`**（Ubuntu/Debian/Mint）：`sudo dpkg -i cerne-code_*.deb` —— 如果缺少依赖，运行 `sudo apt --fix-broken install`。
 - **`.rpm`**（Fedora/RHEL/openSUSE）：`sudo dnf install ./cerne-code-*.rpm`（或 `sudo rpm -i cerne-code-*.rpm`）。
 - **`.AppImage`**（任意发行版）：运行前需要先赋予可执行权限 —— 大多数文件管理器里直接双击是不会启动的：

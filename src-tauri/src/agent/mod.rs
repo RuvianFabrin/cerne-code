@@ -6,9 +6,9 @@ pub mod long_horizon;
 pub mod task_queue;
 pub mod background;
 pub mod computer;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "computer_use"))]
 mod computer_atspi;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "computer_use"))]
 mod computer_wayland;
 mod pipeline;
 pub mod shell;
