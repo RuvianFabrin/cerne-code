@@ -1,0 +1,172 @@
+name: Release
+
+# Dispara so em push de TAG (ex.: v0.1.3) - diferente do release-build.yml,
+# que builda a cada push de branch mas so sobe artifact temporario (expira
+# em 14 dias). Aqui o resultado e uma release de verdade no GitHub, com os
+# instaladores anexados e o texto de RELEASE_NOTES.md como descricao.
+#
+# Fluxo pra cortar uma release:
+#   1. Editar RELEASE_NOTES.md com as novidades nas 4 linguas.
+#   2. Commitar (git commit -m "docs: notas da v0.1.3").
+#   3. git tag v0.1.3 && git push origin v0.1.3
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag a republicar (ex.: v0.1.3) - so pra rodar manualmente"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build (${{ matrix.os-label }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            os-label: windows
+          - platform: macos-latest
+            os-label: macos
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os-label == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache do cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: release-${{ matrix.platform }}
+
+      - name: Instalar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalar dependencias do frontend
+        run: npm ci
+
+      - name: Build do Tauri (com empacotamento)
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "10.15"
+        run: |
+          if [ "${{ matrix.os-label }}" = "macos" ]; then
+            npm run tauri build -- --target universal-apple-darwin
+          else
+            npm run tauri build
+          fi
+
+      # Sobe so os instaladores finais (nao o bundle inteiro) - e o que o
+      # job "publish" vai anexar na release.
+      - name: Upload do instalador
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.os-label }}
+          path: |
+            src-tauri/target/release/bundle/nsis/*.exe
+            src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: ignore
+          retention-days: 3
+
+  build-linux:
+    name: build (linux, container ubuntu:22.04)
+    runs-on: ubuntu-latest
+    # Mesmo motivo do release-build.yml: container fixo em vez do runner
+    # rotulado ubuntu-22.04 (em depreciacao), pra travar o glibc minimo em
+    # 2.35 e maximizar quantas distros conseguem rodar o resultado.
+    container:
+      image: ubuntu:22.04
+
+    steps:
+      - name: Instalar git (base da imagem nao tem)
+        run: |
+          apt-get update
+          apt-get install -y git ca-certificates curl
+
+      - uses: actions/checkout@v4
+
+      - name: Instalar dependencias de sistema
+        run: |
+          apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Instalar Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache do cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: release-linux-container-22.04
+
+      - name: Instalar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalar dependencias do frontend
+        run: npm ci
+
+      - name: Build do Tauri (com empacotamento)
+        run: npm run tauri build
+
+      - name: Upload dos instaladores
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-linux
+          path: |
+            src-tauri/target/release/bundle/deb/*.deb
+            src-tauri/target/release/bundle/rpm/*.rpm
+            src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: ignore
+          retention-days: 3
+
+  publish:
+    name: Publicar release no GitHub
+    needs: [build, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Baixar todos os instaladores
+        uses: actions/download-artifact@v4
+        with:
+          pattern: installer-*
+          path: dist-installers
+          merge-multiple: true
+
+      - name: Listar o que foi baixado (debug)
+        run: ls -la dist-installers
+
+      # RELEASE_NOTES.md e commitado ANTES da tag - o checkout acima ja
+      # pega ele na revisao exata da tag que disparou o workflow.
+      - name: Criar/atualizar a release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          files: dist-installers/*
+          draft: false
+          fail_on_unmatched_files: false
