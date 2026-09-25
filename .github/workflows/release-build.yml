@@ -1,0 +1,172 @@
+name: Release Build
+
+# Builda os instaladores das 3 plataformas a cada push de branch, alem de
+# poder ser disparado manualmente. Separado do ci.yml (que so valida
+# tsc/cargo check/test em push/PR pra main) porque aqui o objetivo e outro:
+# gerar os binarios distribuiveis, nao validar o codigo.
+on:
+  push:
+    branches:
+      - "**"
+  workflow_dispatch:
+
+concurrency:
+  group: release-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.os-label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            os-label: windows
+          - platform: macos-latest
+            os-label: macos
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # No macOS builda os dois targets (arm64 + intel) e o Tauri junta num
+      # universal binary depois - macos-latest hoje e Apple Silicon, entao
+      # sem isso o .dmg gerado nao rodaria nativamente em Mac Intel.
+      - name: Instalar Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os-label == 'macos' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Cache do cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: ${{ matrix.platform }}
+
+      - name: Instalar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalar dependencias do frontend
+        run: npm ci
+
+      # Falha rapido antes do build pesado se algo nao compila/tipa.
+      - name: Checar tipos TypeScript (vue-tsc)
+        run: npx vue-tsc --noEmit
+
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --lib
+
+      # deployment target explicito pro macOS - bate com "minimumSystemVersion"
+      # do tauri.conf.json (10.15). Sem essa env var o Rust usa o SDK padrao
+      # do runner (bem mais novo), o que elevaria silenciosamente o macOS
+      # minimo exigido pelo binario final.
+      - name: Build do Tauri (com empacotamento)
+        shell: bash
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "10.15"
+        run: |
+          if [ "${{ matrix.os-label }}" = "macos" ]; then
+            npm run tauri build -- --target universal-apple-darwin
+          else
+            npm run tauri build
+          fi
+
+      # Build universal (macOS) sai em target/universal-apple-darwin/release/
+      # em vez de target/release/.
+      - name: Upload dos instaladores gerados
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cerne-code-${{ matrix.os-label }}-${{ github.sha }}
+          path: |
+            src-tauri/target/release/bundle/**
+            src-tauri/target/universal-apple-darwin/release/bundle/**
+          if-no-files-found: warn
+          retention-days: 14
+
+  build-linux:
+    name: linux (container ubuntu:22.04)
+    runs-on: ubuntu-latest
+    # Roda dentro de um CONTAINER ubuntu:22.04 (nao no runner rotulado
+    # "ubuntu-22.04", que o GitHub esta descontinuando - deprecation iniciada
+    # em 17/09/2026, ver projetos/cernecode/fazer.md item 5.4 no vault).
+    # Assim o job fica imune ao ciclo de vida dos runners hospedados: o
+    # runner por baixo pode virar 24.04, 26.04, o que for, que o glibc do
+    # BUILD continua travado no 2.35 do 22.04, que e o minimo que o Tauri v2
+    # aceita (webkit2gtk-4.1 exige glib >= 2.70, ausente em distros mais
+    # antigas). Binario linkado contra glibc mais velho roda em qualquer
+    # sistema com glibc igual ou mais novo, entao isso maximiza quantas
+    # distros (Ubuntu 22.04+, Debian 12+, Fedora 36+, openSUSE 15.5+,
+    # RHEL/Alma/Rocky 9+, Arch, etc.) conseguem rodar o .deb/.rpm/.AppImage
+    # gerados - o .AppImage em particular ainda embute o proprio
+    # webkit2gtk, entao nem precisa da lib instalada no host.
+    container:
+      image: ubuntu:22.04
+
+    steps:
+      # A imagem base do container nao tem git (nem curl) - sem isso o
+      # actions/checkout falha antes mesmo de comecar.
+      - name: Instalar git (base da imagem nao tem)
+        run: |
+          apt-get update
+          apt-get install -y git ca-certificates curl
+
+      - uses: actions/checkout@v4
+
+      - name: Instalar dependencias de sistema
+        run: |
+          apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Instalar Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache do cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: linux-container-22.04
+
+      - name: Instalar Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalar dependencias do frontend
+        run: npm ci
+
+      - name: Checar tipos TypeScript (vue-tsc)
+        run: npx vue-tsc --noEmit
+
+      - name: cargo check
+        working-directory: src-tauri
+        run: cargo check --lib
+
+      - name: Build do Tauri (com empacotamento)
+        run: npm run tauri build
+
+      - name: Upload dos instaladores gerados
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cerne-code-linux-${{ github.sha }}
+          path: src-tauri/target/release/bundle/**
+          if-no-files-found: warn
+          retention-days: 14

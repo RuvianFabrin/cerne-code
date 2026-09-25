@@ -6,6 +6,38 @@
 
 ---
 
+### 💾 Como instalar
+
+> ⚠️ **Linux e macOS ainda não foram testados numa máquina real.** O pipeline de build (CI) já gera os instaladores das três plataformas a cada push, mas só o Windows passou por uso de verdade até agora. Trate `.dmg`/`.deb`/`.rpm`/`.AppImage` como "deve funcionar, mas ainda não confirmado".
+
+**Windows**
+1. Baixe o instalador `.exe` (NSIS) na seção [📥 Baixar](#-baixar) abaixo.
+2. Execute e siga o assistente. Se o SmartScreen do Windows avisar "O Windows protegeu seu PC" (normal em app sem certificado pago), clique em **Mais informações → Executar assim mesmo**.
+
+**macOS** *(não testado)*
+1. Baixe o `.dmg` e arraste o Cerne Code pra pasta **Aplicativos**.
+2. Como o app não é assinado/notarizado pela Apple, o Gatekeeper vai bloquear a primeira abertura. Clique com o botão **direito** no app → **Abrir** → confirme no aviso. Se continuar bloqueando, rode no Terminal:
+   ```bash
+   xattr -cr "/Applications/Cerne Code.app"
+   ```
+
+**Linux** *(não testado)*
+- **`.deb`** (Ubuntu/Debian/Mint): `sudo dpkg -i cerne-code_*.deb` — se faltar dependência, `sudo apt --fix-broken install`.
+- **`.rpm`** (Fedora/RHEL/openSUSE): `sudo dnf install ./cerne-code-*.rpm` (ou `sudo rpm -i cerne-code-*.rpm`).
+- **`.AppImage`** (qualquer distro): precisa marcar como executável antes de rodar — não roda com duplo clique direto na maioria dos gerenciadores de arquivo:
+  ```bash
+  chmod +x Cerne_Code_*.AppImage
+  ./Cerne_Code_*.AppImage
+  ```
+  Se aparecer erro de sandbox/permissão (comum rodando como root, dentro de container, ou em algumas distros), rode com a flag `--no-sandbox`:
+  ```bash
+  ./Cerne_Code_*.AppImage --no-sandbox
+  ```
+
+Distros compatíveis (glibc/webkit2gtk) estão na tabela em [🐧 Compatibilidade com Linux](#-compatibilidade-com-linux), mais abaixo.
+
+---
+
 ### 🚀 Pra que serve
 
 **Cerne Code** é a interface gráfica que transforma qualquer modelo de linguagem num agente de código de verdade:
@@ -109,6 +141,38 @@ Abaixo você encontra as instruções pra compilar e rodar o projeto a partir do
 
 ---
 
+### 💾 How to install
+
+> ⚠️ **Linux and macOS haven't been tested on real hardware yet.** The build pipeline (CI) already produces installers for all three platforms on every push, but only Windows has seen real-world use so far. Treat `.dmg`/`.deb`/`.rpm`/`.AppImage` as "should work, not yet confirmed."
+
+**Windows**
+1. Download the `.exe` installer (NSIS) from the [📥 Download](#-download) section below.
+2. Run it and follow the wizard. If Windows SmartScreen warns "Windows protected your PC" (normal for an app without a paid certificate), click **More info → Run anyway**.
+
+**macOS** *(untested)*
+1. Download the `.dmg` and drag Cerne Code into **Applications**.
+2. Since the app isn't signed/notarized by Apple, Gatekeeper will block the first launch. Right-click the app → **Open** → confirm the prompt. If it's still blocked, run in Terminal:
+   ```bash
+   xattr -cr "/Applications/Cerne Code.app"
+   ```
+
+**Linux** *(untested)*
+- **`.deb`** (Ubuntu/Debian/Mint): `sudo dpkg -i cerne-code_*.deb` — if a dependency is missing, `sudo apt --fix-broken install`.
+- **`.rpm`** (Fedora/RHEL/openSUSE): `sudo dnf install ./cerne-code-*.rpm` (or `sudo rpm -i cerne-code-*.rpm`).
+- **`.AppImage`** (any distro): needs to be marked executable before it'll run — double-clicking usually won't work in most file managers:
+  ```bash
+  chmod +x Cerne_Code_*.AppImage
+  ./Cerne_Code_*.AppImage
+  ```
+  If you hit a sandbox/permission error (common when running as root, inside a container, or on some distros), run it with the `--no-sandbox` flag:
+  ```bash
+  ./Cerne_Code_*.AppImage --no-sandbox
+  ```
+
+Supported distros (glibc/webkit2gtk) are in the table under [🐧 Linux compatibility](#-linux-compatibility) below.
+
+---
+
 ### 🚀 What it does
 
 **Cerne Code** is the GUI that turns any language model into a real coding agent:
@@ -199,6 +263,38 @@ pkg-config --modversion glib-2.0   # needs to be 2.70 or higher
 
 ---
 
+### 💾 Cómo instalar
+
+> ⚠️ **Linux y macOS todavía no fueron probados en una máquina real.** El pipeline de build (CI) ya genera los instaladores de las tres plataformas en cada push, pero solo Windows tuvo uso real hasta ahora. Trata `.dmg`/`.deb`/`.rpm`/`.AppImage` como "debería funcionar, todavía no confirmado".
+
+**Windows**
+1. Descarga el instalador `.exe` (NSIS) en la sección [📥 Descargar](#-descargar) más abajo.
+2. Ejecútalo y sigue el asistente. Si el SmartScreen de Windows avisa "Windows protegió tu PC" (normal en apps sin certificado pago), haz clic en **Más información → Ejecutar de todas formas**.
+
+**macOS** *(no probado)*
+1. Descarga el `.dmg` y arrastra Cerne Code a la carpeta **Aplicaciones**.
+2. Como la app no está firmada/notarizada por Apple, Gatekeeper va a bloquear la primera apertura. Haz clic derecho en la app → **Abrir** → confirma el aviso. Si sigue bloqueada, ejecuta en Terminal:
+   ```bash
+   xattr -cr "/Applications/Cerne Code.app"
+   ```
+
+**Linux** *(no probado)*
+- **`.deb`** (Ubuntu/Debian/Mint): `sudo dpkg -i cerne-code_*.deb` — si falta una dependencia, `sudo apt --fix-broken install`.
+- **`.rpm`** (Fedora/RHEL/openSUSE): `sudo dnf install ./cerne-code-*.rpm` (o `sudo rpm -i cerne-code-*.rpm`).
+- **`.AppImage`** (cualquier distro): necesita permiso de ejecución antes de correr — hacer doble clic no suele funcionar en la mayoría de los gestores de archivos:
+  ```bash
+  chmod +x Cerne_Code_*.AppImage
+  ./Cerne_Code_*.AppImage
+  ```
+  Si aparece un error de sandbox/permisos (común corriendo como root, dentro de un contenedor, o en algunas distros), ejecuta con la opción `--no-sandbox`:
+  ```bash
+  ./Cerne_Code_*.AppImage --no-sandbox
+  ```
+
+Las distros compatibles (glibc/webkit2gtk) están en la tabla de [🐧 Compatibilidad con Linux](#-compatibilidad-con-linux), más abajo.
+
+---
+
 ### 🚀 Para qué sirve
 
 **Cerne Code** es la interfaz gráfica que convierte cualquier modelo de lenguaje en un agente de código real:
@@ -282,6 +378,38 @@ pkg-config --modversion glib-2.0   # necesita ser 2.70 o mayor
 > **你的本地代码助手，完全免费，没有套路。**
 >
 > 厌倦了按使用次数收费、把你锁在某个生态系统里、或者干脆无法与本地模型配合的代码助手？**Cerne Code** 是一款功能完整的桌面代码助手，完全免费，**100% 本地运行**，支持任何模型（OpenAI、Claude、Ollama、llama.cpp、LM Studio、Qwen —— 任何兼容 OpenAI API 的模型都可以）。
+
+---
+
+### 💾 如何安装
+
+> ⚠️ **Linux 和 macOS 版本尚未在真实设备上测试过。** 构建流水线（CI）已经会在每次 push 时自动生成三个平台的安装包，但目前只有 Windows 版经过实际使用验证。请把 `.dmg`/`.deb`/`.rpm`/`.AppImage` 当作"理论上可用，但尚未确认"。
+
+**Windows**
+1. 在下方的 [📥 下载](#-下载) 部分获取 `.exe` 安装程序（NSIS）。
+2. 运行并按向导操作。如果 Windows SmartScreen 提示"Windows 已保护你的电脑"（没有付费证书的应用很常见），点击 **更多信息 → 仍要运行**。
+
+**macOS**（未测试）
+1. 下载 `.dmg`，把 Cerne Code 拖到 **应用程序（Applications）** 文件夹。
+2. 由于应用没有经过 Apple 签名/公证，Gatekeeper 会在首次打开时阻止运行。右键点击应用 → **打开** → 确认提示。如果仍被阻止，在终端运行：
+   ```bash
+   xattr -cr "/Applications/Cerne Code.app"
+   ```
+
+**Linux**（未测试）
+- **`.deb`**（Ubuntu/Debian/Mint）：`sudo dpkg -i cerne-code_*.deb` —— 如果缺少依赖，运行 `sudo apt --fix-broken install`。
+- **`.rpm`**（Fedora/RHEL/openSUSE）：`sudo dnf install ./cerne-code-*.rpm`（或 `sudo rpm -i cerne-code-*.rpm`）。
+- **`.AppImage`**（任意发行版）：运行前需要先赋予可执行权限 —— 大多数文件管理器里直接双击是不会启动的：
+  ```bash
+  chmod +x Cerne_Code_*.AppImage
+  ./Cerne_Code_*.AppImage
+  ```
+  如果出现沙箱/权限相关的报错（常见于以 root 运行、在容器内运行，或某些发行版），加上 `--no-sandbox` 参数再运行：
+  ```bash
+  ./Cerne_Code_*.AppImage --no-sandbox
+  ```
+
+兼容的发行版（glibc/webkit2gtk）见下方 [🐧 Linux 兼容性](#-linux-兼容性) 表格。
 
 ---
 
