@@ -1,6 +1,11 @@
 fn main() {
     tauri_build::build();
 
+    // Build scripts run on the host (Windows here), even when Cargo is
+    // cross-compiling for Android. Apply Windows-only linker arguments only
+    // when the actual target is Windows.
+    let is_windows_target = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows");
+
     // ⚠️ STACK DA THREAD PRINCIPAL (Windows) — sem isso o app morre no
     // startup com STATUS_STACK_OVERFLOW (0xC00000FD), achado ao vivo em
     // 2026-09-15.
@@ -32,8 +37,9 @@ fn main() {
     //
     // Sem `-bin=`: vale pra TODOS os binários da crate, inclusive o de teste
     // (mesmo padrão do fix de manifesto logo abaixo).
-    #[cfg(windows)]
-    println!("cargo:rustc-link-arg=/STACK:16777216");
+    if is_windows_target {
+        println!("cargo:rustc-link-arg=/STACK:16777216");
+    }
 
     // Fix pro `cargo test` falhar com STATUS_ENTRYPOINT_NOT_FOUND
     // (0xc0000139) tentando localizar `TaskDialogIndirect` - essa funcao so
@@ -47,8 +53,9 @@ fn main() {
     // falhava ja na inicializacao, antes de qualquer teste rodar. A flag
     // abaixo, sem `-bin=`, se aplica a TODOS os binarios da crate (inclusive
     // os de teste), entao cobre o caso que o Tauri deixa de fora.
-    #[cfg(windows)]
-    println!(
-        "cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
-    );
+    if is_windows_target {
+        println!(
+            "cargo:rustc-link-arg=/MANIFESTDEPENDENCY:type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'"
+        );
+    }
 }

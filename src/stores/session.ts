@@ -25,6 +25,7 @@ import {
   type AgentsSkillsPlan,
   type AskQuestion,
   type ChatMessage,
+  type MediaRecord,
   type CliBackendId,
   type ContextUsage,
   type ExecutionMode,
@@ -44,6 +45,7 @@ import {
 import { modelContextOverrideKey } from "./provider";
 
 interface ReloadData {
+  media: MediaRecord[];
   session: Session;
   messages: ChatMessage[];
   tasks: TaskItem[];
@@ -94,6 +96,8 @@ export const useSessionStore = defineStore("session", {
     currentFork: "turboquant",
     currentCustomProviderId: "",
     messages: [] as ChatMessage[],
+    mediaMessages: [] as MediaRecord[],
+    mediaBusyIds: [] as string[],
     // Carga lenta do histórico (2026-09-20): índice absoluto da PRIMEIRA
     // mensagem hoje em `messages` — `null` até a primeira carga acontecer.
     // `hasMoreMessages` diz se existe algo mais antigo pra "carregar
@@ -507,6 +511,7 @@ export const useSessionStore = defineStore("session", {
 
     async selectSession(id: string) {
       this.currentId = id;
+      this.mediaMessages = [];
       // Cursor de paginação é POR SESSÃO — trocar de sessão sem zerar faria
       // `fetchReloadData` pedir "desde o índice X" na sessão NOVA, um índice
       // que não tem nada a ver com o histórico dela.
@@ -553,7 +558,7 @@ export const useSessionStore = defineStore("session", {
     // até o fim — nada some do que já estava visível).
     async fetchReloadData(sessionId: string): Promise<ReloadData> {
       const janelaExistente = this.messagesOldestIndex;
-      const [session, messagesResult, tasks, pendingEdits, contextUsage] = await Promise.all([
+      const [session, messagesResult, tasks, pendingEdits, contextUsage, media] = await Promise.all([
         api.getSession(sessionId),
         janelaExistente !== null
           ? api.getSessionMessagesSince(sessionId, janelaExistente)
@@ -561,14 +566,16 @@ export const useSessionStore = defineStore("session", {
         api.getSessionTasks(sessionId),
         api.listPendingEdits(sessionId),
         api.getSessionContextUsage(sessionId),
+        api.listSessionMedia(sessionId),
       ]);
       if (Array.isArray(messagesResult)) {
         // Caminho "since": mesma janela, cursor (oldestIndex/hasMore) não muda.
-        return { session, messages: messagesResult, tasks, pendingEdits, contextUsage };
+        return { session, messages: messagesResult, tasks, pendingEdits, contextUsage, media };
       }
       return {
         session,
         messages: messagesResult.messages,
+        media,
         tasks,
         pendingEdits,
         contextUsage,
@@ -582,6 +589,7 @@ export const useSessionStore = defineStore("session", {
       if (data.session.llama_fork) this.currentFork = data.session.llama_fork;
       if (data.session.custom_provider_id) this.currentCustomProviderId = data.session.custom_provider_id;
       this.messages = data.messages;
+      this.mediaMessages = data.media;
       // undefined = caminho "since", a janela não mudou de borda, não mexe.
       if (data.messagesOldestIndex !== undefined) this.messagesOldestIndex = data.messagesOldestIndex;
       if (data.hasMoreMessages !== undefined) this.hasMoreMessages = data.hasMoreMessages;
@@ -676,6 +684,19 @@ export const useSessionStore = defineStore("session", {
      * Settings) re-fetches from disk and shows the raw attachment dump
      * instead, with a giant scroll for a big document. `images` (data URIs)
      * ride along on both the displayed bubble and the outgoing request. */
+    async sendMedia(kind: "image" | "video", prompt: string, images: string[]) {
+      const id = this.currentId;
+      if (!id || this.mediaBusyIds.includes(id)) return;
+      this.mediaBusyIds.push(id);
+      this.error = "";
+      try {
+        const result = await api.sendMediaMessage(id, kind, prompt, images);
+        if (this.currentId === id) this.mediaMessages.push(result);
+      } catch (e) {
+        if (this.currentId === id) this.error = String(e);
+      } finally { this.mediaBusyIds = this.mediaBusyIds.filter((busyId) => busyId !== id); }
+    },
+
     async send(text: string, displayText?: string, images: string[] = []) {
       if (!this.currentId || !text.trim()) return;
       this.messages.push({ role: "user", content: displayText ?? text, images });
@@ -884,6 +905,7 @@ export const useSessionStore = defineStore("session", {
         this.currentId = null;
         this.currentSession = null;
         this.messages = [];
+        this.mediaMessages = [];
         this.messagesOldestIndex = null;
         this.hasMoreMessages = false;
         this.tasks = [];

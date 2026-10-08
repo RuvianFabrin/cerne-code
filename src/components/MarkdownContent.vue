@@ -98,65 +98,101 @@ watch(
 
 <style scoped>
 .markdown-body {
-  font-size: var(--cerne-font-chat, 14px);
+  font-size: var(--cerne-font-chat, 16px);
   font-weight: 400;
   line-height: 1.55;
-  word-break: break-word;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .markdown-body :deep(p) {
-  margin: 0 0 4px;
-  white-space: pre-wrap;
+  margin: 0 0 0.75em;
+  /* markdown-it já transforma as quebras em <br>; pre-wrap as duplicava. */
+  white-space: normal;
 }
 
-.markdown-body :deep(p:last-child) {
+.markdown-body :deep(> :first-child) {
+  margin-top: 0;
+}
+
+.markdown-body :deep(> :last-child) {
   margin-bottom: 0;
 }
 
 .markdown-body :deep(h1),
 .markdown-body :deep(h2),
 .markdown-body :deep(h3),
-.markdown-body :deep(h4) {
-  margin: 22px 0 4px;
-  font-weight: 600;
-  line-height: 1.3;
-}
-
-.markdown-body :deep(h1:first-child),
-.markdown-body :deep(h2:first-child),
-.markdown-body :deep(h3:first-child),
-.markdown-body :deep(h4:first-child) {
-  margin-top: 0;
+.markdown-body :deep(h4),
+.markdown-body :deep(h5),
+.markdown-body :deep(h6) {
+  margin: 1.25em 0 0.5em;
+  font-weight: 700;
+  line-height: 1.25;
+  text-wrap: pretty;
 }
 
 .markdown-body :deep(h1) {
-  font-size: 1.29em;
+  font-size: 2em;
+  letter-spacing: -0.025em;
 }
 .markdown-body :deep(h2) {
-  font-size: 1.14em;
+  font-size: 1.5em;
+  letter-spacing: -0.015em;
 }
-.markdown-body :deep(h3),
+.markdown-body :deep(h3) {
+  font-size: 1.25em;
+}
 .markdown-body :deep(h4) {
+  font-size: 1.125em;
+}
+.markdown-body :deep(h5) {
   font-size: 1em;
+}
+.markdown-body :deep(h6) {
+  font-size: 0.9375em;
+  color: #52525b;
 }
 
 .markdown-body :deep(ul),
 .markdown-body :deep(ol) {
-  margin: 4px 0 10px;
-  padding-left: 22px;
+  margin: 0 0 0.75em;
+  padding-left: 1.5em;
+}
+
+.markdown-body :deep(ul) {
+  list-style-type: disc;
+}
+.markdown-body :deep(ul ul) {
+  list-style-type: circle;
+}
+.markdown-body :deep(ul ul ul) {
+  list-style-type: square;
+}
+.markdown-body :deep(ol) {
+  list-style-type: decimal;
 }
 
 .markdown-body :deep(li) {
-  margin: 6px 0;
+  margin: 0;
+  padding-left: 0.125em;
+}
+
+.markdown-body :deep(li + li) {
+  margin-top: 0.25em;
 }
 
 .markdown-body :deep(li p) {
-  margin: 0;
+  margin: 0 0 0.5em;
+}
+
+.markdown-body :deep(li > :last-child) {
+  margin-bottom: 0;
 }
 
 .markdown-body :deep(li ul),
 .markdown-body :deep(li ol) {
-  margin: 4px 0;
+  margin: 0.25em 0 0;
 }
 
 .markdown-body :deep(a) {
@@ -166,38 +202,57 @@ watch(
   text-underline-offset: 2px;
 }
 
+.markdown-body :deep(a:hover) {
+  text-decoration-color: currentColor;
+}
+
+.markdown-body :deep(strong) {
+  font-weight: 700;
+}
+
 .markdown-body :deep(blockquote) {
-  margin: 0 0 8px;
-  padding: 2px 12px;
+  margin: 0 0 0.75em;
+  padding: 0.25em 0.75em;
   border-left: 3px solid #d4d4d8;
   color: #52525b;
 }
 
+.markdown-body :deep(blockquote > :last-child) {
+  margin-bottom: 0;
+}
+
 .markdown-body :deep(hr) {
   border: none;
-  border-top: 1px solid #e4e4e7;
-  margin: 10px 0;
+  border-top: 1px solid var(--cerne-markdown-border, #e4e4e7);
+  margin: 1em 0;
 }
 
 .markdown-body :deep(code) {
   font-family: var(--cerne-mono);
-  font-size: 0.89em;
+  font-size: 0.9em;
 }
 
 .markdown-body :deep(:not(pre) > code) {
   background: #f4f4f5;
   border-radius: 4px;
   padding: 1px 5px;
+  border: 1px solid var(--cerne-markdown-border, #e4e4e7);
 }
 
 .markdown-body :deep(pre) {
-  margin: 0 0 8px;
-  padding: 10px 12px;
+  margin: 0.75em 0;
+  padding: 14px 48px 14px 16px;
   background: #fafafa;
-  border: 1px solid #e4e4e7;
+  border: 1px solid var(--cerne-markdown-border, #e4e4e7);
   border-radius: 8px;
   overflow-x: auto;
   position: relative;
+  max-width: 100%;
+  line-height: 1.6;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
+  tab-size: 4;
 }
 
 .markdown-body :deep(.code-copy-btn) {
@@ -231,28 +286,47 @@ watch(
   background: none;
   padding: 0;
   color: #27272a;
+  white-space: pre;
+  overflow-wrap: normal;
+  word-break: normal;
 }
 
 .markdown-body :deep(table) {
   border-collapse: collapse;
-  margin: 0 0 8px;
+  margin: 0 0 0.75em;
   font-size: 0.93em;
   display: block;
   overflow-x: auto;
+  max-width: 100%;
+  width: fit-content;
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  background: #ffffff;
 }
 
 .markdown-body :deep(th),
 .markdown-body :deep(td) {
-  border: 1px solid #e4e4e7;
-  padding: 5px 10px;
+  border: 1px solid var(--cerne-markdown-border, #e4e4e7);
+  padding: 8px 12px;
   text-align: left;
   word-break: normal;
-  overflow-wrap: break-word;
+  overflow-wrap: normal;
+  vertical-align: top;
 }
 
 .markdown-body :deep(th) {
   background: #f4f4f5;
-  font-weight: 500;
+  font-weight: 600;
+}
+
+.markdown-body :deep(tbody tr:nth-child(even)) {
+  background: #fafafa;
+}
+
+.markdown-body :deep(img) {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
 }
 
 /* highlight.js token colors — kept minimal, tuned to the app's neutral zinc
@@ -285,6 +359,9 @@ watch(
 .markdown-body.dark :deep(a) {
   text-decoration-color: #71717a;
 }
+.markdown-body.dark :deep(h6) {
+  color: #d4d4d8;
+}
 .markdown-body.dark :deep(blockquote) {
   border-left-color: #52525b;
   color: #d4d4d8;
@@ -295,6 +372,7 @@ watch(
 .markdown-body.dark :deep(:not(pre) > code) {
   background: #27272a;
   color: #fafafa;
+  border-color: #3f3f46;
 }
 .markdown-body.dark :deep(pre) {
   background: #27272a;
@@ -314,7 +392,13 @@ watch(
 .markdown-body.dark :deep(td) {
   border-color: #52525b;
 }
+.markdown-body.dark :deep(table) {
+  background: #18181b;
+}
 .markdown-body.dark :deep(th) {
+  background: #27272a;
+}
+.markdown-body.dark :deep(tbody tr:nth-child(even)) {
   background: #27272a;
 }
 </style>

@@ -7,6 +7,7 @@ const KEYRING_SERVICE: &str = "cerne";
 const KEYRING_USER: &str = "openrouter_api_key";
 const KEYRING_USER_BACKUP_GIT_TOKEN: &str = "backup_git_token";
 const KEYRING_USER_IMAGE_GEN: &str = "image_gen_api_key";
+const KEYRING_USER_VIDEO_GEN: &str = "video_gen_api_key";
 
 fn config_path(app_data_dir: &PathBuf) -> PathBuf {
     app_data_dir.join("config.json")
@@ -147,6 +148,30 @@ pub fn clear_image_gen_key() -> Result<()> {
     }
 }
 
+pub fn set_video_gen_key(key: &str) -> Result<()> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER_VIDEO_GEN)?;
+    entry.set_password(key)?;
+    Ok(())
+}
+
+pub fn get_video_gen_key() -> Option<String> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER_VIDEO_GEN).ok()?;
+    entry.get_password().ok()
+}
+
+pub fn has_video_gen_key() -> bool {
+    get_video_gen_key().is_some()
+}
+
+pub fn clear_video_gen_key() -> Result<()> {
+    let entry = keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER_VIDEO_GEN)?;
+    match entry.delete_credential() {
+        Ok(()) => Ok(()),
+        Err(keyring::Error::NoEntry) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Token pro backup de sessões via git (pedido do usuário, 2026-08-18) —
 /// mesmo cofre de credenciais do SO que a chave do OpenRouter já usa, nunca
 /// gravado em texto puro (nem no `.git/config` — ver `git::authenticated_url`,
@@ -234,4 +259,14 @@ mod tests {
 
         std::fs::remove_dir_all(&dir).ok();
     }
+}
+
+fn media_key_entry(provider: &str) -> Result<keyring::Entry> {
+    anyhow::ensure!(matches!(provider, "openai" | "gemini" | "xai" | "fal"), "Provedor inválido. Configure OpenRouter na conexão existente.");
+    Ok(keyring::Entry::new(KEYRING_SERVICE, &format!("media_api_key_{provider}"))?)
+}
+pub fn set_media_provider_key(provider: &str, key: &str) -> Result<()> { media_key_entry(provider)?.set_password(key)?; Ok(()) }
+pub fn get_media_provider_key(provider: &str) -> Option<String> { media_key_entry(provider).ok()?.get_password().ok() }
+pub fn clear_media_provider_key(provider: &str) -> Result<()> {
+    match media_key_entry(provider)?.delete_credential() { Ok(()) | Err(keyring::Error::NoEntry) => Ok(()), Err(e) => Err(e.into()) }
 }

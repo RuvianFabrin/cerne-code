@@ -45,3 +45,11 @@ scripts/benchmark_tools_result.json
 
 # Pasta de setup local
 _setup/
+
+# Diagnósticos e configurações de desenvolvimento desta máquina
+*-exit-code.txt
+hf_*.json
+src-tauri/.playwright-mcp/
+src-tauri/gen/
+docs/*-2026-*.md
+docs/*-preview.png

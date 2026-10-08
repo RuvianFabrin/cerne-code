@@ -55,9 +55,37 @@ export interface AppConfig {
   long_horizon: LongHorizonConfig;
   external_cli: ExternalCliConfig;
   image_gen: ImageGenConfig;
+  video_gen: VideoGenConfig;
+}
+
+export interface VideoGenConfig {
+  provider?: string;
+  connection_id?: string;
+  parameters?: Record<string, unknown> | null;
+  aspect_ratio?: string;
+  resolution?: string;
+  base_url: string;
+  model: string;
+  protocol: string;
+  seconds: string;
+  size: string;
+  output_dir: string;
+}
+export interface MediaRecord {
+  id: string;
+  kind: "image" | "video";
+  prompt: string;
+  model: string;
+  created_at: string;
+  after_text_message: number;
+  files: string[];
+  error: string | null;
 }
 
 export interface ImageGenConfig {
+  provider?: string;
+  connection_id?: string;
+  parameters?: Record<string, unknown> | null;
   base_url: string;
   model: string;
 }
@@ -362,7 +390,14 @@ export interface SearchConfigView {
   has_bing_key: boolean;
 }
 
+export interface MediaConnection { id: string; provider: string; label: string; has_key: boolean }
+export interface MediaModel { id: string; label: string }
 export const api = {
+  listMediaConnections: () => invoke<MediaConnection[]>("list_media_connections"),
+  listMediaModels: (kind: string) => invoke<MediaModel[]>("list_media_models", { kind }),
+  setMediaProviderKey: (provider: string, key: string) => invoke<void>("set_media_provider_key", { provider, key }),
+  hasMediaProviderKey: (provider: string) => invoke<boolean>("has_media_provider_key", { provider }),
+  clearMediaProviderKey: (provider: string) => invoke<void>("clear_media_provider_key", { provider }),
   getConfig: () => invoke<AppConfig>("get_config"),
   setConfig: (new_config: AppConfig) => invoke<void>("set_config", { newConfig: new_config }),
   getDefaultLongHorizonConfig: () =>
@@ -371,6 +406,13 @@ export const api = {
   hasOpenrouterKey: () => invoke<boolean>("has_openrouter_key"),
   openrouterKeyPreview: () => invoke<string | null>("openrouter_key_preview"),
   clearOpenrouterKey: () => invoke<void>("clear_openrouter_key"),
+  setVideoGenKey: (key: string) => invoke<void>("set_video_gen_key", { key }),
+  hasVideoGenKey: () => invoke<boolean>("has_video_gen_key"),
+  clearVideoGenKey: () => invoke<void>("clear_video_gen_key"),
+  openGeneratedMedia: (sessionId: string, path: string) => invoke<void>("open_generated_media", { sessionId, path }),
+  listSessionMedia: (sessionId: string) => invoke<MediaRecord[]>("list_session_media", { sessionId }),
+  sendMediaMessage: (sessionId: string, kind: "image" | "video", prompt: string, images: string[]) =>
+    invoke<MediaRecord>("send_media_message", { sessionId, kind, prompt, images }),
   setImageGenKey: (key: string) => invoke<void>("set_image_gen_key", { key }),
   hasImageGenKey: () => invoke<boolean>("has_image_gen_key"),
   clearImageGenKey: () => invoke<void>("clear_image_gen_key"),
@@ -398,6 +440,7 @@ export const api = {
   addLlamaFork: (fork: LlamaForkConfig) => invoke<LlamaForkConfig[]>("add_llama_fork", { fork }),
   removeLlamaFork: (id: string) => invoke<LlamaForkConfig[]>("remove_llama_fork", { id }),
   listLlamaPresets: (forkId: string) => invoke<ModelInfo[]>("list_llama_presets", { forkId }),
+  llamaServerStatus: (forkId: string) => invoke<"ready" | "loading" | "stopped">("llama_server_status", { forkId }),
   llamaServerHealth: (forkId: string) => invoke<boolean>("llama_server_health", { forkId }),
   startLlamaServer: (forkId: string) => invoke<void>("start_llama_server", { forkId }),
   stopLlamaServer: (forkId: string) => invoke<void>("stop_llama_server", { forkId }),
@@ -522,7 +565,7 @@ export const api = {
   checkVisionSupport: (sessionId: string) => invoke<boolean>("check_vision_support", { sessionId }),
   testVision: (kind: string, customProviderId: string | null, model: string) =>
     invoke<boolean>("test_vision", { kind, customProviderId, model }),
-  readImageAsDataUrl: (path: string) => invoke<string>("read_image_as_data_url", { path }),
+  readImageAsDataUrl: (path: string, original = false) => invoke<string>("read_image_as_data_url", { path, original }),
   /** Otimiza (redimensiona + JPEG) um data URI que só existe no navegador —
    * caminho de quem cola imagem com Ctrl+V. Se falhar, o backend devolve o
    * original, então nunca perde a imagem. */
@@ -584,6 +627,10 @@ export const api = {
   renameFolder: (id: string, name: string) => invoke<Folder>("rename_folder", { id, name }),
   deleteFolder: (id: string) => invoke<string[]>("delete_folder", { id }),
 
+  configurePlaywrightBrowser: (browser: string, useExtension = false, profile = "") =>
+    invoke<void>("configure_playwright_browser", { browser, useExtension, profile }),
+  openPlaywrightExtension: (browser: string, profile: string) => invoke<void>("open_playwright_extension", { browser, profile }),
+  testPlaywrightBrowser: () => invoke<void>("test_playwright_browser"),
   listMcpServers: () => invoke<McpServerConfig[]>("list_mcp_servers"),
   addMcpServer: (server: McpServerConfig) => invoke<void>("add_mcp_server", { server }),
   removeMcpServer: (name: string) => invoke<void>("remove_mcp_server", { name }),

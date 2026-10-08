@@ -173,6 +173,8 @@ fn emit_status(app: &AppHandle, session_id: &str, status: &'static str, item_id:
 pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
     let state = app.state::<crate::AppState>();
     let app_data_dir = state.app_data_dir.clone();
+    let max_turns = state.config.lock().unwrap().long_horizon.max_iteracoes.max(1);
+    let mut turns = 0;
 
     loop {
         let tasks_json = sessions::read_task_queue(&app_data_dir, &session_id)?;
@@ -184,23 +186,32 @@ pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
         };
         let item_id = item_id_display(&tasks[idx]);
         let prompt_text = item_prompt_text(&tasks[idx])?;
+        if turns >= max_turns {
+            emit_status(&app, &session_id, "stuck", Some(item_id), Some("Limite de etapas da fila atingido. Revise o progresso antes de retomar.".into()));
+            return Ok(());
+        }
+        turns += 1;
 
         emit_status(&app, &session_id, "processing", Some(item_id.clone()), None);
 
         {
             let state = app.state::<crate::AppState>();
-            super::run_turn(app.clone(), &state, session_id.clone(), prompt_text, Vec::new(), None).await?;
+            super::run_turn(app.clone(), &state, session_id.clone(), prompt_text.clone(), Vec::new(), None).await?;
         }
 
         let mut confirmed = false;
+        let mut confirm_attempts = 0;
         for _attempt in 0..CONFIRM_RETRIES {
+            if turns >= max_turns { break; }
+            turns += 1;
+            confirm_attempts += 1;
             {
                 let state = app.state::<crate::AppState>();
                 super::run_turn(
                     app.clone(),
                     &state,
                     session_id.clone(),
-                    CONFIRM_QUESTION.to_string(),
+                    format!("Item da fila: {item_id}\nDescrição: {prompt_text}\n\n{CONFIRM_QUESTION}\nConfirme somente o resultado deste item, com base no que foi realmente executado e verificado. Não refaça o trabalho nem regrave a memória só para confirmar."),
                     Vec::new(),
                     None,
                 )
@@ -223,7 +234,7 @@ pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
                 "stuck",
                 Some(item_id.clone()),
                 Some(format!(
-                    "O item {item_id} nao foi confirmado como concluido depois de {CONFIRM_RETRIES} tentativas — fila parada, o item continua com status \"fazer\"."
+                    "O item {item_id} nao foi confirmado como concluido depois de {confirm_attempts} tentativas (limite de etapas: {max_turns}) — fila parada, o item continua com status \"fazer\"."
                 )),
             );
             return Ok(());

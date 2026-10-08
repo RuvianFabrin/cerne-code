@@ -1,12 +1,12 @@
 <script setup lang="ts">
-defineProps<{ up: boolean | null }>();
+defineProps<{ up: boolean | null; loading?: boolean }>();
 </script>
 
 <template>
   <span
     class="status-dot"
-    :class="{ up: up === true, down: up === false, unknown: up === null }"
-    v-tooltip.top="up === null ? $t('statusDot.checking') : up ? $t('statusDot.serverUp') : $t('statusDot.serverDown')"
+    :class="{ loading: loading, up: !loading && up === true, down: !loading && up === false, unknown: !loading && up === null }"
+    v-tooltip.top="loading ? $t('statusDot.loading') : up === null ? $t('statusDot.checking') : up ? $t('statusDot.serverUp') : $t('statusDot.serverDown')"
   />
 </template>
 
@@ -18,6 +18,8 @@ defineProps<{ up: boolean | null }>();
   border-radius: 999px;
   flex-shrink: 0;
 }
+
+.status-dot.loading { background: #f59e0b; }
 
 .status-dot.up {
   background: #22c55e;

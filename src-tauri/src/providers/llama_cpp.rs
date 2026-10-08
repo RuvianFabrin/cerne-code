@@ -93,7 +93,7 @@ pub fn list_presets(models_ini_path: &str) -> Result<Vec<ModelInfo>> {
             };
             ModelInfo {
                 id: s.clone(),
-                label: s,
+                label: parser.get(&s, "label").filter(|label| !label.trim().is_empty()).unwrap_or(s),
                 context_length: ctx,
                 name: None,
                 description: None,
@@ -145,11 +145,35 @@ pub fn preset_supports_vision(models_ini_path: &str, preset: &str) -> bool {
     else {
         return false;
     };
+    // O adaptador Strata usa JSON, nao o mmproj do roteador llama.cpp.
+    let setting = |key: &str| parser.get(preset, key).or_else(|| parser.get("*", key));
+    if setting("engine").as_deref().map(|s| s.eq_ignore_ascii_case("strata")) == Some(true) {
+        return setting("strata-config").map(|path| strata_config_supports_vision(
+            models_ini_path, &path, setting("working-directory").as_deref())).unwrap_or(false);
+    }
     map.iter().any(|(k, v)| {
         let k = k.to_lowercase();
         (k.contains("mmproj") || k.contains("clip"))
             && v.as_deref().map(|p| !p.trim().is_empty()).unwrap_or(false)
     })
+}
+
+fn strata_config_supports_vision(ini_path: &str, config_path: &str, working_dir: Option<&str>) -> bool {
+    let ini_dir = std::path::Path::new(ini_path).parent().unwrap_or(std::path::Path::new("."));
+    let resolve = |base: &std::path::Path, value: &str| {
+        let path = std::path::Path::new(value.trim_matches('"'));
+        if path.is_absolute() { path.to_path_buf() } else { base.join(path) }
+    };
+    let config_path = resolve(ini_dir, config_path);
+    let Some(config) = std::fs::read_to_string(&config_path).ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok()) else { return false; };
+    if config.get("lazy_load").and_then(|v| v.as_bool()) == Some(true) { return false; }
+    let Some(vision) = config.get("vision").and_then(|v| v.as_object()) else { return false; };
+    let launch_dir = working_dir.map(|value| resolve(ini_dir, value)).unwrap_or_else(|| ini_dir.to_path_buf());
+    let cwd = config.get("cwd").and_then(|v| v.as_str())
+        .map(|value| resolve(&launch_dir, value)).unwrap_or(launch_dir);
+    ["exe", "mmproj", "model"].iter().all(|key| vision.get(*key).and_then(|v| v.as_str())
+        .filter(|value| !value.trim().is_empty()).map(|value| resolve(&cwd, value).is_file()).unwrap_or(false))
 }
 
 /// Famílias de modelo conhecidas por terem uma variante multimodal (visão)
@@ -209,8 +233,6 @@ fn load_ini(models_ini_path: &str) -> Result<configparser::ini::Ini> {
     Ok(parser)
 }
 
-const HEALTH_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
-const HEALTH_CHECK_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// Spawns `llama-server` and doesn't return until it's actually answering
 /// `/health` (or the timeout/an early process exit proves it never will).
@@ -219,65 +241,40 @@ const HEALTH_CHECK_POLL_INTERVAL: std::time::Duration = std::time::Duration::fro
 /// track) the process can spawn fine and still fail to bind, and callers
 /// otherwise have no way to tell "started" from "started and immediately
 /// failed".
-pub async fn start_server(fork: &LlamaForkConfig) -> Result<Child> {
-    if !PathBuf::from(&fork.server_exe).exists() {
-        // Neutro de SO (Tarefa 4.1 do port): em Unix o binario nao tem .exe,
-        // entao a mensagem nao pode hardcodar o nome com extensao.
-        return Err(anyhow!("llama-server não encontrado em {}", fork.server_exe));
-    }
-    let mut child = Command::new(&fork.server_exe)
-        .arg("--models-preset")
-        .arg(&fork.models_ini)
-        .arg("--models-max")
-        .arg("1")
-        .arg("--host")
-        .arg("127.0.0.1")
-        .arg("--port")
-        .arg(fork.port.to_string())
-        .kill_on_drop(true)
-        .spawn()?;
-
-    if let Err(e) = wait_for_health(&mut child, fork.port).await {
-        let _ = child.start_kill();
-        return Err(e);
-    }
-
-    Ok(child)
+/// Spawn immediately so the app can track and stop a model while it loads.
+pub fn spawn_server(fork: &LlamaForkConfig) -> Result<Child> {
+    anyhow::ensure!(PathBuf::from(&fork.server_exe).is_file(), "Servidor não encontrado em {}", fork.server_exe);
+    let mut command = Command::new(&fork.server_exe);
+    command.args(["--models-preset", &fork.models_ini, "--models-max", "1", "--host", "127.0.0.1", "--port", &fork.port.to_string()]).kill_on_drop(true);
+    // The Strata adapter has its own console, with live model loading logs.
+    #[cfg(windows)]
+    if is_strata(fork) { command.creation_flags(0x00000010); }
+    Ok(command.spawn()?)
 }
 
-async fn wait_for_health(child: &mut Child, port: u16) -> Result<()> {
-    let client = reqwest::Client::new();
-    let url = format!("http://127.0.0.1:{port}/health");
-    let deadline = tokio::time::Instant::now() + HEALTH_CHECK_TIMEOUT;
+pub fn is_strata(fork: &LlamaForkConfig) -> bool {
+    std::fs::read_to_string(&fork.models_ini).unwrap_or_default().lines().any(|line|
+        line.split_once('=').map(|(key, value)| key.trim().eq_ignore_ascii_case("engine") && value.trim().eq_ignore_ascii_case("strata")).unwrap_or(false))
+}
 
-    loop {
-        if let Ok(Some(status)) = child.try_wait() {
-            return Err(anyhow!(
-                "llama-server encerrou sozinho logo depois de iniciar (codigo {}) — confira se a porta {port} ja esta em uso ou os logs do processo",
-                status.code().map(|c| c.to_string()).unwrap_or_else(|| "desconhecido".to_string())
-            ));
-        }
+pub async fn server_healthy(fork: &LlamaForkConfig) -> bool {
+    let Ok(response) = reqwest::Client::new().get(format!("http://127.0.0.1:{}/health", fork.port))
+        .timeout(std::time::Duration::from_millis(1200)).send().await else { return false; };
+    if !response.status().is_success() { return false; }
+    if !is_strata(fork) { return true; }
+    let Ok(health) = response.json::<serde_json::Value>().await else { return false; };
+    strata_health_matches(fork, &health)
+}
 
-        if let Ok(resp) = client
-            .get(&url)
-            .timeout(std::time::Duration::from_secs(2))
-            .send()
-            .await
-        {
-            if resp.status().is_success() {
-                return Ok(());
-            }
-        }
-
-        if tokio::time::Instant::now() >= deadline {
-            return Err(anyhow!(
-                "llama-server nao respondeu em /health na porta {port} depois de {}s — pode estar travado, ou a porta ja esta ocupada por outro processo",
-                HEALTH_CHECK_TIMEOUT.as_secs()
-            ));
-        }
-
-        tokio::time::sleep(HEALTH_CHECK_POLL_INTERVAL).await;
-    }
+fn strata_health_matches(fork: &LlamaForkConfig, health: &serde_json::Value) -> bool {
+    let expected = load_ini(&fork.models_ini).ok().and_then(|ini| ini.get("*", "strata-config"))
+        .and_then(|path| {
+            let path = std::path::Path::new(path.trim_matches('"'));
+            let resolved = if path.is_absolute() { path.to_path_buf() } else { std::path::Path::new(&fork.models_ini).parent()?.join(path) };
+            std::fs::read_to_string(resolved).ok()
+        }).and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|cfg| cfg.get("model_name").and_then(|v| v.as_str()).map(str::to_owned));
+    health["service"] == "strata" && expected.map(|name| health["model"] == name).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -292,6 +289,49 @@ mod tests {
         ));
         fs::write(&path, content).unwrap();
         path
+    }
+
+    #[test]
+    fn preset_label_does_not_change_api_model_id() {
+        let path=write_ini("[existing-model]\nlabel = Qwen IQ3 - sem thinking - com imagem\nctx-size=65536\n");
+        let preset=list_presets(path.to_str().unwrap()).unwrap().remove(0);
+        assert_eq!(preset.id,"existing-model");
+        assert_eq!(preset.label,"Qwen IQ3 - sem thinking - com imagem");
+        fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn strata_health_checks_model_identity_on_shared_port() {
+        let dir = std::env::temp_dir().join(format!("cerne-health-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("config.json"), r#"{"model_name":"iq3-vision"}"#).unwrap();
+        fs::write(dir.join("models.ini"), "[*]\nengine=strata\nstrata-config=config.json\n").unwrap();
+        let fork = LlamaForkConfig { id: "test".into(), label: "test".into(), server_exe: "test.exe".into(), models_ini: dir.join("models.ini").to_string_lossy().into_owned(), port:8083 };
+        assert!(strata_health_matches(&fork, &serde_json::json!({"service":"strata","model":"iq3-vision"})));
+        assert!(!strata_health_matches(&fork, &serde_json::json!({"service":"strata","model":"iq2"})));
+        assert!(!strata_health_matches(&fork, &serde_json::json!({"status":"ok"})));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn strata_vision_reads_json_and_requires_installed_encoder() {
+        let dir = std::env::temp_dir().join(format!("cerne-strata-vision-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(dir.join("runtime")).unwrap();
+        let ini = dir.join("models.ini");
+        let config_path = dir.join("strata.json");
+        fs::write(&ini, "[*]\nengine=strata\nstrata-config=strata.json\nworking-directory=runtime\n[qwen]\nctx-size=65536\n").unwrap();
+        fs::write(&config_path, "{}").unwrap();
+        assert!(!preset_supports_vision(ini.to_str().unwrap(), "qwen"));
+        let config = serde_json::json!({"vision":{"exe":"encoder.exe","model":"model.gguf","mmproj":"mmproj.gguf","gpu":true}});
+        fs::write(&config_path, config.to_string()).unwrap();
+        assert!(!preset_supports_vision(ini.to_str().unwrap(), "qwen"));
+        for name in ["encoder.exe", "model.gguf", "mmproj.gguf"] { fs::write(dir.join("runtime").join(name), "test").unwrap(); }
+        assert!(preset_supports_vision(ini.to_str().unwrap(), "qwen"));
+        assert!(!preset_supports_vision(ini.to_str().unwrap(), "unknown"));
+        assert_eq!(list_presets(ini.to_str().unwrap()).unwrap()[0].supports_vision, Some(true));
+        fs::write(&config_path, "invalid json").unwrap();
+        assert!(!preset_supports_vision(ini.to_str().unwrap(), "qwen"));
+        fs::remove_dir_all(dir).ok();
     }
 
     #[test]

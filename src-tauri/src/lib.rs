@@ -11,6 +11,8 @@ mod history;
 mod image_util;
 mod mcp;
 mod memory;
+mod media;
+mod media_providers;
 mod models;
 mod osv;
 mod personas;
@@ -29,6 +31,86 @@ use models::{
 use personas::Persona;
 use providers::llama_cpp::LlamaForkConfig;
 use skills::SkillMeta;
+
+#[tauri::command]
+fn list_media_connections(state: State<AppState>) -> Result<Vec<media_providers::ConnectionView>, String> {
+    media_providers::connections(&config::load_config(&state.app_data_dir), &state.app_data_dir).map_err(|e| e.to_string())
+}
+#[tauri::command]
+async fn list_media_models(state: State<'_, AppState>, kind: String) -> Result<Vec<media_providers::MediaModel>, String> {
+    if !matches!(kind.as_str(), "image" | "video") { return Err("Tipo inválido".into()); }
+    let c = media_providers::resolve(&config::load_config(&state.app_data_dir), &state.app_data_dir, kind == "video").map_err(|e| e.to_string())?;
+    media_providers::list_models(&c, kind == "video").await.map_err(|e| e.to_string())
+}
+#[tauri::command]
+fn set_media_provider_key(provider: String, key: String) -> Result<(), String> { config::set_media_provider_key(&provider, &key).map_err(|e| e.to_string()) }
+#[tauri::command]
+fn has_media_provider_key(provider: String) -> bool { config::get_media_provider_key(&provider).is_some() }
+#[tauri::command]
+fn clear_media_provider_key(provider: String) -> Result<(), String> { config::clear_media_provider_key(&provider).map_err(|e| e.to_string()) }
+#[tauri::command]
+fn set_video_gen_key(key: String) -> Result<(), String> {
+    config::set_video_gen_key(&key).map_err(|e| e.to_string())
+}
+#[tauri::command]
+fn has_video_gen_key() -> bool { config::has_video_gen_key() }
+#[tauri::command]
+fn clear_video_gen_key() -> Result<(), String> { config::clear_video_gen_key().map_err(|e| e.to_string()) }
+
+#[tauri::command]
+fn open_generated_media(app: tauri::AppHandle, state: State<AppState>, session_id: String, path: String) -> Result<(), String> {
+    let records = media::load(&state.app_data_dir, &session_id).map_err(|e| e.to_string())?;
+    if !records.iter().any(|r| r.files.contains(&path)) { return Err("Arquivo fora do histórico de mídia desta sessão".into()); }
+    tauri_plugin_opener::OpenerExt::opener(&app).open_path(path, None::<String>).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn list_session_media(app: tauri::AppHandle, state: State<AppState>, session_id: String) -> Result<Vec<media::MediaRecord>, String> {
+    let records = media::load(&state.app_data_dir, &session_id).map_err(|e| e.to_string())?;
+    for record in &records { for file in &record.files {
+        app.asset_protocol_scope().allow_file(file).map_err(|e| e.to_string())?;
+    } }
+    Ok(records)
+}
+
+#[tauri::command]
+async fn send_media_message(app: tauri::AppHandle, state: State<'_, AppState>, session_id: String, kind: String, prompt: String, images: Vec<String>) -> Result<media::MediaRecord, String> {
+    uuid::Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+    let _generation = media::GenerationGuard::acquire(&state.running_media, &session_id).map_err(|e| e.to_string())?;
+    if state.running_turns.lock().unwrap().contains_key(&session_id) { return Err("Aguarde o turno atual terminar".into()); }
+    if prompt.trim().is_empty() { return Err("Escreva o prompt".into()); }
+    if !matches!(kind.as_str(), "image" | "video") { return Err("Modo de mídia inválido".into()); }
+    let session = sessions::get_session(&state.app_data_dir, &session_id).map_err(|e| e.to_string())?;
+    let cfg = config::load_config(&state.app_data_dir);
+    let destination = if kind == "video" {
+        session.project_root.clone().filter(|p| !p.is_empty()).or_else(|| (!cfg.video_gen.output_dir.is_empty()).then(|| cfg.video_gen.output_dir.clone()))
+            .ok_or("Escolha uma pasta antes de gerar vídeo")?
+    } else {
+        session.project_root.clone().unwrap_or_else(|| state.app_data_dir.join("sessions").join(&session_id).to_string_lossy().into_owned())
+    };
+    let mut record = media::MediaRecord {
+        id: uuid::Uuid::new_v4().to_string(), kind: kind.clone(), prompt: prompt.clone(),
+        model: if kind == "image" { cfg.image_gen.model.clone() } else { cfg.video_gen.model.clone() },
+        created_at: chrono::Utc::now().to_rfc3339(),
+        after_text_message: sessions::load_messages(&state.app_data_dir, &session_id).map_err(|e| e.to_string())?.len(),
+        files: vec![], error: None,
+    };
+    let result: anyhow::Result<Vec<String>> = async {
+        if kind == "image" {
+            let connection = media_providers::resolve(&cfg, &state.app_data_dir, false)?;
+            let generated = media_providers::generate_image(&connection, &cfg.image_gen.model, &prompt, &images, 1, &cfg.image_gen.parameters).await?;
+            Ok(agent::image_gen::save_images(std::path::Path::new(&destination), &prompt, &generated)?
+                .iter().map(|p| p.to_string_lossy().into_owned()).collect())
+        } else {
+            if !images.is_empty() { anyhow::bail!("Este modo de vídeo recebe apenas o prompt. Remova os anexos."); }
+            media::generate_vendor_video(&media_providers::resolve(&cfg, &state.app_data_dir, true)?, &cfg.video_gen, &prompt, std::path::Path::new(&destination)).await
+        }
+    }.await;
+    match result { Ok(files) => record.files = files, Err(e) => record.error = Some(e.to_string()) }
+    media::append(&state.app_data_dir, &session_id, record.clone()).map_err(|e| e.to_string())?;
+    for file in &record.files { app.asset_protocol_scope().allow_file(file).map_err(|e| e.to_string())?; }
+    Ok(record)
+}
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -45,6 +127,7 @@ pub struct AppState {
     /// llama.cpp, vários podem rodar ao mesmo tempo (portas diferentes),
     /// então nenhum "para os outros antes de subir este" acontece aqui.
     pub image_gen_children: Mutex<HashMap<String, Child>>,
+    pub running_media: Mutex<std::collections::HashSet<String>>,
     pub background_jobs: agent::background::BackgroundJobs,
     pub mcp_clients: mcp::McpClients,
     /// Perguntas (`ask`) que pausaram um turno esperando resposta do usuario —
@@ -215,6 +298,9 @@ async fn start_image_gen_preset(state: State<'_, AppState>, preset_id: String) -
     }
 
     let mut cfg = state.config.lock().unwrap();
+    cfg.image_gen.provider.clear();
+    cfg.image_gen.connection_id.clear();
+    cfg.image_gen.parameters = serde_json::Value::Null;
     cfg.image_gen.base_url = format!("http://127.0.0.1:{}/v1", preset.port);
     cfg.image_gen.model = String::new();
     config::save_config(&state.app_data_dir, &cfg).map_err(|e| e.to_string())?;
@@ -698,23 +784,24 @@ async fn llama_server_health(state: State<'_, AppState>, fork_id: String) -> Res
     let Some(fork) = forks.into_iter().find(|f| f.id == fork_id) else {
         return Ok(false);
     };
-    let client = reqwest::Client::new();
-    let url = format!("http://127.0.0.1:{}/health", fork.port);
-    let healthy = client
-        .get(&url)
-        .timeout(std::time::Duration::from_millis(1200))
-        .send()
-        .await
-        .map(|resp| resp.status().is_success())
-        .unwrap_or(false);
-    Ok(healthy)
+    Ok(providers::llama_cpp::server_healthy(&fork).await)
+}
+
+#[tauri::command]
+async fn llama_server_status(state: State<'_, AppState>, fork_id: String) -> Result<String, String> {
+    let alive = {
+        let mut children = state.llama_children.lock().unwrap();
+        children.get_mut(&fork_id).map(|child| matches!(child.try_wait(), Ok(None))).unwrap_or(false)
+    };
+    if !alive { return Ok("stopped".into()); }
+    let fork = providers::llama_cpp::load_forks(&state.app_data_dir).map_err(|e| e.to_string())?
+        .into_iter().find(|fork| fork.id == fork_id).ok_or("Fork desconhecido")?;
+    Ok(if providers::llama_cpp::server_healthy(&fork).await { "ready" } else { "loading" }.into())
 }
 
 #[tauri::command]
 async fn start_llama_server(state: State<'_, AppState>, fork_id: String) -> Result<(), String> {
-    ensure_llama_ready(&state, &fork_id)
-        .await
-        .map_err(|e| e.to_string())
+    start_llama_process(&state, &fork_id).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -731,47 +818,44 @@ fn stop_llama_server(state: State<AppState>, fork_id: String) -> Result<(), Stri
 /// second call for the fork that's already up and healthy is a fast no-op.
 /// Used both when the user explicitly starts a fork and when a session
 /// auto-starts one on send.
+fn start_llama_process(state: &AppState, fork_id: &str) -> anyhow::Result<()> {
+    let forks = providers::llama_cpp::load_forks(&state.app_data_dir)?;
+    let fork = forks.iter().find(|f| f.id == fork_id)
+        .ok_or_else(|| anyhow::anyhow!("fork desconhecido: {fork_id}"))?;
+    let mut children = state.llama_children.lock().unwrap();
+    if let Some(child) = children.get_mut(fork_id) {
+        if matches!(child.try_wait(), Ok(None)) { return Ok(()); }
+    }
+    children.remove(fork_id);
+    // Release the previous server before starting its replacement. Only app-owned PIDs.
+    for (_, mut child) in children.drain() {
+        if let Some(pid) = child.id() { agent::shell::kill_pid_tree_blocking(pid); }
+        let _ = child.start_kill();
+    }
+    let child = providers::llama_cpp::spawn_server(fork)?;
+    children.insert(fork_id.to_string(), child);
+    Ok(())
+}
+
 pub(crate) async fn ensure_llama_ready(state: &AppState, fork_id: &str) -> anyhow::Result<()> {
-    let already_running = {
-        let mut children = state.llama_children.lock().unwrap();
-        let others: Vec<String> = children
-            .keys()
-            .filter(|k| k.as_str() != fork_id)
-            .cloned()
-            .collect();
-        for other in others {
-            if let Some(mut child) = children.remove(&other) {
-                let _ = child.start_kill();
+    start_llama_process(state, fork_id)?;
+    let forks = providers::llama_cpp::load_forks(&state.app_data_dir)?;
+    let fork = forks.iter().find(|f| f.id == fork_id).unwrap();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+    loop {
+        {
+            let mut children = state.llama_children.lock().unwrap();
+            let child = children.get_mut(fork_id).ok_or_else(|| anyhow::anyhow!("Servidor parado durante o carregamento"))?;
+            if let Some(status) = child.try_wait()? {
+                anyhow::bail!("Servidor encerrou ({status}). Confira a janela de logs e o arquivo .server.log ao lado do .ini");
             }
         }
-        match children.get_mut(fork_id) {
-            Some(child) => match child.try_wait() {
-                Ok(None) => true, // still alive
-                _ => {
-                    children.remove(fork_id);
-                    false
-                }
-            },
-            None => false,
+        if providers::llama_cpp::server_healthy(&fork).await { return Ok(()); }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!("Modelo ainda carregando após 5 minutos. Veja os logs; o processo continua disponível para Parar.");
         }
-    };
-
-    if already_running {
-        return Ok(());
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
-
-    let forks = providers::llama_cpp::load_forks(&state.app_data_dir)?;
-    let fork = forks
-        .into_iter()
-        .find(|f| f.id == fork_id)
-        .ok_or_else(|| anyhow::anyhow!("fork desconhecido: {fork_id}"))?;
-    let child = providers::llama_cpp::start_server(&fork).await?;
-    state
-        .llama_children
-        .lock()
-        .unwrap()
-        .insert(fork_id.to_string(), child);
-    Ok(())
 }
 
 /// Stops whatever local llama.cpp fork is currently tracked, freeing the
@@ -1382,7 +1466,7 @@ async fn test_vision(
 /// `image` não decodifica (BMP, TIFF, HEIC…) é motivo pra mandar a imagem
 /// grande, nunca pra perder a imagem do usuário.
 #[tauri::command]
-async fn read_image_as_data_url(path: String) -> Result<String, String> {
+async fn read_image_as_data_url(path: String, original: Option<bool>) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
         use base64::Engine;
         let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
@@ -1400,7 +1484,7 @@ async fn read_image_as_data_url(path: String) -> Result<String, String> {
         };
         let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
         let cru = format!("data:{mime};base64,{encoded}");
-        Ok(image_util::optimize_data_url(&cru).unwrap_or(cru))
+        Ok(if original.unwrap_or(false) { cru } else { image_util::optimize_data_url(&cru).unwrap_or(cru) })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1584,6 +1668,9 @@ async fn send_message(
     images: Vec<String>,
     display_text: Option<String>,
 ) -> Result<(), String> {
+    if app.state::<AppState>().running_media.lock().unwrap().contains(&session_id) {
+        return Err("Aguarde a geração de mídia terminar".into());
+    }
     // Mensagem de verdade do usuário — zera o guard anti-loop do
     // auto-continue (job em segundo plano / sessão filha reativando a
     // sessão sozinha, ver `agent::spawn_auto_continue_turn`). Sem isso, um
@@ -2209,18 +2296,70 @@ fn list_mcp_servers(state: State<AppState>) -> Result<Vec<mcp::McpServerConfig>,
 }
 
 #[tauri::command]
-fn add_mcp_server(state: State<AppState>, server: mcp::McpServerConfig) -> Result<(), String> {
+async fn add_mcp_server(state: State<'_, AppState>, server: mcp::McpServerConfig) -> Result<(), String> {
     let mut servers = mcp::load_servers(&state.app_data_dir).map_err(|e| e.to_string())?;
     servers.retain(|s| s.name != server.name);
+    let name = server.name.clone();
     servers.push(server);
-    mcp::save_servers(&state.app_data_dir, &servers).map_err(|e| e.to_string())
+    mcp::save_servers(&state.app_data_dir, &servers).map_err(|e| e.to_string())?;
+    state.mcp_clients.disconnect(&name).await;
+    Ok(())
 }
 
 #[tauri::command]
-fn remove_mcp_server(state: State<AppState>, name: String) -> Result<(), String> {
+async fn remove_mcp_server(state: State<'_, AppState>, name: String) -> Result<(), String> {
     let mut servers = mcp::load_servers(&state.app_data_dir).map_err(|e| e.to_string())?;
     servers.retain(|s| s.name != name);
-    mcp::save_servers(&state.app_data_dir, &servers).map_err(|e| e.to_string())
+    mcp::save_servers(&state.app_data_dir, &servers).map_err(|e| e.to_string())?;
+    state.mcp_clients.disconnect(&name).await;
+    Ok(())
+}
+
+#[tauri::command]
+async fn configure_playwright_browser(state: State<'_, AppState>, browser: String,
+    use_extension: Option<bool>, profile: Option<String>) -> Result<(), String> {
+    let mut servers = mcp::load_servers(&state.app_data_dir).map_err(|e| e.to_string())?;
+    let mut preset = mcp::playwright_configured_preset(&state.app_data_dir, &browser,
+        use_extension.unwrap_or(false), profile.as_deref()).map_err(|e| e.to_string())?;
+    if let Some(existing) = servers.iter().find(|s| s.name == preset.name) { preset.enabled = existing.enabled; }
+    servers.retain(|s| s.name != preset.name);
+    servers.push(preset);
+    mcp::save_servers(&state.app_data_dir, &servers).map_err(|e| e.to_string())?;
+    state.mcp_clients.disconnect("playwright").await;
+    Ok(())
+}
+
+#[tauri::command]
+fn open_playwright_extension(app: tauri::AppHandle, state: State<AppState>, browser: String, profile: Option<String>) -> Result<(), String> {
+    mcp::playwright_configured_preset(&state.app_data_dir, &browser, true, profile.as_deref()).map_err(|e| e.to_string())?;
+    let url = "https://chromewebstore.google.com/detail/playwright-extension/mmlmfjhmonkocbjadbfplnigmagldckm";
+    #[cfg(windows)]
+    {
+        let relative = if browser == "chrome" { "Google/Chrome/Application/chrome.exe" } else { "Microsoft/Edge/Application/msedge.exe" };
+        let exe = ["PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"].iter()
+            .filter_map(|key| std::env::var_os(key).map(std::path::PathBuf::from))
+            .map(|root| root.join(relative)).find(|path| path.is_file())
+            .ok_or("Navegador escolhido não instalado. Instale-o ou escolha outro navegador.")?;
+        let mut command = std::process::Command::new(exe);
+        if let Some(folder) = profile.as_deref().map(str::trim).filter(|folder| !folder.is_empty()) {
+            command.arg(format!("--profile-directory={folder}"));
+        }
+        command.arg(url).spawn().map_err(|e| e.to_string())?;
+        let _ = app;
+        Ok(())
+    }
+    #[cfg(not(windows))]
+    {
+        let program = if browser == "chrome" { "google-chrome" } else { "microsoft-edge" };
+        app.opener().open_url(url, Some(program)).map_err(|e| e.to_string())
+    }
+}
+
+#[tauri::command]
+async fn test_playwright_browser(state: State<'_, AppState>) -> Result<(), String> {
+    let servers = mcp::load_servers(&state.app_data_dir).map_err(|e| e.to_string())?;
+    let server = servers.iter().find(|s| s.name == "playwright").ok_or("Configure o Playwright primeiro")?;
+    state.mcp_clients.check_playwright_connection(server).await.map_err(|e| e.to_string())
 }
 
 /// Testa a configuração de um servidor MCP ANTES de salvar (conexão
@@ -2284,12 +2423,14 @@ pub fn run() {
             std::fs::create_dir_all(&app_data_dir).ok();
             let config = config::load_config(&app_data_dir);
             skills::ensure_global_skills_dir(&app_data_dir).ok();
+            if let Err(error) = mcp::ensure_playwright_default(&app_data_dir) { eprintln!("[playwright] {error}"); }
             app.manage(AppState {
                 app_data_dir,
                 config: Mutex::new(config),
                 pending_edits: Mutex::new(HashMap::new()),
                 llama_children: Mutex::new(HashMap::new()),
                 image_gen_children: Mutex::new(HashMap::new()),
+                running_media: Mutex::new(std::collections::HashSet::new()),
                 background_jobs: agent::background::BackgroundJobs::new(app.handle().clone()),
                 mcp_clients: mcp::McpClients::default(),
                 pending_questions: Mutex::new(HashMap::new()),
@@ -2308,6 +2449,17 @@ pub fn run() {
             set_config,
             get_default_long_horizon_config,
             check_external_cli_readiness,
+            list_media_connections,
+            list_media_models,
+            set_media_provider_key,
+            has_media_provider_key,
+            clear_media_provider_key,
+            set_video_gen_key,
+            has_video_gen_key,
+            clear_video_gen_key,
+            list_session_media,
+            open_generated_media,
+            send_media_message,
             set_image_gen_key,
             has_image_gen_key,
             clear_image_gen_key,
@@ -2360,6 +2512,7 @@ pub fn run() {
             has_custom_provider_key,
             list_llama_presets,
             llama_server_health,
+            llama_server_status,
             start_llama_server,
             stop_llama_server,
             list_sessions,
@@ -2430,6 +2583,9 @@ pub fn run() {
             delete_python_tool,
             open_external_url,
             list_mcp_servers,
+            configure_playwright_browser,
+            test_playwright_browser,
+            open_playwright_extension,
             add_mcp_server,
             remove_mcp_server,
             test_mcp_server,

@@ -630,7 +630,7 @@ function cancelRenameFolder() {
   cursor: pointer;
   text-align: left;
   color: #3f3f46;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 500;
 }
 
@@ -650,7 +650,7 @@ function cancelRenameFolder() {
   border: 1px solid #18181b;
   border-radius: 4px;
   padding: 1px 4px;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 500;
   font-family: inherit;
   color: #18181b;
@@ -774,7 +774,7 @@ function cancelRenameFolder() {
   cursor: pointer;
   text-align: left;
   color: #3f3f46;
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 500;
 }
 

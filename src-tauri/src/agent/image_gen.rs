@@ -195,27 +195,28 @@ pub async fn generate(
         .await
         .map_err(|e| anyhow!("resposta nao e JSON valido: {e}"))?;
 
-    let data = value
-        .get("data")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| anyhow!("resposta sem o campo \"data\" (array) esperado"))?;
+    decode_response(&client, &value).await
+}
 
-    if data.is_empty() {
-        return Err(anyhow!("servidor nao devolveu nenhuma imagem"));
+pub async fn decode_response(client: &reqwest::Client, value: &serde_json::Value) -> Result<Vec<GeneratedImage>> {
+    let data = value.get("data").and_then(|v| v.as_array()).filter(|a| !a.is_empty())
+        .ok_or_else(|| anyhow!("Resposta sem imagens no campo data"))?;
+    let mut images = Vec::new();
+    for item in data {
+        let bytes = if let Some(b64) = item.get("b64_json").and_then(|v| v.as_str()) {
+            base64::engine::general_purpose::STANDARD.decode(b64)?
+        } else if let Some(url) = item.get("url").and_then(|v| v.as_str()) {
+            let parsed = reqwest::Url::parse(url)?;
+            if !matches!(parsed.scheme(), "http" | "https") { return Err(anyhow!("URL de imagem inválida")); }
+            client.get(parsed).send().await?.error_for_status()?.bytes().await?.to_vec()
+        } else { return Err(anyhow!("Imagem sem b64_json ou url")); };
+        // Validate and normalize format before saving a .png file.
+        let decoded = image::load_from_memory(&bytes)?;
+        let mut png = std::io::Cursor::new(Vec::new());
+        decoded.write_to(&mut png, image::ImageFormat::Png)?;
+        images.push(GeneratedImage { bytes: png.into_inner() });
     }
-
-    data.iter()
-        .map(|item| {
-            let b64 = item
-                .get("b64_json")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| anyhow!("item da resposta sem \"b64_json\""))?;
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(b64)
-                .map_err(|e| anyhow!("b64_json invalido: {e}"))?;
-            Ok(GeneratedImage { bytes })
-        })
-        .collect()
+    Ok(images)
 }
 
 /// Grava as imagens em `<project_root>/generated_images/`, um arquivo por
@@ -232,9 +233,9 @@ pub fn save_images(project_root: &Path, prompt: &str, images: &[GeneratedImage])
         .enumerate()
         .map(|(i, img)| {
             let filename = if images.len() > 1 {
-                format!("{slug}-{timestamp}-{i}.png")
+                format!("{slug}-{timestamp}-{i}-{}.png", uuid::Uuid::new_v4())
             } else {
-                format!("{slug}-{timestamp}.png")
+                format!("{slug}-{timestamp}-{}.png", uuid::Uuid::new_v4())
             };
             let path = dir.join(filename);
             std::fs::write(&path, &img.bytes)?;

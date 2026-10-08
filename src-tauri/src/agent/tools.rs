@@ -153,9 +153,11 @@ pub fn always_tool_specs() -> Vec<ToolSpec> {
 /// usuário.
 pub fn long_horizon_tool_specs() -> Vec<ToolSpec> {
     vec![
+        spec("read_long_horizon_state", "Le memoria.md e projeto.md atuais desta sessao e devolve os caminhos reais. Funciona mesmo sem projeto aberto. Nao recebe caminho nem ID: o Cerne seleciona a sessao atual. Use antes de atualizar para preservar fatos relevantes. Arquivo vazio significa nada registrado ainda.", json!({"type":"object", "properties":{}, "additionalProperties":false})),
+
         spec(
             "update_long_horizon_memoria",
-            "SUBSTITUI o conteudo inteiro de memoria.md desta sessao (modo Long Horizon) - fatos que NAO mudam: decisoes ja tomadas, erros ja descobertos e por que, convencoes do projeto. Use com moderacao (cresce devagar): so quando algo aqui evitaria a PROXIMA resposta (que nao vai lembrar desta conversa) repetir um erro ou uma pergunta. Isto SUBSTITUI o arquivo, nao acrescenta - inclua o conteudo antigo relevante junto do novo.",
+            "SUBSTITUI o conteudo inteiro de memoria.md desta sessao (modo Long Horizon) - fatos que NAO mudam: decisoes ja tomadas, erros ja descobertos e por que, convencoes do projeto. Use com moderacao (cresce devagar): so quando algo aqui evitaria a PROXIMA resposta (que nao vai lembrar desta conversa) repetir um erro ou uma pergunta. Isto SUBSTITUI o arquivo, nao acrescenta - inclua o conteudo antigo relevante junto do novo. Grave uma unica vez no checkpoint final, com ate 12000 caracteres, somente se houve informacao nova relevante. Depois do checkpoint finalize sem novas ferramentas de trabalho.",
             json!({
                 "type": "object",
                 "properties": {
@@ -166,7 +168,7 @@ pub fn long_horizon_tool_specs() -> Vec<ToolSpec> {
         ),
         spec(
             "update_long_horizon_projeto",
-            "SUBSTITUI o conteudo inteiro de projeto.md desta sessao (modo Long Horizon) - o estado do trabalho AGORA: o que ja foi feito, o que falta, qual e o proximo passo concreto. Chame isto ao FINAL de toda resposta nao-trivial neste modo, antes de parar - a proxima resposta so ve o que estiver aqui, nao o historico desta conversa.",
+            "SUBSTITUI o conteudo inteiro de projeto.md desta sessao (modo Long Horizon) - o estado do trabalho AGORA: o que ja foi feito, o que falta, qual e o proximo passo concreto. Grave uma unica vez no checkpoint FINAL se o trabalho ou seu estado mudou, com ate 12000 caracteres compactos. Preserve decisoes relevantes antigas. Perguntas simples e confirmacoes nao exigem regravar. O Cerne tambem preserva objetivo, plano e contexto recente automaticamente; depois do checkpoint finalize sem novas ferramentas de trabalho.",
             json!({
                 "type": "object",
                 "properties": {

@@ -15,7 +15,9 @@ import {
 } from "../api";
 import { PROVIDER_KINDS, providerLabel, useProviderStore } from "../stores/provider";
 import { SUPPORTED_LOCALES, setLocale, type LocaleCode } from "../i18n";
-import { fontSettings, FONT_SIZE_LIMITS, setFontSetting, resetFontSettings } from "../fontSettings";
+import { fontSettings, UI_FONT_OPTIONS, isUiFontFamily, FONT_SIZE_LIMITS, setFontSetting, resetFontSettings } from "../fontSettings";
+import MediaApiSelector from "./MediaApiSelector.vue";
+import VideoSettings from "./VideoSettings.vue";
 import LlamaForkRow from "./LlamaForkRow.vue";
 import ModelBrowserDialog from "./ModelBrowserDialog.vue";
 import { MCP_CONNECTORS, type McpConnector } from "../content/mcpConnectors";
@@ -46,6 +48,11 @@ async function clearOpenrouterKey() {
 
 function onLocaleChange(value: string) {
   setLocale(value as LocaleCode);
+}
+
+function onFontFamilyChange(event: Event) {
+  const value = (event.target as HTMLSelectElement).value;
+  if (isUiFontFamily(value)) setFontSetting("family", value);
 }
 
 // Estado do modal de navegação de modelos — um só modal reutilizado pra
@@ -221,6 +228,42 @@ async function removeCustomProvider(id: string) {
 }
 
 const mcpServers = ref<McpServerConfig[]>([]);
+const playwrightBrowser = ref("chrome");
+const playwrightMode = ref("separate");
+const playwrightProfile = ref("");
+const playwrightDialog = ref(false);
+const playwrightSaving = ref(false);
+const playwrightTesting = ref(false);
+const playwrightStatus = ref("");
+const playwrightError = ref("");
+watch([playwrightBrowser, playwrightMode, playwrightProfile], () => {
+  playwrightStatus.value = ""; playwrightError.value = "";
+});
+async function savePlaywrightBrowser() {
+  playwrightSaving.value = true;
+  playwrightStatus.value = ""; playwrightError.value = "";
+  try {
+    await api.configurePlaywrightBrowser(playwrightBrowser.value, playwrightMode.value === "extension", playwrightProfile.value);
+    await loadMcpServers();
+    playwrightStatus.value = t("settings.playwrightSaved");
+    return true;
+  } catch (error) { playwrightError.value = String(error); return false; }
+  finally { playwrightSaving.value = false; }
+}
+async function testPlaywrightBrowser() {
+  playwrightTesting.value = true;
+  try {
+    if (!await savePlaywrightBrowser()) return;
+    playwrightStatus.value = t("settings.playwrightConnecting");
+    await api.testPlaywrightBrowser();
+    playwrightStatus.value = t("settings.playwrightConnected");
+  } catch (error) { playwrightStatus.value = ""; playwrightError.value = String(error); }
+  finally { playwrightTesting.value = false; }
+}
+async function openPlaywrightExtension() {
+  try { await api.openPlaywrightExtension(playwrightBrowser.value, playwrightProfile.value); }
+  catch (error) { playwrightError.value = String(error); }
+}
 const newMcpName = ref("");
 const newMcpCommand = ref("");
 const newMcpArgs = ref("");
@@ -245,6 +288,12 @@ const mcpTestError = ref("");
 
 async function loadMcpServers() {
   mcpServers.value = await api.listMcpServers();
+  const server = mcpServers.value.find((s) => s.name === "playwright");
+  const args = server?.args ?? [];
+  const browserIndex = args.indexOf("--browser");
+  if (browserIndex >= 0) playwrightBrowser.value = args[browserIndex + 1] ?? "chrome";
+  playwrightMode.value = args.includes("--extension") ? "extension" : "separate";
+  playwrightProfile.value = server?.env.PLAYWRIGHT_MCP_PROFILE_DIR_NAME ?? "";
 }
 
 /** `KEY=VALOR` uma por linha — formato mais fácil de editar numa textarea do
@@ -701,6 +750,24 @@ async function saveMemoryContent() {
 // ver DEFAULT_LONG_HORIZON_PROMPT em models.rs) e persiste via o
 // set_config genérico, igual a qualquer outro campo de AppConfig.
 const longHorizonResetDone = ref(false);
+const longHorizonSaved = ref(false);
+const longHorizonSaving = ref(false);
+const longHorizonSaveError = ref("");
+
+async function saveLongHorizonConfig() {
+  longHorizonSaving.value = true;
+  longHorizonSaved.value = false;
+  longHorizonSaveError.value = "";
+  try {
+    await providerStore.saveConfig();
+    longHorizonSaved.value = true;
+    setTimeout(() => (longHorizonSaved.value = false), 2000);
+  } catch (error) {
+    longHorizonSaveError.value = String(error);
+  } finally {
+    longHorizonSaving.value = false;
+  }
+}
 
 async function resetLongHorizonConfig() {
   if (!providerStore.config) return;
@@ -1024,6 +1091,14 @@ watch(csGruposVisiveis, (grupos) => {
         <p class="hint">{{ $t("settings.appearanceHint") }}</p>
 
         <div class="font-setting-row">
+          <label for="cerne-font-family" class="font-setting-label">{{ $t("settings.fontFamily") }}</label>
+          <select id="cerne-font-family" class="text-input" :value="fontSettings.family" @change="onFontFamilyChange">
+            <option v-for="font in UI_FONT_OPTIONS" :key="font.id" :value="font.id">{{ font.label }}</option>
+          </select>
+          <p class="hint">{{ $t("settings.fontFamilyHint") }}</p>
+        </div>
+
+        <div class="font-setting-row">
           <label class="font-setting-label">
             {{ $t("settings.fontChat") }}
             <span class="font-setting-value">{{ fontSettings.chat }}px</span>
@@ -1297,6 +1372,8 @@ watch(csGruposVisiveis, (grupos) => {
         </div>
 
         <h3 class="subhead">{{ $t("settings.imageGenManualTitle") }}</h3>
+        <MediaApiSelector kind="image" />
+        <template v-if="!providerStore.config.image_gen.provider || providerStore.config.image_gen.provider === 'compatible'">
         <p class="hint">{{ $t("settings.imageGenManualHint") }}</p>
         <div class="field">
           <label>{{ $t("settings.imageGenBaseUrl") }}</label>
@@ -1339,9 +1416,22 @@ watch(csGruposVisiveis, (grupos) => {
           <img v-if="imageGenTestPreview" :src="imageGenTestPreview" class="image-gen-preview" alt="" />
         </div>
         <p v-if="imageGenTestStatus === 'error'" class="error-text">{{ imageGenTestError }}</p>
+        </template>
+        <VideoSettings />
         </section>
 
       <section v-show="activeSection === 'mcp-servers'" class="cs-panel">
+        <div class="skill-row mcp-row">
+          <div class="skill-info">
+            <span class="skill-name">Playwright</span>
+            <p class="hint">{{ $t("settings.playwrightSummary") }}</p>
+            <span class="hint">{{ playwrightBrowser === 'msedge' ? 'Microsoft Edge' : 'Google Chrome' }} · {{ $t(playwrightMode === 'extension' ? 'settings.playwrightOwnProfile' : 'settings.playwrightSeparateProfile') }}</span>
+          </div>
+          <button class="btn-secondary playwright-config-button" @click="playwrightDialog = true"
+            :aria-label="$t('settings.playwrightConfigure')" :title="$t('settings.playwrightConfigure')">
+            <span class="msi">settings</span> {{ $t("settings.playwrightConfigure") }}
+          </button>
+        </div>
         <p class="hint">
           {{ $t("settings.mcpHintBefore") }}
           <code>mcp__{{ '{servidor}' }}__{{ '{tool}' }}</code>{{ $t("settings.mcpHintAfter") }}
@@ -1743,6 +1833,14 @@ watch(csGruposVisiveis, (grupos) => {
         </div>
 
         <div class="mcp-form-actions">
+          <button class="btn-primary" :disabled="longHorizonSaving" @click="saveLongHorizonConfig">
+            {{ $t("sidebar.save") }}
+          </button>
+          <span v-if="longHorizonSaved" class="mcp-test-success" role="status">
+            <span class="msi">check_circle</span>
+            {{ $t("composer.longHorizonSaved") }}
+          </span>
+          <span v-if="longHorizonSaveError" role="alert">{{ longHorizonSaveError }}</span>
           <button class="btn-secondary" @click="resetLongHorizonConfig">
             {{ $t("settings.longHorizonReset") }}
           </button>
@@ -1756,6 +1854,42 @@ watch(csGruposVisiveis, (grupos) => {
         </div>
       </div>
 
+    <Dialog v-model:visible="playwrightDialog" modal :header="$t('settings.playwrightConfigure')"
+      :style="{ width: '640px', maxWidth: '95vw' }" :closable="!playwrightTesting" :close-on-escape="!playwrightTesting">
+      <div class="playwright-config">
+        <label for="playwright-browser">{{ $t("settings.playwrightBrowser") }}</label>
+        <select id="playwright-browser" v-model="playwrightBrowser" :disabled="playwrightTesting">
+          <option value="chrome">Google Chrome</option><option value="msedge">Microsoft Edge</option>
+        </select>
+        <label for="playwright-mode">{{ $t("settings.playwrightMode") }}</label>
+        <select id="playwright-mode" v-model="playwrightMode" :disabled="playwrightTesting">
+          <option value="separate">{{ $t("settings.playwrightSeparateProfile") }}</option>
+          <option value="extension">{{ $t("settings.playwrightOwnProfile") }}</option>
+        </select>
+        <template v-if="playwrightMode === 'extension'">
+          <ol class="playwright-steps">
+            <li>{{ $t("settings.playwrightStepInstall") }}</li>
+            <li>{{ $t("settings.playwrightStepOpen") }}</li>
+            <li>{{ $t("settings.playwrightStepTest") }}</li>
+            <li>{{ $t("settings.playwrightStepAuthorize") }}</li>
+          </ol>
+          <button class="btn-secondary" :disabled="playwrightTesting" @click="openPlaywrightExtension">{{ $t("settings.playwrightInstallExtension") }}</button>
+          <label for="playwright-profile">{{ $t("settings.playwrightProfileFolder") }}</label>
+          <input id="playwright-profile" v-model="playwrightProfile" :disabled="playwrightTesting" placeholder="Default / Profile 1" />
+          <p class="hint">{{ $t("settings.playwrightProfileHelp") }}</p>
+        </template>
+        <p v-else class="hint">{{ $t("settings.playwrightSeparateHelp") }}</p>
+        <p class="hint">{{ $t("settings.playwrightRequirements") }}</p>
+        <p class="hint">{{ $t("settings.playwrightControlHint") }}</p>
+        <p v-if="playwrightStatus" role="status">{{ playwrightStatus }}</p>
+        <p v-if="playwrightError" class="error-text" role="alert">{{ playwrightError }}</p>
+      </div>
+      <template #footer>
+        <button class="btn-secondary" :disabled="playwrightSaving || playwrightTesting" @click="testPlaywrightBrowser">{{ $t("settings.playwrightTestConnection") }}</button>
+        <button class="btn-primary" :disabled="playwrightSaving || playwrightTesting" @click="savePlaywrightBrowser">{{ $t("sidebar.save") }}</button>
+      </template>
+    </Dialog>
+
     <ModelBrowserDialog
       v-model:visible="modelBrowser.visible"
       :kind="modelBrowser.kind"
@@ -1767,6 +1901,12 @@ watch(csGruposVisiveis, (grupos) => {
 </template>
 
 <style scoped>
+.playwright-config { display: grid; gap: 10px; }
+.playwright-config select, .playwright-config input { width: 100%; }
+.playwright-steps { margin: 2px 0; padding-left: 24px; line-height: 1.5; }
+.playwright-steps li + li { margin-top: 8px; }
+.playwright-config-button { display: flex; align-items: center; gap: 5px; }
+
 /* O Dialog do PrimeVue vem com padding proprio — zerado aqui pro layout de
    dois paineis encostar nas bordas (o nav tem borda e fundo proprios). */
 .settings-dialog :deep(.p-dialog-content) {

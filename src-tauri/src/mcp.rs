@@ -185,6 +185,49 @@ pub fn save_servers(app_data_dir: &Path, servers: &[McpServerConfig]) -> Result<
     Ok(())
 }
 
+pub fn playwright_preset(app_data_dir: &Path, browser: &str) -> Result<McpServerConfig> {
+    anyhow::ensure!(matches!(browser, "chrome" | "msedge"), "Escolha Chrome ou Edge");
+    let mut env = HashMap::new();
+    env.insert("PLAYWRIGHT_MCP_USER_DATA_DIR".into(), app_data_dir.join("browser-profiles").join(browser).to_string_lossy().into_owned());
+    Ok(McpServerConfig {
+        name: "playwright".into(), command: "npx".into(),
+        args: vec!["-y", "@playwright/mcp@0.0.83", "--browser", browser,
+            "--caps", "devtools", "--console-level", "debug", "--codegen", "none"].into_iter().map(str::to_owned).collect(),
+        env, url: None, bearer_token: None, enabled: true,
+    })
+}
+
+pub fn playwright_configured_preset(app_data_dir: &Path, browser: &str, use_extension: bool,
+    profile: Option<&str>) -> Result<McpServerConfig> {
+    let mut preset = playwright_preset(app_data_dir, browser)?;
+    if use_extension {
+        preset.args.push("--extension".into());
+        preset.env.remove("PLAYWRIGHT_MCP_USER_DATA_DIR");
+        if let Some(profile) = profile.map(str::trim).filter(|p| !p.is_empty()) {
+            anyhow::ensure!(profile.len() <= 100 && !profile.contains(['/', '\\', '\n', '\r']),
+                "Informe apenas a pasta do perfil, como Default ou Profile 1");
+            preset.env.insert("PLAYWRIGHT_MCP_PROFILE_DIR_NAME".into(), profile.into());
+        }
+    }
+    Ok(preset)
+}
+
+/// Migração única: respeita servidores existentes, desativação e remoção.
+pub fn ensure_playwright_default(app_data_dir: &Path) -> Result<()> {
+    let marker = app_data_dir.join("playwright-default-v1");
+    if marker.exists() { return Ok(()); }
+    let mut servers = load_servers(app_data_dir)?;
+    if !servers.iter().any(|server| server.name == "playwright") {
+        let browser = if cfg!(windows) && !Path::new("C:/Program Files/Google/Chrome/Application/chrome.exe").exists()
+            && !Path::new("C:/Program Files (x86)/Google/Chrome/Application/chrome.exe").exists() { "msedge" } else { "chrome" };
+        servers.push(playwright_preset(app_data_dir, browser)?);
+        save_servers(app_data_dir, &servers)?;
+    }
+    std::fs::create_dir_all(app_data_dir)?;
+    std::fs::write(marker, "1")?;
+    Ok(())
+}
+
 type McpClient = RunningService<RoleClient, ()>;
 
 /// Monta o `Command` do processo do servidor MCP. No Windows, comandos do
@@ -371,7 +414,31 @@ impl McpClients {
             .map_err(|e| {
                 anyhow!("erro chamando tool MCP '{tool_name}' no servidor '{server_name}': {e}")
             })?;
+        if result.is_error == Some(true) { return Err(anyhow!(extract_text(&result))); }
         Ok(extract_text(&result))
+    }
+
+    /// Troca de configuração/desativação encerra a conexão antiga, preservando abas pessoais.
+    pub async fn disconnect(&self, name: &str) {
+        if let Some(client) = self.0.lock().await.remove(name) {
+            // Não envie browser_close: no modo extensão isso pode fechar uma aba do usuário.
+            let _ = client.cancel().await;
+        }
+    }
+
+    pub async fn check_playwright_connection(&self, server: &McpServerConfig) -> Result<()> {
+        let attempt = async {
+            self.ensure_connected(server).await?;
+            self.call("mcp__playwright__browser_tabs", serde_json::json!({"action":"list"})).await?;
+            Ok(())
+        };
+        match tokio::time::timeout(std::time::Duration::from_secs(45), attempt).await {
+            Ok(result) => result,
+            Err(_) => {
+                self.disconnect("playwright").await;
+                Err(anyhow!("Conexao nao autorizada em 45 segundos. Instale a extensao no perfil escolhido, mantenha uma aba aberta e autorize a conexao; depois tente novamente."))
+            }
+        }
     }
 
     /// Encerra toda conexao MCP ativa — chamado ao fechar o app.
@@ -490,6 +557,88 @@ mod tests {
     #[test]
     fn parse_namespaced_name_errors_without_server_tool_separator() {
         assert!(parse_namespaced_name("mcp__onlyserver").is_err());
+    }
+
+    #[test]
+    fn playwright_extension_reuses_profile_without_redirecting_user_data() {
+        let dir = std::path::Path::new("test-app");
+        let personal = playwright_configured_preset(dir, "msedge", true, Some(" Profile 1 ")).unwrap();
+        assert!(personal.args.contains(&"--extension".into()));
+        assert!(!personal.env.contains_key("PLAYWRIGHT_MCP_USER_DATA_DIR"));
+        assert_eq!(personal.env["PLAYWRIGHT_MCP_PROFILE_DIR_NAME"], "Profile 1");
+        let automatic = playwright_configured_preset(dir, "chrome", true, None).unwrap();
+        assert!(!automatic.env.contains_key("PLAYWRIGHT_MCP_PROFILE_DIR_NAME"));
+        let separate = playwright_configured_preset(dir, "chrome", false, Some("Profile 1")).unwrap();
+        assert!(!separate.args.contains(&"--extension".into()));
+        assert!(separate.env.contains_key("PLAYWRIGHT_MCP_USER_DATA_DIR"));
+        assert!(!separate.env.contains_key("PLAYWRIGHT_MCP_PROFILE_DIR_NAME"));
+        assert!(playwright_configured_preset(dir, "chrome", true, Some("../profile")).is_err());
+    }
+
+    #[test]
+    fn playwright_default_preserves_existing_servers_and_user_disable_or_remove() {
+        let dir = std::env::temp_dir().join(format!("cerne-playwright-{}", uuid::Uuid::new_v4()));
+        let mut other = playwright_preset(&dir, "chrome").unwrap(); other.name = "other".into();
+        save_servers(&dir, &[other.clone()]).unwrap();
+        ensure_playwright_default(&dir).unwrap();
+        let mut servers = load_servers(&dir).unwrap();
+        assert_eq!(servers.len(), 2);
+        assert!(servers.contains(&other));
+        servers.iter_mut().find(|s| s.name == "playwright").unwrap().enabled = false;
+        save_servers(&dir, &servers).unwrap();
+        ensure_playwright_default(&dir).unwrap();
+        assert!(!load_servers(&dir).unwrap().iter().find(|s| s.name == "playwright").unwrap().enabled);
+        save_servers(&dir, &[other]).unwrap();
+        ensure_playwright_default(&dir).unwrap();
+        assert_eq!(load_servers(&dir).unwrap().len(), 1);
+        assert!(playwright_preset(&dir, "invalid").is_err());
+        let edge = playwright_preset(&dir, "msedge").unwrap();
+        assert!(edge.env["PLAYWRIGHT_MCP_USER_DATA_DIR"].ends_with("msedge"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "Requires installed Chrome and Node; opens a browser for a local fixture"]
+    async fn playwright_real_form_click_and_console() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let web = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                tokio::spawn(async move {
+                    let mut request = [0u8; 4096]; let _ = socket.read(&mut request).await;
+                    let html = r#"<!doctype html><html><body><label>Nome <input id="nome"></label><button onclick="document.getElementById('result').textContent='Enviado: '+document.getElementById('nome').value;console.log('FORM_OK:'+document.getElementById('nome').value)">Enviar</button><p id="result"></p></body></html>"#;
+                    let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{html}", html.len());
+                    let _ = socket.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        let dir = std::env::temp_dir().join(format!("cerne browser test {}", uuid::Uuid::new_v4()));
+        let browser = std::env::var("CERNE_TEST_BROWSER").unwrap_or_else(|_| "chrome".into());
+        let preset = playwright_preset(&dir, &browser).unwrap();
+        let clients = McpClients::default();
+        let tools = clients.tool_specs(&[preset]).await;
+        assert!(tools.iter().any(|t| t.function.name == "mcp__playwright__browser_fill_form"));
+        clients.call("mcp__playwright__browser_navigate", serde_json::json!({"url":format!("http://{address}/")})).await.unwrap();
+        let snapshot = clients.call("mcp__playwright__browser_snapshot", serde_json::json!({})).await.unwrap();
+        let element_ref = |text: &str, label: &str| text.lines().find(|line| line.contains(label))
+            .unwrap().split("ref=").nth(1).unwrap().split(']').next().unwrap().to_owned();
+        let field = element_ref(&snapshot, "textbox \"Nome\"");
+        let fill = clients.call("mcp__playwright__browser_fill_form", serde_json::json!({"fields":[{"name":"Nome","type":"textbox","target":field,"value":"Cerne"}]})).await.unwrap();
+        assert!(!fill.starts_with("ERRO"));
+        let snapshot = clients.call("mcp__playwright__browser_snapshot", serde_json::json!({})).await.unwrap();
+        let button = element_ref(&snapshot, "button \"Enviar\"");
+        let click = clients.call("mcp__playwright__browser_click", serde_json::json!({"element":"Enviar","target":button})).await.unwrap();
+        let snapshot = clients.call("mcp__playwright__browser_snapshot", serde_json::json!({})).await.unwrap();
+        assert!(click.contains("Enviado: Cerne") || snapshot.contains("Enviado: Cerne"), "click={click} snapshot={snapshot}");
+        let console = clients.call("mcp__playwright__browser_console_messages", serde_json::json!({"level":"info"})).await.unwrap();
+        assert!(console.contains("FORM_OK:Cerne"));
+        clients.call("mcp__playwright__browser_close", serde_json::json!({})).await.unwrap();
+        clients.disconnect_all().await;
+        assert!(dir.join("browser-profiles").join(&browser).is_dir());
+        web.abort();
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]

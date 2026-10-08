@@ -290,26 +290,64 @@ pub fn update_long_horizon_enabled(
 /// ligou o modo (pasta ainda não existe) — não é erro, é "ainda não tem nada".
 pub fn read_long_horizon_memoria(app_data_dir: &PathBuf, id: &str) -> Result<String> {
     let path = session_dir(app_data_dir, id).join("long_horizon").join("memoria.md");
-    Ok(std::fs::read_to_string(path).unwrap_or_default())
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => Ok(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(anyhow::anyhow!("Não foi possível ler {}: {error}", path.display())),
+    }
 }
 
 pub fn write_long_horizon_memoria(app_data_dir: &PathBuf, id: &str, conteudo: &str) -> Result<()> {
     let dir = session_dir(app_data_dir, id).join("long_horizon");
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("memoria.md"), conteudo)?;
-    Ok(())
+    write_compact_state(&dir.join("memoria.md"), conteudo)
 }
 
 pub fn read_long_horizon_projeto(app_data_dir: &PathBuf, id: &str) -> Result<String> {
     let path = session_dir(app_data_dir, id).join("long_horizon").join("projeto.md");
-    Ok(std::fs::read_to_string(path).unwrap_or_default())
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => Ok(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(anyhow::anyhow!("Não foi possível ler {}: {error}", path.display())),
+    }
 }
 
 pub fn write_long_horizon_projeto(app_data_dir: &PathBuf, id: &str, conteudo: &str) -> Result<()> {
     let dir = session_dir(app_data_dir, id).join("long_horizon");
     std::fs::create_dir_all(&dir)?;
-    std::fs::write(dir.join("projeto.md"), conteudo)?;
-    Ok(())
+    write_compact_state(&dir.join("projeto.md"), conteudo)
+}
+
+fn write_compact_state(path: &std::path::Path, contents: &str) -> Result<()> {
+    anyhow::ensure!(contents.chars().count() <= crate::agent::long_horizon::MAX_STATE_CHARS,
+        "Estado grande demais: limite de 12000 caracteres; compacte antes de salvar");
+    let old = std::fs::read_to_string(path).unwrap_or_default();
+    anyhow::ensure!(!contents.trim().is_empty() || old.trim().is_empty(),
+        "Um estado vazio nao pode apagar um registro existente");
+    if old.trim() == contents.trim() { return Ok(()); }
+    if !old.is_empty() { write_atomic(&path.with_extension("previous.md"), &old)?; }
+    write_atomic(path, contents)
+}
+
+#[cfg(test)]
+mod compact_state_tests {
+    use super::*;
+    #[test]
+    fn duplicate_write_is_noop_and_failed_checkpoint_preserves_state() {
+        let dir = std::env::temp_dir().join(format!("cerne-state-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("memoria.md");
+        write_compact_state(&path, "Java Angular").unwrap();
+        write_compact_state(&path, "Java Angular").unwrap();
+        assert!(!path.with_extension("previous.md").exists());
+        assert!(write_compact_state(&path, "").is_err());
+        assert!(write_compact_state(&path, &"x".repeat(12001)).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "Java Angular");
+        write_compact_state(&path, "Java Angular; testes passando").unwrap();
+        assert_eq!(std::fs::read_to_string(path.with_extension("previous.md")).unwrap(), "Java Angular");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "Java Angular; testes passando");
+        std::fs::remove_dir_all(dir).ok();
+    }
 }
 
 /// Grava via tmp + rename — um crash/kill NO MEIO da escrita deixa o `.tmp`
@@ -317,7 +355,7 @@ pub fn write_long_horizon_projeto(app_data_dir: &PathBuf, id: &str, conteudo: &s
 /// `tarefas.json` de verdade. A fila de tarefas reescreve este arquivo a
 /// cada item processado (bem mais vezes que memoria.md/projeto.md), então
 /// vale a pena aqui mesmo sem mexer nos outros `write_*` já existentes.
-fn write_atomic(path: &std::path::Path, contents: &str) -> Result<()> {
+pub(crate) fn write_atomic(path: &std::path::Path, contents: &str) -> Result<()> {
     let tmp = path.with_extension("tmp");
     std::fs::write(&tmp, contents)?;
     std::fs::rename(&tmp, path)?;
@@ -338,7 +376,11 @@ pub fn update_task_queue_enabled(app_data_dir: &PathBuf, id: &str, enabled: bool
 
 pub fn read_task_queue(app_data_dir: &PathBuf, id: &str) -> Result<String> {
     let path = session_dir(app_data_dir, id).join("task_queue").join("tarefas.json");
-    Ok(std::fs::read_to_string(path).unwrap_or_default())
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => Ok(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(anyhow::anyhow!("Não foi possível ler {}: {error}", path.display())),
+    }
 }
 
 /// Valida (via `task_queue::parse_tasks`) ANTES de gravar — nunca deixa um

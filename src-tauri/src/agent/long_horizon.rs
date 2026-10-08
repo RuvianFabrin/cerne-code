@@ -12,8 +12,7 @@
 //! recalculada a cada chamada** (`build_model_view`), montada a partir do
 //! `messages` de verdade mas nunca gravada em disco por conta própria: system
 //! prompt atual + o briefing (memoria.md/projeto.md, a fonte de verdade
-//! compactada) + tudo que aconteceu DESTE turno em diante. Turnos anteriores
-//! nunca entram na visão do modelo, mas continuam no histórico completo pra
+//! compactada) + tudo que aconteceu DESTE turno em diante. Turnos anteriores entram apenas como objetivo, plano e trechos limitados, mas continuam no histórico completo pra
 //! sempre — a versão anterior deste módulo (até 2026-09-20) podava
 //! `messages` de verdade, igual a compactação normal do Cerne já fazia;
 //! achado ao vivo testando com o usuário que isso escondia trabalho já feito
@@ -22,6 +21,101 @@
 use crate::models::ChatMessage;
 use crate::sessions;
 use anyhow::Result;
+use serde::{Deserialize, Serialize};
+
+pub const MAX_STATE_CHARS: usize = 12_000;
+
+pub fn bounded(text: &str, limit: usize) -> String {
+    let mut chars = text.chars();
+    let result: String = chars.by_ref().take(limit).collect();
+    if chars.next().is_some() { format!("{result}\n[trecho limitado pelo Cerne]") } else { result }
+}
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(default)]
+struct Checkpoint {
+    objective: String,
+    recent: Vec<(String, String)>,
+    tool_results: Vec<String>,
+    plan: serde_json::Value,
+}
+
+fn checkpoint_path(dir: &std::path::Path, id: &str) -> std::path::PathBuf {
+    dir.join("sessions").join(id).join("long_horizon").join("checkpoint.json")
+}
+
+fn read_checkpoint(dir: &std::path::Path, id: &str) -> Checkpoint {
+    std::fs::read_to_string(checkpoint_path(dir, id)).ok()
+        .and_then(|text| serde_json::from_str(&text).ok()).unwrap_or_default()
+}
+
+fn save_checkpoint(dir: &std::path::Path, id: &str, state: &Checkpoint) -> Result<()> {
+    let path = checkpoint_path(dir, id);
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    sessions::write_atomic(&path, &serde_json::to_string_pretty(state)?)
+}
+
+/// Preserva objetivo e contexto recente antes de reduzir a visão do modelo.
+pub fn checkpoint_history(dir: &std::path::Path, id: &str, messages: &[ChatMessage]) -> Result<()> {
+    let mut state = read_checkpoint(dir, id);
+    if state.objective.is_empty() {
+        if let Some(first) = messages.iter().find(|m| m.role == "user") {
+            state.objective = bounded(first.display_content.as_deref().unwrap_or(&first.content), 3000);
+        }
+    }
+    state.recent = messages.iter().rev()
+        .filter(|m| m.role == "user" || (m.role == "assistant" && !m.content.trim().is_empty()))
+        .take(4).map(|m| (m.role.clone(), bounded(m.display_content.as_deref().unwrap_or(&m.content), 2500))).collect();
+    state.recent.reverse();
+    state.tool_results = messages.iter().rev().filter(|m| m.role == "tool")
+        .filter(|m| !matches!(m.name.as_deref(), Some("update_long_horizon_memoria" | "update_long_horizon_projeto" | "read_long_horizon_state" | "todo_list")))
+        .take(4).map(|m| format!("{}: {}", m.name.as_deref().unwrap_or("ferramenta"), bounded(&m.content, 1000))).collect();
+    state.tool_results.reverse();
+    if state.plan.is_null() {
+        state.plan = messages.iter().rev().flat_map(|m| m.tool_calls.iter().flatten())
+            .filter(|call| call.function.name == "todo_list")
+            .find_map(|call| serde_json::from_str::<serde_json::Value>(&call.function.arguments).ok()
+                .and_then(|args| args.get("todos").filter(|plan| plan.is_array() && plan.to_string().chars().count() <= MAX_STATE_CHARS).cloned()))
+            .unwrap_or(serde_json::Value::Null);
+    }
+    save_checkpoint(dir, id, &state)
+}
+
+pub fn save_plan(dir: &std::path::Path, id: &str, plan: serde_json::Value) -> Result<()> {
+    anyhow::ensure!(plan.is_array(), "todos deve ser uma lista");
+    anyhow::ensure!(plan.to_string().chars().count() <= MAX_STATE_CHARS, "Plano grande demais; use passos compactos");
+    let mut state = read_checkpoint(dir, id);
+    state.plan = plan;
+    save_checkpoint(dir, id, &state)
+}
+
+/// Detecta ciclos com argumentos e resultados iguais, inclusive A→B→A→B.
+#[derive(Default)]
+pub struct CycleGuard { calls: Vec<String> }
+impl CycleGuard {
+    pub fn observe(&mut self, name: &str, args: &str, result: &str, repeats: usize) -> bool {
+        let normalized = serde_json::from_str::<serde_json::Value>(args)
+            .map(|v| v.to_string()).unwrap_or_else(|_| args.to_owned());
+        self.calls.push(format!("{name}\n{normalized}\n{result}"));
+        let repeats = repeats.clamp(3, 10);
+        if self.calls.len() > 40 { self.calls.remove(0); }
+        (1..=4).any(|width| {
+            let size = width * repeats;
+            if self.calls.len() < size { return false; }
+            let window = &self.calls[self.calls.len() - size..];
+            window.chunks(width).all(|chunk| chunk == &window[..width])
+        })
+    }
+}
+
+/// A fase de registro não pode reabrir as ferramentas de trabalho.
+pub fn phase_tools(specs: &[crate::models::ToolSpec], attempts: usize, memory_saved: bool,
+    project_saved: bool, final_response: bool) -> Vec<crate::models::ToolSpec> {
+    specs.iter().filter(|spec| !final_response && (attempts == 0 ||
+        (!memory_saved && spec.function.name == "update_long_horizon_memoria") ||
+        (!project_saved && spec.function.name == "update_long_horizon_projeto")))
+        .cloned().collect()
+}
 
 /// Marca (`ChatMessage.name`) a nota visível que avisa o usuário de que um
 /// novo passo do Long Horizon começou — mesmo mecanismo que `background_job_done`/
@@ -29,6 +123,46 @@ use anyhow::Result;
 /// harness na conversa sem fingir que foi o usuário ou o modelo que "disse"
 /// aquilo.
 pub const RESET_MARKER_NAME: &str = "long_horizon_reset";
+
+pub fn stop_message(reason: &str) -> ChatMessage {
+    ChatMessage { role: "assistant".into(), content: format!("⚠️ Cerne pausou: {reason}"),
+        tool_calls: None, tool_call_id: None, name: None, images: Vec::new(), display_content: None }
+}
+
+/// Lembrete por turno, inclusive quando só a fila está habilitada.
+pub fn persistence_reminder() -> &'static str {
+    "\n\n[Estado da sessão — antes de encerrar este turno]\n\
+     Avalie se surgiu informação relevante, mesmo em uma conversa sem ferramentas. \
+     Se houver decisões, preferências, restrições ou aprendizados duráveis novos, chame \
+     update_long_horizon_memoria. Se houver informação importante nova sobre o projeto \
+     (estado atual, resultado verificado, pendência ou próximo passo), chame \
+     update_long_horizon_projeto. Salve de forma compacta, em tópicos curtos, sem \
+     duplicações, transcrição da conversa ou detalhes passageiros. Preserve o conteúdo \
+     anterior ainda relevante: as ferramentas substituem o arquivo inteiro. Se nada \
+     relevante mudou, não regrave. Dizer que salvou não basta: confirme o sucesso da \
+     ferramenta antes da resposta final. Preserve o formato de confirmação da fila."
+}
+
+/// No caller-supplied session or filesystem path: only this session's state.
+pub fn state_directory(dir: &std::path::Path, id: &str) -> std::path::PathBuf {
+    dir.join("sessions").join(id).join("long_horizon")
+}
+
+pub fn read_state(dir: &std::path::PathBuf, id: &str) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&serde_json::json!({
+        "directory": state_directory(dir, id),
+        "memoria_path": state_directory(dir, id).join("memoria.md"),
+        "projeto_path": state_directory(dir, id).join("projeto.md"),
+        "memoria": bounded(&sessions::read_long_horizon_memoria(dir, id)?, MAX_STATE_CHARS),
+        "projeto": bounded(&sessions::read_long_horizon_projeto(dir, id)?, MAX_STATE_CHARS)
+    }))?)
+}
+
+pub fn is_state_file(dir: &std::path::Path, id: &str, path: &str) -> bool {
+    let Ok(requested) = std::fs::canonicalize(path) else { return false; };
+    ["memoria.md", "projeto.md"].iter().any(|name|
+        std::fs::canonicalize(state_directory(dir, id).join(name)).map(|allowed| allowed == requested).unwrap_or(false))
+}
 
 /// Monta o texto do briefing a partir do estado em disco desta sessão.
 /// String vazia nos dois arquivos (sessão que acabou de ligar o modo) ainda
@@ -40,9 +174,13 @@ pub fn build_briefing(app_data_dir: &std::path::PathBuf, session_id: &str) -> Re
 
     let mut briefing = String::from(
         "## Estado desta sessão (Long Horizon)\n\n\
-         Isto substitui o histórico da conversa — é a ÚNICA coisa que você sabe sobre o que já \
-         aconteceu aqui. Não assuma nada além do que está escrito abaixo.\n\n",
+         Estes registros são o estado persistido da sessão. No Long Horizon, substituem \
+         o histórico dos turnos anteriores; na fila sem Long Horizon, complementam o histórico. \
+         Não invente fatos que não estejam registrados ou verificados neste turno.\n\n",
     );
+
+    briefing.push_str(&format!("Diretório REAL desta sessão: `{}`.\nArquivos: `{}` e `{}`.\nPara reler, use read_long_horizon_state (sem caminho). Para salvar, use update_long_horizon_memoria/projeto; o Cerne resolve o caminho automaticamente. Não use pastas de outra sessão nem a raiz do projeto para estes registros.\n\n",
+        state_directory(app_data_dir, session_id).display(), state_directory(app_data_dir, session_id).join("memoria.md").display(), state_directory(app_data_dir, session_id).join("projeto.md").display()));
 
     // Achado no turno anterior: se a resposta final se repetiu byte a byte
     // vezes demais (`sessions::finalize_long_horizon_turn`), avisa aqui —
@@ -69,10 +207,9 @@ pub fn build_briefing(app_data_dir: &std::path::PathBuf, session_id: &str) -> Re
                 "⚠️ **O turno anterior fez trabalho real (chamou ferramenta) mas terminou SEM \
                  chamar `update_long_horizon_memoria`/`update_long_horizon_projeto`** — o \
                  `projeto.md` acima pode estar desatualizado em relação ao que foi feito de \
-                 verdade. Antes de continuar, reconstrua o estado real a partir do que você \
-                 consegue verificar agora (relendo arquivos, rodando testes) e chame \
-                 `update_long_horizon_projeto` para corrigir isso — não repita o erro de só \
-                 escrever a intenção sem chamar a ferramenta.\n\n",
+                 verdade. Use os resultados recentes como contexto, verifique o que precisar \
+                 e registre o estado atualizado somente no checkpoint final. Nao transforme \
+                 a atualizacao do projeto em uma tarefa recorrente.\n\n",
             );
         }
     }
@@ -81,18 +218,32 @@ pub fn build_briefing(app_data_dir: &std::path::PathBuf, session_id: &str) -> Re
     if memoria.trim().is_empty() {
         briefing.push_str("_(vazio — nada registrado ainda)_\n\n");
     } else {
-        briefing.push_str(memoria.trim());
+        briefing.push_str(&bounded(memoria.trim(), MAX_STATE_CHARS));
         briefing.push_str("\n\n");
     }
 
     briefing.push_str("### projeto.md\n");
     if projeto.trim().is_empty() {
-        briefing.push_str("_(vazio — nenhum passo dado ainda; é o início da tarefa)_\n");
+        briefing.push_str("_(vazio — nenhum estado do projeto registrado ainda)_\n");
     } else {
-        briefing.push_str(projeto.trim());
+        briefing.push_str(&bounded(projeto.trim(), MAX_STATE_CHARS));
         briefing.push('\n');
     }
 
+    let state = read_checkpoint(app_data_dir, session_id);
+    briefing.push_str("\n### Objetivo original do usuário\n");
+    briefing.push_str(&bounded(&state.objective, 3000));
+    briefing.push_str("\n### Plano e passo ativo (registrados pelo Cerne)\n");
+    briefing.push_str(&bounded(&state.plan.to_string(), 6000));
+    briefing.push_str("\n### Contexto recente — conversa, não prova de conclusão\n");
+    for (role, text) in state.recent.iter().rev().take(4).rev() {
+        briefing.push_str(&format!("{role}: {}\n", bounded(text, 2500)));
+    }
+    briefing.push_str("\n### Resultados recentes de ferramentas — trechos, verificar pendências\n");
+    for result in &state.tool_results {
+        briefing.push_str(result);
+        briefing.push('\n');
+    }
     Ok(briefing)
 }
 
@@ -131,7 +282,7 @@ pub fn insert_reset_marker(messages: &mut Vec<ChatMessage>) {
 /// (`messages[0]`), o briefing (a fonte de verdade compactada, lida do
 /// disco) e tudo que aconteceu a partir de `turn_start` — nunca turnos
 /// anteriores. Não lê nem grava nada em disco sozinha; quem chama já tem o
-/// `briefing` pronto (lido uma vez no início do turno, via `build_briefing`).
+/// `briefing` atualizado antes de cada chamada, via `build_briefing`.
 ///
 /// Chamada de novo a cada volta do laço de chamadas de ferramenta (é
 /// barata: só um slice + clone) — assim reflete as chamadas de ferramenta
@@ -177,14 +328,121 @@ pub fn dynamic_prompt_block() -> &'static str {
     "\n\nUse `update_long_horizon_memoria`/`update_long_horizon_projeto` pra persistir o \
      estado — são as únicas ferramentas que gravam nesses dois arquivos (write_file/edit_file \
      comuns não alcançam essa pasta, é fora do projeto). O conteúdo atual dos dois já vem \
-     junto de cada mensagem sua, na seção \"Estado desta sessão\" — não precisa (nem consegue) \
-     lê-los com read_file."
+     junto de cada mensagem sua, na seção \"Estado desta sessão\". Para reler, use read_long_horizon_state, sem caminho; o diretório real está no briefing.\n\n\
+     Regras de execução do Cerne (valem também sobre instruções antigas de persistência): \
+     trabalhe e verifique primeiro. Ao finalizar, registre apenas mudanças relevantes, \
+     no máximo uma atualização de cada arquivo neste turno. Não regrave para confirmar. \
+     Depois do checkpoint, dê a resposta final sem novas ferramentas. Não precisa atualizar \
+     projeto.md numa pergunta simples. O Cerne preserva automaticamente objetivo, plano e \
+     contexto recente; salvar memória não é uma tarefa recorrente."
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sessions;
+
+    #[test]
+    fn reader_returns_actual_paths_and_is_scoped_to_current_session() {
+        let dir = scratch_dir(); let id = "current-session";
+        sessions::write_long_horizon_memoria(&dir, id, "Preferencia: respostas compactas").unwrap();
+        sessions::write_long_horizon_projeto(&dir, id, "Proximo passo: verificar servidor").unwrap();
+        sessions::write_long_horizon_memoria(&dir, "other-session", "Nao divulgar").unwrap();
+        let result: serde_json::Value = serde_json::from_str(&read_state(&dir, id).unwrap()).unwrap();
+        assert_eq!(result["directory"], state_directory(&dir, id).to_string_lossy().as_ref());
+        assert!(result["memoria"].as_str().unwrap().contains("compactas"));
+        assert!(!result.to_string().contains("Nao divulgar"));
+        assert!(is_state_file(&dir, id, &state_directory(&dir, id).join("memoria.md").to_string_lossy()));
+        assert!(!is_state_file(&dir, id, &state_directory(&dir, "other-session").join("memoria.md").to_string_lossy()));
+        let briefing = build_briefing(&dir, id).unwrap();
+        assert!(briefing.contains(&state_directory(&dir, id).to_string_lossy().to_string()));
+        assert!(briefing.contains("read_long_horizon_state"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn reset_preserves_career_question_and_original_goal() {
+        let dir = scratch_dir();
+        let id = "career";
+        let history = vec![make_message("system", "prompt"),
+            make_message("user", "Quero vaga no exterior, trabalhando no Brasil, Java e Angular"),
+            make_message("assistant", "Plano: preparar portfolio e ingles tecnico"),
+            make_message("user", "Converte salarios para reais"),
+            make_message("assistant", "Conversao dos salarios solicitados")];
+        checkpoint_history(&dir, id, &history).unwrap();
+        let mut messages = history.clone();
+        messages.push(make_message("user", "Como posso me preparar?"));
+        let view = build_model_view(&messages, history.len(), &build_briefing(&dir, id).unwrap());
+        assert!(view[0].content.contains("Java e Angular"));
+        assert!(view[0].content.contains("portfolio e ingles tecnico"));
+        assert_eq!(view[1].content, "Como posso me preparar?");
+        assert_eq!(messages.len(), history.len() + 1);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn checkpoint_keeps_bounded_recent_context_and_plan_after_restart() {
+        let dir = scratch_dir(); let id = "bounded";
+        let history: Vec<_> = (0..50).map(|i| make_message("user", &format!("passo {i}: {}", "á".repeat(4000)))).collect();
+        checkpoint_history(&dir, id, &history).unwrap();
+        save_plan(&dir, id, serde_json::json!([{"id":1,"status":"in_progress","content":"rodar testes"}])).unwrap();
+        checkpoint_history(&dir, id, &history).unwrap();
+        let state = read_checkpoint(&dir, id);
+        assert_eq!(state.recent.len(), 4);
+        assert!(state.objective.starts_with("passo 0"));
+        assert!(state.recent[0].1.starts_with("passo 46"));
+        assert!(build_briefing(&dir, id).unwrap().contains("rodar testes"));
+        assert!(state.recent.iter().all(|(_, text)| text.chars().count() < 2600));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn restart_preserves_bounded_tool_results_without_memory_echo() {
+        let dir = scratch_dir(); let id = "results";
+        let mut history = vec![make_message("user", "Corrigir projeto")];
+        for i in 0..8 {
+            let mut tool = make_message("tool", &format!("resultado {i}: {}", "x".repeat(5000)));
+            tool.name = Some("run_command".into());
+            history.push(tool);
+        }
+        let mut memory = make_message("tool", "memoria gravada");
+        memory.name = Some("update_long_horizon_memoria".into());
+        history.push(memory);
+        checkpoint_history(&dir, id, &history).unwrap();
+        let state = read_checkpoint(&dir, id);
+        assert_eq!(state.tool_results.len(), 4);
+        assert!(state.tool_results[0].contains("resultado 4"));
+        assert!(state.tool_results.iter().all(|text| text.len() < 1200));
+        let briefing = build_briefing(&dir, id).unwrap();
+        assert!(briefing.contains("resultado 7"));
+        assert!(!briefing.contains("memoria gravada"));
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn cycle_guard_detects_alternation_but_allows_changing_results() {
+        let mut guard = CycleGuard::default();
+        for _ in 0..2 {
+            assert!(!guard.observe("read_file", r#"{"path":"a"}"#, "same", 3));
+            assert!(!guard.observe("run_command", r#"{"command":"test"}"#, "same", 3));
+        }
+        assert!(!guard.observe("read_file", r#"{"path":"a"}"#, "same", 3));
+        assert!(guard.observe("run_command", r#"{"command":"test"}"#, "same", 3));
+        let mut progress = CycleGuard::default();
+        for i in 0..30 { assert!(!progress.observe("run_command", "{}", &format!("progress {i}"), 3)); }
+    }
+
+    #[test]
+    fn checkpoint_phase_cannot_return_to_work_or_repeat_saved_memory() {
+        let mut specs = crate::agent::tools::long_horizon_tool_specs();
+        specs.extend(crate::agent::tools::always_tool_specs());
+        assert!(phase_tools(&specs, 0, false, false, false).iter().any(|s| s.function.name == "web_search"));
+        let checkpoint = phase_tools(&specs, 1, true, false, false);
+        assert_eq!(checkpoint.len(), 1);
+        assert_eq!(checkpoint[0].function.name, "update_long_horizon_projeto");
+        assert!(phase_tools(&specs, 2, true, true, true).is_empty());
+        assert!(phase_tools(&specs, 2, false, false, true).is_empty());
+    }
 
     fn scratch_dir() -> std::path::PathBuf {
         std::env::temp_dir().join(format!("cerne-long-horizon-test-{}", uuid::Uuid::new_v4()))

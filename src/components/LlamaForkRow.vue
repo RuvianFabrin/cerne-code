@@ -10,22 +10,25 @@ const emit = defineEmits<{ browse: [] }>();
 
 const providerStore = useProviderStore();
 const forkId = computed(() => props.fork.id);
-const { isUp, refresh } = useLlamaHealth(forkId);
+const { isUp, isLoading, refresh } = useLlamaHealth(forkId);
 const actionError = ref("");
+const starting = ref(false);
 
 async function start() {
   actionError.value = "";
+  starting.value = true;
   try {
     await api.startLlamaServer(props.fork.id);
     await refresh();
   } catch (e) {
     actionError.value = String(e);
-  }
+  } finally { starting.value = false; }
 }
 
 async function stop() {
-  await api.stopLlamaServer(props.fork.id);
-  await refresh();
+  actionError.value = "";
+  try { await api.stopLlamaServer(props.fork.id); await refresh(); }
+  catch (e) { actionError.value = String(e); }
 }
 
 async function remove() {
@@ -35,14 +38,14 @@ async function remove() {
 
 <template>
   <div class="fork-row">
-    <StatusDot :up="isUp" />
+    <StatusDot :up="isUp" :loading="isLoading || starting" />
     <div class="fork-info">
       <span class="fork-label">{{ fork.label }}</span>
       <span class="fork-path">{{ fork.server_exe }}</span>
     </div>
-    <span v-if="actionError" class="fork-error">{{ actionError }}</span>
+    <span v-if="actionError" class="fork-error" :title="actionError">{{ actionError }}</span>
     <button class="btn-secondary" @click="emit('browse')">{{ $t("llamaForkRow.models") }}</button>
-    <button class="btn-secondary" @click="start">{{ $t("llamaForkRow.start") }}</button>
+    <button class="btn-secondary" @click="start" :disabled="starting || isLoading || isUp === true">{{ $t("llamaForkRow.start") }}</button>
     <button class="btn-secondary" @click="stop">{{ $t("llamaForkRow.stop") }}</button>
     <button class="btn-secondary" @click="remove">{{ $t("settings.remove") }}</button>
   </div>

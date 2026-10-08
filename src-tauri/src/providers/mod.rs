@@ -132,6 +132,10 @@ pub fn resolve_context_length(app_data_dir: &std::path::Path, model_id: &str, pr
 fn to_wire_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
     messages
         .iter()
+        // Reset markers are UI/history boundaries, never model instructions.
+        // They remain in the saved chat when Long Horizon is switched off.
+        .filter(|m| !(m.role == "system"
+            && m.name.as_deref() == Some(crate::agent::long_horizon::RESET_MARKER_NAME)))
         .map(|m| {
             let mut value = serde_json::to_value(m).unwrap_or_else(|_| json!({}));
             if let Some(obj) = value.as_object_mut() {
@@ -152,6 +156,48 @@ fn to_wire_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
             value
         })
         .collect()
+}
+
+/// Local Jinja templates (including Bonsai/Qwen) require exactly one system
+/// message at the beginning. Keep compaction summaries and internal notices,
+/// but join them into that first message without changing the saved history.
+fn to_provider_wire_messages(messages: &[ChatMessage], kind: ProviderKind) -> Vec<serde_json::Value> {
+    let mut wire = to_wire_messages(messages);
+    if kind != ProviderKind::LlamaCpp {
+        return wire;
+    }
+    let mut system = None;
+    let mut parts = Vec::new();
+    wire.retain(|message| {
+        if message["role"] != "system" {
+            return true;
+        }
+        if system.is_none() {
+            system = Some(message.clone());
+        }
+        if let Some(content) = message.get("content") {
+            parts.push(content.clone());
+        }
+        false
+    });
+    if let Some(mut first) = system {
+        first["content"] = if parts.iter().all(|part| part.is_string()) {
+            json!(parts.iter().filter_map(|part| part.as_str()).collect::<Vec<_>>().join("\n\n"))
+        } else {
+            // Preserve structured content instead of dropping any blocks.
+            let mut blocks = Vec::new();
+            for part in parts {
+                match part {
+                    serde_json::Value::Array(items) => blocks.extend(items),
+                    serde_json::Value::String(text) => blocks.push(json!({"type":"text","text":text})),
+                    other => blocks.push(other),
+                }
+            }
+            json!(blocks)
+        };
+        wire.insert(0, first);
+    }
+    wire
 }
 
 /// Custom endpoints conhecidos que falam o dialeto "OpenAI real" de
@@ -295,7 +341,7 @@ pub async fn chat_stream(
 
     let mut body = json!({
         "model": model,
-        "messages": to_wire_messages(messages),
+        "messages": to_provider_wire_messages(messages, cfg.kind),
         "stream": true,
         // Sem isso, servidores compativeis com OpenAI (incl. llama.cpp) nao
         // mandam o chunk final de "usage" no modo streaming - por isso os
@@ -816,6 +862,55 @@ mod tests {
         let wire = to_wire_messages(&messages);
         assert_eq!(wire[0]["content"], json!("oi"));
         assert!(wire[0].get("images").is_none());
+    }
+
+    #[test]
+    fn long_horizon_ui_markers_never_reach_any_provider() {
+        let mut marker = text_message("system", "");
+        marker.name = Some(crate::agent::long_horizon::RESET_MARKER_NAME.into());
+        marker.display_content = Some("Novo passo".into());
+        let messages = vec![text_message("system", "instructions"), text_message("user", "first"), marker,
+            text_message("assistant", "answer"), text_message("user", "continue")];
+        for kind in [ProviderKind::LlamaCpp, ProviderKind::Openrouter, ProviderKind::Custom] {
+            let wire = to_provider_wire_messages(&messages, kind);
+            assert_eq!(wire.len(), 4);
+            assert_eq!(wire.iter().map(|m| m["role"].as_str().unwrap()).collect::<Vec<_>>(),
+                vec!["system", "user", "assistant", "user"]);
+        }
+        assert_eq!(messages.len(), 5);
+        assert_eq!(messages[2].name.as_deref(), Some(crate::agent::long_horizon::RESET_MARKER_NAME));
+    }
+
+    #[test]
+    fn local_system_normalization_keeps_summaries_images_and_tool_results() {
+        let mut user = text_message("user", "image question");
+        user.images = vec!["data:image/png;base64,AAAA".into()];
+        let mut assistant = text_message("assistant", "");
+        assistant.tool_calls = Some(vec![ToolCall { id: "call-1".into(), kind: "function".into(),
+            function: ToolCallFunction { name: "read_file".into(), arguments: "{}".into() } }]);
+        let mut tool = text_message("tool", "result");
+        tool.tool_call_id = Some("call-1".into());
+        let messages = vec![text_message("system", "instructions"), user, assistant, tool,
+            text_message("system", "compaction summary"), text_message("user", "continue")];
+        let wire = to_provider_wire_messages(&messages, ProviderKind::LlamaCpp);
+        assert_eq!(wire.len(), 5);
+        assert_eq!(wire[0]["content"], "instructions\n\ncompaction summary");
+        assert_eq!(wire[1]["content"][1]["type"], "image_url");
+        assert_eq!(wire[2]["tool_calls"][0]["id"], "call-1");
+        assert_eq!(wire[3]["tool_call_id"], "call-1");
+        assert_eq!(messages[4].role, "system");
+        assert_eq!(messages[0].content, "instructions");
+    }
+
+    #[test]
+    fn local_system_normalization_moves_late_system_without_changing_other_providers() {
+        let messages = vec![text_message("user", "question"), text_message("system", "notice")];
+        let local = to_provider_wire_messages(&messages, ProviderKind::LlamaCpp);
+        assert_eq!(local[0]["role"], "system");
+        assert_eq!(local[1]["content"], "question");
+        assert_eq!(to_provider_wire_messages(&messages, ProviderKind::Openrouter), to_wire_messages(&messages));
+        assert_eq!(to_provider_wire_messages(&[text_message("user", "plain")], ProviderKind::LlamaCpp),
+            to_wire_messages(&[text_message("user", "plain")]));
     }
 
     #[test]

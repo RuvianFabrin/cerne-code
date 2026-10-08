@@ -2,6 +2,7 @@
 import { computed, nextTick, watch, ref, onMounted, onUnmounted } from "vue";
 import { useI18n } from "vue-i18n";
 import { useSessionStore } from "../stores/session";
+import MediaCard from "./MediaCard.vue";
 import MessageBubble from "./MessageBubble.vue";
 import MarkdownContent from "./MarkdownContent.vue";
 import ComposerBar from "./ComposerBar.vue";
@@ -89,6 +90,7 @@ onUnmounted(() => { if (tickTimer) clearInterval(tickTimer); });
 // mensagens de assistant sem conteúdo (só tool_calls, sem texto) não viram
 // bolha vazia — o passo já aparece representado no grupo de steps.
 type TimelineItem =
+  | { kind: "media"; key: string; record: import("../api").MediaRecord }
   | { kind: "message"; key: string; message: ChatMessage }
   | { kind: "steps"; key: string; tasks: TaskItem[] }
   | { kind: "todo"; key: string; todos: import("../api").TodoItem[] }
@@ -102,7 +104,14 @@ const timeline = computed<TimelineItem[]>(() => {
   let taskOffset = 0;
   const allTasks = sessionStore.tasks;
   const stats = sessionStore.turnStats;
+  const start = sessionStore.messagesOldestIndex ?? 0;
+  const end = start + sessionStore.messages.length;
+  function insertMedia(index: number, tail = false) {
+    sessionStore.mediaMessages.filter((r) => tail ? r.after_text_message >= index : r.after_text_message === index)
+      .forEach((record) => items.push({ kind: "media", key: `media-${record.id}`, record }));
+  }
   sessionStore.messages.forEach((m, i) => {
+    insertMedia(start + i);
     if (m.role === "user") {
       if (userTurn > 0 && stats[userTurn]) {
         items.push({ kind: "stats", key: `stats-${userTurn}`, stats: stats[userTurn] });
@@ -148,6 +157,7 @@ const timeline = computed<TimelineItem[]>(() => {
   if (userTurn > 0 && stats[userTurn]) {
     items.push({ kind: "stats", key: `stats-${userTurn}`, stats: stats[userTurn] });
   }
+  insertMedia(end, true);
   return items;
 });
 
@@ -224,6 +234,7 @@ const thinkingTail = computed(() => {
 watch(
   () => [
     sessionStore.messages.length,
+    sessionStore.mediaMessages.length,
     sessionStore.streamingText,
     sessionStore.thinkingText,
     sessionStore.tasks.length,
@@ -316,6 +327,7 @@ watch(
               <div v-if="item.kind === 'message'" :ref="item.message.role === 'user' ? (el) => registerMessageEl(item.key, el) : undefined">
                 <MessageBubble :message="item.message" />
               </div>
+              <MediaCard v-else-if="item.kind === 'media'" :record="item.record" />
               <TaskStepGroup v-else-if="item.kind === 'steps'" :tasks="item.tasks" />
               <TodoCard v-else-if="item.kind === 'todo'" :todos="item.todos" />
               <div v-else-if="item.kind === 'stats'" class="turn-stats">
@@ -357,6 +369,7 @@ watch(
               </div>
               <button class="warning-dismiss" @click="sessionStore.gitWarningDismissed = true">{{ $t("chat.gotIt") }}</button>
             </div>
+            <div v-if="sessionStore.currentId && sessionStore.mediaBusyIds.includes(sessionStore.currentId)" class="status-line"><span class="msi spin">progress_activity</span>{{ $t("media.generating") }}</div>
             <div v-if="statusLabel" class="status-line">
               <span class="msi spin">progress_activity</span>
               {{ statusLabel }}

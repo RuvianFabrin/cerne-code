@@ -11,6 +11,7 @@ const POLL_INTERVAL_MS = 4000;
  */
 export function useLlamaHealth(forkId: Ref<string | null | undefined>) {
   const isUp = ref<boolean | null>(null);
+  const isLoading = ref(false);
   let timer: ReturnType<typeof setInterval> | null = null;
 
   async function check() {
@@ -20,9 +21,13 @@ export function useLlamaHealth(forkId: Ref<string | null | undefined>) {
       return;
     }
     try {
-      isUp.value = await api.llamaServerHealth(id);
+      const status = await api.llamaServerStatus(id);
+      if (id !== forkId.value) return;
+      isUp.value = status === "ready";
+      isLoading.value = status === "loading";
     } catch {
       isUp.value = false;
+      isLoading.value = false;
     }
   }
 
@@ -42,5 +47,5 @@ export function useLlamaHealth(forkId: Ref<string | null | undefined>) {
   watch(forkId, () => start(), { immediate: true });
   onScopeDispose(stop);
 
-  return { isUp, refresh: check };
+  return { isUp, isLoading, refresh: check };
 }

@@ -316,10 +316,16 @@ pub struct AppConfig {
     /// = ferramenta `generate_image` não fica disponível pro modelo.
     #[serde(default)]
     pub image_gen: ImageGenConfig,
+    #[serde(default)]
+    pub video_gen: crate::media::VideoConfig,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct ImageGenConfig {
+    pub provider: String,
+    pub connection_id: String,
+    pub parameters: serde_json::Value,
     #[serde(default)]
     pub base_url: String,
     /// Nem todo servidor exige — alguns têm um único modelo carregado e
@@ -459,6 +465,7 @@ impl Default for AppConfig {
             long_horizon: LongHorizonConfig::default(),
             external_cli: crate::agent::external_cli::ExternalCliConfig::default(),
             image_gen: ImageGenConfig::default(),
+            video_gen: crate::media::VideoConfig::default(),
         }
     }
 }

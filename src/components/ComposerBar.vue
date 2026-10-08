@@ -296,6 +296,25 @@ const personaOptions = computed(() => [
 ]);
 
 const text = ref("");
+const mediaMode = ref<"text" | "image" | "video">("text");
+const preparingMedia = ref(false);
+const mediaBusy = computed(() => preparingMedia.value || (!!sessionStore.currentId && sessionStore.mediaBusyIds.includes(sessionStore.currentId)));
+const directImagePresetId = ref("");
+const imageAvailable = computed(() => !!providerStore.config?.image_gen.base_url.trim() || providerStore.imageGenPresets.length > 0);
+const imageTargets = computed(() => [
+  ...(providerStore.config?.image_gen.base_url.trim() ? [{ label: t("media.configuredApi"), value: "" }] : []),
+  ...providerStore.imageGenPresets.map((preset) => ({ label: preset.label, value: preset.id })),
+]);
+watch(imageTargets, (targets) => {
+  if (!targets.some((target) => target.value === directImagePresetId.value)) directImagePresetId.value = targets[0]?.value ?? "";
+}, { immediate: true });
+const videoAvailable = computed(() => !!providerStore.config?.video_gen.base_url.trim());
+watch(() => sessionStore.currentId, () => { mediaMode.value = "text"; });
+watch([imageAvailable, videoAvailable], () => {
+  if ((mediaMode.value === "image" && !imageAvailable.value) || (mediaMode.value === "video" && !videoAvailable.value)) mediaMode.value = "text";
+});
+function toggleMedia(mode: "image" | "video") { mediaMode.value = mediaMode.value === mode ? "text" : mode; }
+
 const textareaRef = ref<HTMLTextAreaElement | null>(null);
 const attachments = ref<Attachment[]>([]);
 const visionSupported = ref(false);
@@ -440,7 +459,7 @@ function updateAttachment(id: string, patch: Partial<Attachment>) {
 }
 
 function extractImage(id: string, path: string) {
-  if (!visionSupported.value) {
+  if (!visionSupported.value && mediaMode.value !== "image") {
     updateAttachment(id, {
       status: "error",
       error: t("composer.visionUnsupported"),
@@ -448,7 +467,7 @@ function extractImage(id: string, path: string) {
     return;
   }
   api
-    .readImageAsDataUrl(path)
+    .readImageAsDataUrl(path, mediaMode.value === "image")
     .then((dataUrl) => updateAttachment(id, { status: "ready", dataUrl }))
     .catch((e) => updateAttachment(id, { status: "error", error: String(e) }));
 }
@@ -510,7 +529,7 @@ async function onPaste(e: ClipboardEvent) {
     const id = crypto.randomUUID();
     const ext = file.type.split("/")[1] || "png";
     attachments.value.push({ id, path: "", name: `colado-${Date.now()}.${ext}`, kind: "image", status: "loading" });
-    if (!visionSupported.value) {
+    if (!visionSupported.value && mediaMode.value !== "image") {
       updateAttachment(id, {
         status: "error",
         error: "O provider/modelo desta sessão não tem suporte a visão configurado — a imagem não vai ser enviada.",
@@ -525,7 +544,7 @@ async function onPaste(e: ClipboardEvent) {
       // `image_util` no Rust). Um print de tela cheia cai de ~2.765 pra ~1.229
       // tokens (e o base64 de vários MB vira dezenas de KB). Se a otimização
       // falhar, o backend devolve o original — a imagem nunca se perde.
-      const dataUrl = await api.optimizeImageDataUrl(cru).catch(() => cru);
+      const dataUrl = mediaMode.value === "image" ? cru : await api.optimizeImageDataUrl(cru).catch(() => cru);
       updateAttachment(id, { status: "ready", dataUrl });
     };
     reader.onerror = () => updateAttachment(id, { status: "error", error: t("composer.pasteImageFailed") });
@@ -829,9 +848,39 @@ function buildDisplayText(userText: string): string {
 
 async function submit() {
   const value = text.value;
-  if (!value.trim() || sessionStore.status !== "idle") return;
+  if (!value.trim() || sessionStore.status !== "idle" || mediaBusy.value) return;
   if (attachments.value.some((a) => a.status === "loading")) return;
   const sessionId = sessionStore.currentId;
+  if (mediaMode.value !== "text") {
+    if (!sessionId) return;
+    preparingMedia.value = true;
+    try {
+      if (attachments.value.some((a) => a.status === "error")) { sessionStore.error = t("media.attachmentsError"); return; }
+      if (mediaMode.value === "image" && directImagePresetId.value) {
+        try {
+          await api.startImageGenPreset(directImagePresetId.value);
+          providerStore.config = await api.getConfig();
+        } catch (e) { sessionStore.error = String(e); return; }
+      }
+      if (attachments.value.some((a) => a.kind !== "image") || (mediaMode.value === "video" && attachments.value.length)) {
+        sessionStore.error = t("media.attachmentsError"); return;
+      }
+      if (mediaMode.value === "video" && !sessionStore.currentSession?.project_root && !providerStore.config?.video_gen.output_dir) {
+        const folder = await open({ directory: true, multiple: false, title: t("media.chooseFolder") });
+        if (typeof folder !== "string" || !providerStore.config) return;
+        providerStore.config.video_gen.output_dir = folder;
+        await providerStore.saveConfig();
+      }
+      if (sessionStore.currentId !== sessionId) return;
+      const mode = mediaMode.value;
+      const currentImages = collectImages();
+      text.value = ""; attachments.value = []; grow();
+      await sessionStore.sendMedia(mode, value, currentImages);
+      return;
+    } catch (e) { sessionStore.error = String(e); }
+    finally { preparingMedia.value = false; }
+    return;
+  }
   const docsToSave = attachments.value.filter((a) => a.kind === "document" && a.status === "ready" && a.text && !a.savedMdPath);
   if (sessionId && docsToSave.length > 0) {
     savingAttachments.value = true;
@@ -976,8 +1025,9 @@ watch(
         ref="textareaRef"
         v-model="text"
         class="composer-input"
+        :disabled="mediaBusy"
         rows="1"
-        :placeholder="$t('composer.placeholder')"
+        :placeholder="mediaMode === 'text' ? $t('composer.placeholder') : t('media.promptPlaceholder')"
         @input="onComposerInput"
         @keydown="onKeydown"
         @paste="onPaste"
@@ -1004,6 +1054,10 @@ watch(
     </div>
     <div class="composer-footer">
       <div class="footer-left">
+        <button v-if="imageAvailable" class="attach-btn" :class="{ 'media-selected': mediaMode === 'image' }" :aria-pressed="mediaMode === 'image'" :disabled="mediaBusy || sessionStore.status !== 'idle'" :title="t('media.imageMode')" @click="toggleMedia('image')"><span class="msi">image</span></button>
+        <button v-if="videoAvailable" class="attach-btn" :class="{ 'media-selected': mediaMode === 'video' }" :aria-pressed="mediaMode === 'video'" :disabled="mediaBusy || sessionStore.status !== 'idle'" :title="t('media.videoMode')" @click="toggleMedia('video')"><span class="msi">movie</span></button>
+        <Select v-if="mediaMode === 'image' && imageTargets.length > 1" v-model="directImagePresetId" :options="imageTargets" optionLabel="label" optionValue="value" :disabled="mediaBusy" :aria-label="t('media.model')" style="max-width: 180px" />
+        <span v-if="mediaMode !== 'text'" class="media-mode-label">{{ t(`media.${mediaMode}`) }} · {{ t('media.direct') }}</span>
         <button class="attach-btn" v-tooltip.top="$t('composer.plusMenuTooltip')" @click="togglePlusMenu">
           <span class="msi">add</span>
         </button>
@@ -1131,7 +1185,7 @@ watch(
         <button
           v-if="sessionStore.status === 'idle'"
           class="send-btn"
-          :disabled="!text.trim() || savingAttachments"
+          :disabled="mediaBusy || !text.trim() || savingAttachments"
           @click="submit"
         >
           <span class="msi">arrow_upward</span>
@@ -1310,10 +1364,12 @@ watch(
        pedido do usuário (2026-08-20), inspirado no Claude Code desktop.
        FORA da caixa do composer (abaixo dela), não dentro do rodapé — os
        dropdowns de verdade (Modo/Raciocínio) vivem no menu "+". -->
-  <span v-if="sessionStore.currentSession" class="composer-summary">{{ composerSummary }}</span>
+  <span v-if="sessionStore.currentSession" class="composer-summary">{{ mediaMode === 'text' ? composerSummary : `${t(`media.${mediaMode}`)} · ${t('media.direct')}` }}</span>
 </template>
 
 <style scoped>
+.attach-btn.media-selected { background: #eef2ff; color: #4f46e5; border-color: #818cf8; }
+.media-mode-label { color: #6366f1; font-size: 12px; }
 .composer {
   border: var(--cerne-border);
   border-radius: 14px;
@@ -1328,7 +1384,7 @@ watch(
   border: none;
   outline: none;
   resize: none;
-  font-size: var(--cerne-font-composer, 14px);
+  font-size: var(--cerne-font-composer, 16px);
   font-weight: 500;
   font-family: inherit;
   color: #18181b;
@@ -2057,6 +2113,32 @@ watch(
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+}
+
+.lh-footer .btn-secondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 30px;
+  border: 1px solid #d4d4d8;
+  background: #ffffff;
+  color: #18181b;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.lh-footer .btn-secondary:hover:not(:disabled) {
+  background: #f4f4f5;
+}
+
+.lh-footer .btn-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .mcp-test-success {
