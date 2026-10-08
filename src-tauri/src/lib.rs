@@ -2350,8 +2350,11 @@ fn open_playwright_extension(app: tauri::AppHandle, state: State<AppState>, brow
     }
     #[cfg(not(windows))]
     {
+        #[cfg(target_os = "macos")]
+        let program = if browser == "chrome" { "Google Chrome" } else { "Microsoft Edge" };
+        #[cfg(not(target_os = "macos"))]
         let program = if browser == "chrome" { "google-chrome" } else { "microsoft-edge" };
-        app.opener().open_url(url, Some(program)).map_err(|e| e.to_string())
+        tauri_plugin_opener::OpenerExt::opener(&app).open_url(url, Some(program)).map_err(|e| e.to_string())
     }
 }
 
