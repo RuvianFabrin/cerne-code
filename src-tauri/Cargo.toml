@@ -1,6 +1,6 @@
 [package]
 name = "cerne"
-version = "0.1.4"
+version = "0.1.5"
 description = "A Tauri App"
 authors = ["Ruvian Fabrin Martins de Souza"]
 edition = "2021"

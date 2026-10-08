@@ -809,7 +809,27 @@ mod tests {
 
     #[cfg(not(windows))]
     fn pid_exists(pid: u32) -> bool {
-        std::path::Path::new(&format!("/proc/{pid}")).exists()
+        // macOS has no /proc. On Linux, a killed zombie can retain /proc
+        // until init reaps it; it is no longer executing and must not be
+        // mistaken for an orphan still running after stop().
+        let Ok(output) = std::process::Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "stat="]).output() else { return false; };
+        output.status.success() && process_state_is_running(&String::from_utf8_lossy(&output.stdout))
+    }
+
+    #[cfg(not(windows))]
+    fn process_state_is_running(state: &str) -> bool {
+        matches!(state.trim().chars().next(), Some(c) if c != 'Z' && c != 'X')
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn process_probe_distinguishes_running_processes_from_zombies() {
+        assert!(process_state_is_running(" S+\n"));
+        assert!(process_state_is_running("R"));
+        assert!(!process_state_is_running("Z+"));
+        assert!(!process_state_is_running("X"));
+        assert!(!process_state_is_running(""));
     }
 
     #[cfg(windows)]

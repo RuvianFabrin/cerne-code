@@ -167,7 +167,7 @@ pub fn kill_pid_tree_blocking(pid: u32) {
         // `kill -- -PGID` mata todo o process group de uma vez. O sinal
         // negativo na frente do PID é o que indica "grupo, não processo".
         let group_kill = std::process::Command::new("kill")
-            .args(["-9", &format!("-{pid}")])
+            .args(["-9", "--", &format!("-{pid}")])
             .output();
         if group_kill.is_err() || !group_kill.unwrap().status.success() {
             // Grupo pode nem existir mais (processo morreu sozinho e filhos
