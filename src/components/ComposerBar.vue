@@ -12,22 +12,50 @@ import ProviderPicker from "./ProviderPicker.vue";
 import ContextGauge from "./ContextGauge.vue";
 import StatusDot from "./StatusDot.vue";
 import ExtraReadPaths from "./ExtraReadPaths.vue";
+import PlainQueueDialog from "./PlainQueueDialog.vue";
 import FileBrowser from "./FileBrowser.vue";
 import RepoDiffViewer from "./RepoDiffViewer.vue";
 import { useLlamaHealth } from "../composables/useLlamaHealth";
 import type { ExecutionMode, McpServerConfig, McpToolInfo, ProviderKind } from "../api";
 import { READY_PROMPTS, type ReadyPrompt } from "../content/prompts";
+import { blobToWavDataUri, startRecording, type Recording } from "../lib/wav";
+import { useVoiceConversation, speakableText, VOICE_LANGUAGES } from "../composables/useVoiceConversation";
+import { RealtimeVoice } from "../lib/realtimeVoice";
 
 const { t } = useI18n();
 
 const fileBrowserVisible = ref(false);
 const repoDiffVisible = ref(false);
+const economyBusy = ref(false);
+const economyError = ref("");
+const cliModeBusy = ref(false);
+async function changeCliMode(mode: "agent" | "provider") {
+  cliModeBusy.value = true;
+  economyError.value = "";
+  try { await sessionStore.updateCliMode(mode); }
+  catch (error) { economyError.value = String(error); }
+  finally { cliModeBusy.value = false; }
+}
+async function toggleContextEconomy() {
+  if (!sessionStore.currentSession || economyBusy.value) return;
+  economyBusy.value = true;
+  economyError.value = "";
+  try {
+    await sessionStore.updateContextEconomy(!sessionStore.currentSession.context_economy);
+  } catch (error) {
+    economyError.value = String(error);
+  } finally {
+    economyBusy.value = false;
+  }
+}
 
 // Modal de configuração do modo Long Horizon DESTA sessão (ícone de
 // engrenagem, só aparece com o modo ligado) — memória/projeto editáveis,
 // carregados na abertura e salvos por botão explícito (não a cada tecla,
 // pra não gravar em disco a cada caractere digitado).
 const longHorizonSettingsVisible = ref(false);
+// Modal da fila sem Long Horizon (memória da sessão + tarefas) — ver PlainQueueDialog.vue.
+const plainQueueVisible = ref(false);
 const longHorizonActiveTab = ref<"memoria" | "projeto" | "tarefas">("memoria");
 const longHorizonMemoriaContent = ref("");
 const longHorizonProjetoContent = ref("");
@@ -266,7 +294,7 @@ interface Attachment {
   id: string;
   path: string;
   name: string;
-  kind: "document" | "image";
+  kind: "document" | "image" | "audio";
   status: "loading" | "ready" | "error";
   text?: string;
   dataUrl?: string;
@@ -332,6 +360,222 @@ const IMAGE_EXTENSIONS = ["jpg", "jpeg", "png", "webp"];
 function isImagePath(path: string) {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";
   return IMAGE_EXTENSIONS.includes(ext);
+}
+
+// Áudio entra por gravação ou pelo seletor do sistema, e só quando o modelo
+// da sessão declara entrada de áudio (`supports_audio`, marcado pelo backend
+// para os modelos LFM3 de áudio/omni). Vira WAV 16 kHz mono no navegador.
+const audioAvailable = computed(() => {
+  const s = sessionStore.currentSession;
+  if (!s) return false;
+  return providerStore
+    .modelsFor(s.provider, s.llama_fork ?? undefined, s.custom_provider_id ?? undefined)
+    .some((m) => m.id === s.model && m.supports_audio === true);
+});
+const recording = ref<Recording | null>(null);
+const audioInput = ref<HTMLInputElement | null>(null);
+
+function addAudioAttachment(name: string, source: () => Promise<string>, path = "") {
+  const id = crypto.randomUUID();
+  attachments.value.push({ id, path, name, kind: "audio", status: "loading" });
+  source()
+    .then((dataUrl) => updateAttachment(id, { status: "ready", dataUrl }))
+    .catch((e) => updateAttachment(id, { status: "error", error: String(e) }));
+}
+
+async function toggleRecordAudio() {
+  if (recording.value) {
+    const current = recording.value;
+    recording.value = null;
+    addAudioAttachment(`gravacao-${Date.now()}.wav`, () => current.stop());
+    return;
+  }
+  try {
+    recording.value = await startRecording();
+  } catch (e) {
+    sessionStore.error = t("lfm3.errors.micDenied", { error: String(e) });
+  }
+}
+
+// Conversa por voz contínua: a fala vai ao chat como áudio, a resposta é lida
+// pelo modelo de áudio do LFM3 e, ao terminar, o microfone volta a escutar.
+const voice = useVoiceConversation();
+const { active: voiceActive, state: voiceState } = voice;
+const voiceLang = ref<string>(readVoiceLang());
+watch(voiceLang, (code) => {
+  try { localStorage.setItem("cerne-voice-lang", code); } catch { /* armazenamento indisponível */ }
+});
+const voiceStatusLabel = computed(() => {
+  if (voiceState.value === "recording") return t("lfm3.voice.recording");
+  if (voiceState.value === "busy") return t("lfm3.voice.thinking");
+  return t("lfm3.voice.listening");
+});
+let voiceBaseline = -1;
+
+function readVoiceLang(): string {
+  try { return localStorage.getItem("cerne-voice-lang") || "pt"; } catch { return "pt"; }
+}
+
+// Modo "chat": cada fala vira uma mensagem comum (com o histórico salvo) e a
+// resposta é lida por `llama-tts`. Modo "tempo real": uma conexão /v1/realtime
+// ouve e fala, com resposta em streaming. Não grava no histórico da sessão.
+const voiceMode = ref<"chat" | "realtime">(readVoiceMode());
+watch(voiceMode, (mode) => {
+  try { localStorage.setItem("cerne-voice-mode", mode); } catch { /* armazenamento indisponível */ }
+});
+const realtimeLastReply = ref("");
+let realtime: RealtimeVoice | null = null;
+/** Fala da vez no modo tempo real, guardada até a resposta chegar para gravar o par. */
+let realtimePendingAudio = "";
+
+function readVoiceMode(): "chat" | "realtime" {
+  try { return localStorage.getItem("cerne-voice-mode") === "realtime" ? "realtime" : "chat"; } catch { return "chat"; }
+}
+
+async function startRealtime() {
+  const session = sessionStore.currentSession;
+  if (!session || session.provider !== "llama_cpp" || !session.llama_fork) {
+    throw new Error(t("lfm3.voice.needsLlama"));
+  }
+  const fork = providerStore.forks.find((f) => f.id === session.llama_fork);
+  if (!fork) throw new Error(t("lfm3.voice.needsLlama"));
+  const sessionId = session.id;
+  await api.startLlamaServer(fork.id);
+  const client = new RealtimeVoice(
+    fork.port,
+    "lfm3-audio-2b",
+    "Você está numa conversa por voz. Responda de forma curta e natural, no mesmo idioma de quem falou.",
+    {
+      onReply(text) {
+        realtimeLastReply.value = text;
+        void saveRealtimeTurn(sessionId, text);
+      },
+      onDone() { voice.resume(); },
+      onError(message) {
+        sessionStore.error = message;
+        voice.resume();
+      },
+    },
+  );
+  await client.connect();
+  realtime = client;
+}
+
+/** Grava o par fala + resposta no histórico da sessão que estava aberta. */
+async function saveRealtimeTurn(sessionId: string, reply: string) {
+  const audio = realtimePendingAudio;
+  realtimePendingAudio = "";
+  if (!audio || !reply.trim()) return;
+  try {
+    const messages = await api.appendRealtimeTurn(sessionId, audio, reply);
+    if (sessionStore.currentId === sessionId) sessionStore.messages = messages;
+  } catch (e) {
+    sessionStore.error = String(e);
+  }
+}
+
+function stopVoiceConversation() {
+  voice.stop();
+  realtime?.close();
+  realtime = null;
+  realtimeLastReply.value = "";
+  voiceBaseline = -1;
+}
+
+function onVoiceUtterance(dataUri: string) {
+  if (voiceMode.value === "realtime" && realtime) {
+    realtimePendingAudio = dataUri;
+    realtime.sendUtterance(dataUri);
+    return;
+  }
+  sendVoiceUtterance(dataUri);
+}
+
+async function toggleVoiceConversation() {
+  if (voiceActive.value) {
+    stopVoiceConversation();
+    return;
+  }
+  if (!audioAvailable.value) return;
+  try {
+    if (voiceMode.value === "realtime") await startRealtime();
+    await voice.start(onVoiceUtterance);
+  } catch (e) {
+    realtime?.close();
+    realtime = null;
+    sessionStore.error = t("lfm3.errors.micDenied", { error: String(e) });
+  }
+}
+
+function sendVoiceUtterance(dataUri: string) {
+  if (sessionStore.status !== "idle") {
+    voice.resume();
+    return;
+  }
+  voiceBaseline = sessionStore.messages.length;
+  void sessionStore.send("", "🎙️", [dataUri]);
+  // Se o envio nem começou, não há resposta pra esperar: volta a ouvir.
+  if (sessionStore.status === "idle") {
+    voiceBaseline = -1;
+    voice.resume();
+  }
+}
+
+async function speakReply(markdown: string) {
+  const session = sessionStore.currentSession;
+  if (!session || session.provider !== "llama_cpp" || !session.llama_fork) {
+    throw new Error(t("lfm3.voice.needsLlama"));
+  }
+  const text = speakableText(markdown);
+  if (!text) return;
+  const b64 = await api.lfm3Speak(session.llama_fork, text, voiceLang.value, "female");
+  await new Promise<void>((resolve, reject) => {
+    const audio = new Audio(`data:audio/wav;base64,${b64}`);
+    audio.onended = () => resolve();
+    audio.onerror = () => reject(new Error("falha ao tocar a resposta"));
+    audio.play().catch(reject);
+  });
+}
+
+watch(() => sessionStore.status, async (status) => {
+  if (status !== "idle" || voiceBaseline < 0) return;
+  const baseline = voiceBaseline;
+  voiceBaseline = -1;
+  if (!voiceActive.value) return;
+  const reply = sessionStore.messages.slice(baseline).reverse().find((m) => m.role === "assistant" && m.content.trim());
+  if (reply) {
+    try {
+      await speakReply(reply.content);
+    } catch (e) {
+      sessionStore.error = String(e);
+    }
+  }
+  voice.resume();
+});
+
+watch(() => sessionStore.currentId, () => {
+  if (voiceActive.value) stopVoiceConversation();
+  voiceBaseline = -1;
+});
+
+/** Liga/desliga o "ctx fixo deslizante". Ligar também liga o Ctx fixo. */
+function toggleFixedRolling() {
+  const fc = sessionStore.currentSession?.fixed_context;
+  const next = !fc?.rolling;
+  void sessionStore.updateFixedContext(next ? true : (fc?.enabled ?? false), fc?.tokens ?? 10000, next);
+}
+
+function openAudioPicker() {
+  audioInput.value?.click();
+}
+
+function onAudioFilesPicked(event: Event) {
+  const input = event.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = "";
+  for (const file of files) {
+    addAudioAttachment(file.name, () => blobToWavDataUri(file), file.name);
+  }
 }
 
 // Extensões cobertas por `attachments::extract_text` no backend (pdf/docx/
@@ -590,8 +834,9 @@ function buildMessageWithAttachments(userText: string): string {
   return `${blocks.join("\n\n")}\n\n${userText}`;
 }
 
+/** Imagens e áudios prontos, como data URIs. O backend separa áudio por prefixo `data:audio/`. */
 function collectImages(): string[] {
-  return attachments.value.filter((a) => a.kind === "image" && a.status === "ready" && a.dataUrl).map((a) => a.dataUrl!);
+  return attachments.value.filter((a) => a.kind !== "document" && a.status === "ready" && a.dataUrl).map((a) => a.dataUrl!);
 }
 
 // Local, editable picker state — deliberately NOT a computed straight off
@@ -716,7 +961,7 @@ function grow() {
 // Fecha sozinho assim que aparece um espaço/quebra de linha (deixa de ser
 // atalho, vira texto normal) ou quando uma opção é escolhida.
 interface SlashItem {
-  kind: "skill" | "persona" | "mcp" | "prompt" | "pipeline";
+  kind: "skill" | "persona" | "mcp" | "prompt" | "pipeline" | "context";
   key: string;
   label: string;
   sublabel: string;
@@ -736,6 +981,10 @@ function readyPromptText(p: ReadyPrompt, field: "title" | "toolsLabel" | "full")
 
 const slashAllItems = computed<SlashItem[]>(() => {
   const items: SlashItem[] = [];
+  for (const command of ["stats", "doctor", "index", "search", "purge", "insight", "upgrade"]) {
+    items.push({ kind: "context", key: `ctx-${command}`, label: `ctx-${command}`,
+      sublabel: t(`composer.contextCommands.${command}`), icon: "compress" });
+  }
   for (const skill of sessionStore.skills) {
     items.push({
       kind: "skill",
@@ -815,7 +1064,9 @@ function onComposerInput() {
 }
 
 function selectSlashItem(item: SlashItem) {
-  if (item.kind === "skill") {
+  if (item.kind === "context") {
+    text.value = `/${item.key}${["ctx-index", "ctx-search"].includes(item.key) ? " " : ""}`;
+  } else if (item.kind === "skill") {
     text.value = t("agentsSkillsPanel.useSkillDraft", { name: item.label });
   } else if (item.kind === "persona") {
     onPersonaChange(item.key);
@@ -842,13 +1093,24 @@ function selectSlashItem(item: SlashItem) {
 function buildDisplayText(userText: string): string {
   const ready = attachments.value.filter((a) => a.status === "ready");
   if (ready.length === 0) return userText;
-  const names = ready.map((a) => `${a.kind === "image" ? "🖼️" : "📎"} ${a.name}`).join("  ");
+  const names = ready.map((a) => `${a.kind === "image" ? "🖼️" : a.kind === "audio" ? "🎙️" : "📎"} ${a.name}`).join("  ");
   return `${userText}\n\n${names}`;
+}
+
+/** Há algo pronto pra enviar: texto digitado ou anexo já carregado. */
+const hasComposerContent = computed(() =>
+  text.value.trim().length > 0 || attachments.value.some((a) => a.status === "ready"));
+
+/** Mensagens da sessão aberta que esperam o turno atual terminar. */
+const queuedCount = computed(() => sessionStore.queue.filter((q) => q.sessionId === sessionStore.currentId).length);
+
+function clearQueue() {
+  sessionStore.queue = sessionStore.queue.filter((q) => q.sessionId !== sessionStore.currentId);
 }
 
 async function submit() {
   const value = text.value;
-  if (!value.trim() || sessionStore.status !== "idle" || mediaBusy.value) return;
+  if (!hasComposerContent.value || mediaBusy.value) return;
   if (attachments.value.some((a) => a.status === "loading")) return;
   const sessionId = sessionStore.currentId;
   if (mediaMode.value !== "text") {
@@ -900,9 +1162,22 @@ async function submit() {
   const images = collectImages();
   text.value = "";
   attachments.value = [];
+  // Modelo ainda respondendo: a mensagem espera na fila e sai quando o turno acabar.
+  if (sessionStore.status !== "idle") {
+    sessionStore.enqueueMessage(message, displayText, images);
+    grow();
+    return;
+  }
   await sessionStore.send(message, displayText, images);
   grow();
 }
+
+// Quando o turno termina, envia a próxima mensagem da fila (se houver).
+watch(() => sessionStore.status, async (status) => {
+  if (status !== "idle") return;
+  const next = sessionStore.takeQueued();
+  if (next) await sessionStore.send(next.text, next.displayText, next.images);
+});
 
 function onKeydown(e: KeyboardEvent) {
   if (slashMenuOpen.value) {
@@ -997,6 +1272,15 @@ watch(
         <span class="msi">difference</span>
       </button>
     </Teleport>
+    <input ref="audioInput" type="file" accept="audio/*" multiple hidden @change="onAudioFilesPicked" />
+    <div v-if="voiceActive && voiceMode === 'realtime' && realtimeLastReply" class="voice-transcript">{{ realtimeLastReply }}</div>
+    <div v-if="queuedCount" class="queue-row">
+      <span class="msi">queue</span>
+      <span>{{ $t("composer.queued", { count: queuedCount }) }}</span>
+      <button class="attachment-remove" v-tooltip.top="$t('composer.clearQueue')" @click="clearQueue">
+        <span class="msi">close</span>
+      </button>
+    </div>
     <div v-if="attachments.length" class="attachments-row">
       <div
         v-for="a in attachments"
@@ -1009,6 +1293,7 @@ watch(
         <span class="msi" v-else-if="a.saved">check_circle</span>
         <span class="msi" v-else-if="a.status === 'error'">error</span>
         <img v-else-if="a.kind === 'image' && a.dataUrl" :src="a.dataUrl" class="attachment-thumb" alt="" />
+        <span class="msi" v-else-if="a.kind === 'audio'">mic</span>
         <span class="msi" v-else>description</span>
         <span class="attachment-name">{{ savingAttachments && a.kind === 'document' && !a.savedMdPath ? $t("composer.optimizing") : a.saved ? $t("composer.ready") : a.name }}</span>
         <button class="attachment-remove" v-tooltip.top="$t('composer.remove')" @click="removeAttachment(a.id)" :disabled="savingAttachments">
@@ -1055,6 +1340,35 @@ watch(
     <div class="composer-footer">
       <div class="footer-left">
         <button v-if="imageAvailable" class="attach-btn" :class="{ 'media-selected': mediaMode === 'image' }" :aria-pressed="mediaMode === 'image'" :disabled="mediaBusy || sessionStore.status !== 'idle'" :title="t('media.imageMode')" @click="toggleMedia('image')"><span class="msi">image</span></button>
+        <button
+          v-if="audioAvailable"
+          class="attach-btn"
+          :class="{ 'media-selected': !!recording }"
+          :title="recording ? t('lfm3.voice.stop') : t('lfm3.voice.record')"
+          :disabled="mediaBusy"
+          @click="toggleRecordAudio"
+        ><span class="msi">{{ recording ? "stop" : "mic" }}</span></button>
+        <select
+          v-if="audioAvailable && !voiceActive"
+          v-model="voiceMode"
+          class="voice-lang-select"
+          :title="t('lfm3.voice.mode')"
+        >
+          <option value="chat">{{ t("lfm3.voice.modeChatShort") }}</option>
+          <option value="realtime">{{ t("lfm3.voice.modeRealtimeShort") }}</option>
+        </select>
+        <button
+          v-if="audioAvailable"
+          class="attach-btn"
+          :class="{ 'media-selected': voiceActive }"
+          :title="voiceActive ? t('lfm3.voice.endConversation') : t('lfm3.voice.conversation')"
+          :disabled="sessionStore.status !== 'idle' && !voiceActive"
+          @click="toggleVoiceConversation"
+        ><span class="msi">{{ voiceActive ? "voice_over_off" : "record_voice_over" }}</span></button>
+        <span v-if="voiceActive" class="media-mode-label">{{ voiceStatusLabel }}</span>
+        <select v-if="voiceActive" v-model="voiceLang" class="voice-lang-select" :title="t('lfm3.voice.language')">
+          <option v-for="code in VOICE_LANGUAGES" :key="code" :value="code">{{ t(`lfm3.lang.${code}`) }}</option>
+        </select>
         <button v-if="videoAvailable" class="attach-btn" :class="{ 'media-selected': mediaMode === 'video' }" :aria-pressed="mediaMode === 'video'" :disabled="mediaBusy || sessionStore.status !== 'idle'" :title="t('media.videoMode')" @click="toggleMedia('video')"><span class="msi">movie</span></button>
         <Select v-if="mediaMode === 'image' && imageTargets.length > 1" v-model="directImagePresetId" :options="imageTargets" optionLabel="label" optionValue="value" :disabled="mediaBusy" :aria-label="t('media.model')" style="max-width: 180px" />
         <span v-if="mediaMode !== 'text'" class="media-mode-label">{{ t(`media.${mediaMode}`) }} · {{ t('media.direct') }}</span>
@@ -1079,13 +1393,36 @@ watch(
         >
           <span class="msi">{{ taskQueueRunning ? "stop" : "play_arrow" }}</span>
         </button>
+        <button
+          v-if="sessionStore.currentSession?.plain_queue_enabled"
+          class="attach-btn"
+          :class="{ 'task-queue-running': sessionStore.currentId && sessionStore.plainQueueRunningIds.has(sessionStore.currentId) }"
+          v-tooltip.top="$t('plainQueue.buttonTooltip')"
+          @click="plainQueueVisible = true"
+        >
+          <span class="msi">memory</span>
+        </button>
         <Popover ref="plusMenuRef">
           <div class="plus-menu">
             <button class="plus-menu-item" @click="addAttachments(); plusMenuRef?.hide()">
               <span class="msi">attach_file</span>
               <span class="plus-menu-label">{{ $t("composer.attachFile") }}</span>
             </button>
+            <button v-if="audioAvailable" class="plus-menu-item" @click="openAudioPicker(); plusMenuRef?.hide()">
+              <span class="msi">audio_file</span>
+              <span class="plus-menu-label">{{ $t("lfm3.chat.attachAudio") }}</span>
+            </button>
             <ExtraReadPaths v-if="sessionStore.currentSession" />
+            <div v-if="sessionStore.currentSession?.provider === 'cli'" class="plus-menu-item plus-menu-row"
+              v-tooltip.right="$t('composer.cliModeHint')">
+              <span class="msi">terminal</span>
+              <span class="plus-menu-label">{{ $t('composer.cliModeLabel') }}</span>
+              <Select :modelValue="sessionStore.currentSession.external_cli_mode ?? 'agent'"
+                @update:modelValue="(v) => changeCliMode(v as 'agent' | 'provider')"
+                :options="[{ value: 'agent', label: $t('composer.cliModeAgent') }, { value: 'provider', label: $t('composer.cliModeProvider') }]"
+                optionLabel="label" optionValue="value" size="small" class="execution-mode-select"
+                :disabled="cliModeBusy || sessionStore.status !== 'idle'" />
+            </div>
             <div v-if="sessionStore.currentSession" class="plus-menu-item plus-menu-row">
               <span class="msi">tune</span>
               <span class="plus-menu-label">{{ $t("composer.executionModeLabel") }}</span>
@@ -1150,6 +1487,44 @@ watch(
             <button
               v-if="sessionStore.currentSession"
               class="plus-menu-item plus-menu-toggle"
+              :class="{ 'plus-menu-toggle-on': sessionStore.currentSession.fixed_context?.enabled }"
+              v-tooltip.right="$t('composer.fixedContextTooltip')"
+              @click="sessionStore.updateFixedContext(!sessionStore.currentSession.fixed_context?.enabled, sessionStore.currentSession.fixed_context?.tokens ?? 10000)"
+            >
+              <span class="msi">data_usage</span>
+              <span class="plus-menu-label">{{ $t("composer.fixedContextLabel") }}</span>
+              <span class="plus-menu-switch"><span class="plus-menu-switch-dot" /></span>
+            </button>
+            <div
+              v-if="sessionStore.currentSession?.fixed_context?.enabled"
+              class="plus-menu-item plus-menu-row"
+              v-tooltip.right="$t('composer.fixedContextTokensHint')"
+            >
+              <span class="msi">tune</span>
+              <span class="plus-menu-label">{{ $t("composer.fixedContextTokens") }}</span>
+              <input
+                type="number"
+                min="1000"
+                step="1000"
+                style="width: 90px"
+                :value="sessionStore.currentSession.fixed_context.tokens"
+                @change="(e) => sessionStore.updateFixedContext(true, Number((e.target as HTMLInputElement).value))"
+              />
+            </div>
+            <button
+              v-if="sessionStore.currentSession"
+              class="plus-menu-item plus-menu-toggle"
+              :class="{ 'plus-menu-toggle-on': sessionStore.currentSession.fixed_context?.rolling }"
+              v-tooltip.right="$t('composer.fixedContextRollingHint')"
+              @click="toggleFixedRolling"
+            >
+              <span class="msi">swap_vert</span>
+              <span class="plus-menu-label">{{ $t("composer.fixedContextRolling") }}</span>
+              <span class="plus-menu-switch"><span class="plus-menu-switch-dot" /></span>
+            </button>
+            <button
+              v-if="sessionStore.currentSession"
+              class="plus-menu-item plus-menu-toggle"
               :class="{ 'plus-menu-toggle-on': sessionStore.currentSession.task_queue_enabled }"
               v-tooltip.right="$t('composer.taskQueueTooltip')"
               @click="sessionStore.updateTaskQueueEnabled(!sessionStore.currentSession.task_queue_enabled)"
@@ -1158,6 +1533,31 @@ watch(
               <span class="plus-menu-label">{{ $t("composer.taskQueueLabel") }}</span>
               <span class="plus-menu-switch"><span class="plus-menu-switch-dot" /></span>
             </button>
+            <button
+              v-if="sessionStore.currentSession"
+              class="plus-menu-item plus-menu-toggle"
+              :class="{ 'plus-menu-toggle-on': sessionStore.currentSession.plain_queue_enabled }"
+              v-tooltip.right="$t('plainQueue.toggleTooltip')"
+              @click="sessionStore.updatePlainQueueEnabled(!sessionStore.currentSession.plain_queue_enabled)"
+            >
+              <span class="msi">format_list_numbered</span>
+              <span class="plus-menu-label">{{ $t("plainQueue.toggleLabel") }}</span>
+              <span class="plus-menu-switch"><span class="plus-menu-switch-dot" /></span>
+            </button>
+            <button
+              v-if="sessionStore.currentSession"
+              class="plus-menu-item plus-menu-toggle"
+              :class="{ 'plus-menu-toggle-on': sessionStore.currentSession.context_economy }"
+              :aria-pressed="!!sessionStore.currentSession.context_economy"
+              :disabled="economyBusy || sessionStore.status !== 'idle' || (sessionStore.currentSession.provider === 'cli' && sessionStore.currentSession.external_cli_mode !== 'provider')"
+              v-tooltip.right="$t('composer.contextEconomyTooltip')"
+              @click="toggleContextEconomy"
+            >
+              <span class="msi">compress</span>
+              <span class="plus-menu-label">{{ $t('composer.contextEconomyLabel') }}</span>
+              <span class="plus-menu-switch"><span class="plus-menu-switch-dot" /></span>
+            </button>
+            <p v-if="economyError" class="error-text" role="alert">{{ economyError }}</p>
             <button
               v-if="mcpServers.length > 0"
               class="plus-menu-item"
@@ -1171,6 +1571,12 @@ watch(
         </Popover>
       </div>
       <div class="footer-right">
+        <span
+          v-if="sessionStore.currentSession?.context_economy"
+          class="msi"
+          :aria-label="$t('composer.contextEconomyLabel')"
+          v-tooltip.top="$t('composer.contextEconomyLabel')"
+        >compress</span>
         <ContextGauge />
         <button
           v-if="sessionStore.status === 'idle'"
@@ -1185,13 +1591,27 @@ watch(
         <button
           v-if="sessionStore.status === 'idle'"
           class="send-btn"
-          :disabled="mediaBusy || !text.trim() || savingAttachments"
+          :disabled="mediaBusy || !hasComposerContent || savingAttachments"
           @click="submit"
         >
           <span class="msi">arrow_upward</span>
         </button>
-        <button v-else class="send-btn stop-btn" v-tooltip.top="$t('composer.cancelExecution')" @click="sessionStore.cancelTurn()">
+        <button
+          v-else-if="!hasComposerContent"
+          class="send-btn stop-btn"
+          v-tooltip.top="$t('composer.cancelExecution')"
+          @click="sessionStore.cancelTurn()"
+        >
           <span class="msi">stop</span>
+        </button>
+        <button
+          v-else
+          class="send-btn"
+          :disabled="mediaBusy || savingAttachments"
+          v-tooltip.top="$t('composer.queueSend')"
+          @click="submit"
+        >
+          <span class="msi">queue</span>
         </button>
       </div>
     </div>
@@ -1242,6 +1662,8 @@ watch(
       </div>
       <p v-else class="hint">{{ $t("composer.mcpToolsEmpty") }}</p>
     </Dialog>
+
+    <PlainQueueDialog v-model:visible="plainQueueVisible" />
 
     <Dialog
       v-model:visible="longHorizonSettingsVisible"
@@ -2279,4 +2701,6 @@ watch(
     justify-content: center;
   }
 }
+.voice-transcript { font-size: 13px; opacity: 0.8; padding: 4px 12px; max-height: 6em; overflow: auto; white-space: pre-wrap; }
+.queue-row { display: flex; align-items: center; gap: 6px; font-size: 12px; opacity: 0.8; padding: 2px 12px; }
 </style>

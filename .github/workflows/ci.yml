@@ -67,7 +67,7 @@ jobs:
       - name: Instalar Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Instalar dependencias do frontend
@@ -75,6 +75,9 @@ jobs:
 
       - name: Checar tipos TypeScript (vue-tsc)
         run: npx vue-tsc --noEmit
+
+      - name: Testar Economia de contexto (Rust nativo)
+        run: npm run test:context-economy
 
       # cargo check antes do test/build pra falhar rapido e com erro mais
       # legivel caso algum #[cfg] tenha vazado pro SO errado (ver "Mapa de

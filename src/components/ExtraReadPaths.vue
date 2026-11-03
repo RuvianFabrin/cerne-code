@@ -6,7 +6,6 @@ import { useSessionStore } from "../stores/session";
 
 const sessionStore = useSessionStore();
 const popoverRef = ref();
-
 function toggle(event: Event) {
   popoverRef.value?.toggle(event);
 }

@@ -1,5 +1,6 @@
 pub mod custom;
 pub mod llama_cpp;
+pub mod nvidia;
 
 use crate::models::{
     ChatMessage, ModelInfo, ProviderConfig, ProviderKind, ReasoningEffort, ToolCall,
@@ -25,6 +26,17 @@ pub struct StreamUsage {
 pub struct StreamResult {
     pub message: ChatMessage,
     pub usage: StreamUsage,
+}
+
+async fn response_error_body(resp: reqwest::Response, is_nvidia: bool) -> String {
+    if !is_nvidia {
+        return resp.text().await.unwrap_or_default();
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(30), resp.text()).await {
+        Ok(Ok(text)) => text,
+        Ok(Err(error)) => format!("[não foi possível ler o corpo da resposta: {error}]"),
+        Err(_) => "[a NVIDIA não terminou de enviar o corpo do erro em 30 segundos]".into(),
+    }
 }
 
 /// Tabela hardcoded de context lengths conhecidos por modelo.
@@ -145,17 +157,29 @@ fn to_wire_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
                 if !m.images.is_empty() {
                     obj.remove("images");
                     let mut blocks = vec![json!({ "type": "text", "text": m.content })];
-                    blocks.extend(
-                        m.images
-                            .iter()
-                            .map(|url| json!({ "type": "image_url", "image_url": { "url": url } })),
-                    );
+                    blocks.extend(m.images.iter().map(attachment_block));
                     obj.insert("content".to_string(), serde_json::Value::Array(blocks));
                 }
             }
             value
         })
         .collect()
+}
+
+/// Um anexo multimodal vira um bloco do formato OpenAI. Áudio entra como
+/// `data:audio/<formato>;base64,...` (ver `lfm3::wav_data_uri`) e vai como
+/// `input_audio`; qualquer outra coisa segue como `image_url`. Só modelos de
+/// áudio do llama.cpp (LFM3 Audio/Omni) entendem `input_audio`.
+fn attachment_block(url: &String) -> serde_json::Value {
+    if let Some(rest) = url.strip_prefix("data:audio/") {
+        let format = rest.split(';').next().unwrap_or("wav");
+        let data = url.split_once("base64,").map(|(_, d)| d).unwrap_or("");
+        return json!({
+            "type": "input_audio",
+            "input_audio": { "data": data, "format": format },
+        });
+    }
+    json!({ "type": "image_url", "image_url": { "url": url } })
 }
 
 /// Local Jinja templates (including Bonsai/Qwen) require exactly one system
@@ -336,6 +360,13 @@ pub async fn chat_stream(
     reasoning_effort: Option<ReasoningEffort>,
     tool_choice: Option<&str>,
 ) -> Result<StreamResult> {
+    if let Some(ref cli) = cfg.cli_inference {
+        let result = crate::agent::cli_inference::infer(cli, model, messages, tools, reasoning_effort).await?;
+        if !result.message.content.is_empty() {
+            let _ = app.emit("chat:token", StreamTokenEvent { session_id: session_id.into(), delta: result.message.content.clone() });
+        }
+        return Ok(result);
+    }
     let client = reqwest::Client::new();
     let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
 
@@ -356,7 +387,12 @@ pub async fn chat_stream(
     }
     // Controle de raciocínio — ver `apply_reasoning` pra o que cada provider
     // recebe no wire (e por quê).
-    apply_reasoning(&mut body, cfg.kind, &cfg.base_url, reasoning_effort);
+    let is_nvidia = nvidia::is_endpoint(&cfg.base_url);
+    if is_nvidia {
+        nvidia::apply_reasoning(&mut body, model, reasoning_effort);
+    } else {
+        apply_reasoning(&mut body, cfg.kind, &cfg.base_url, reasoning_effort);
+    }
 
     let mut req = client.post(&url).json(&body);
     req = apply_openrouter_attribution(req, cfg.kind);
@@ -364,10 +400,20 @@ pub async fn chat_stream(
         req = req.bearer_auth(key);
     }
 
-    let mut resp = req.send().await?;
+    let request_started = std::time::Instant::now();
+    let mut resp = if is_nvidia {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(nvidia::RESPONSE_TIMEOUT_SECS),
+            req.send(),
+        )
+        .await
+        .map_err(|_| anyhow!("NVIDIA não respondeu ao pedido HTTP em 180 segundos (modelo {model})."))??
+    } else {
+        req.send().await?
+    };
     if !resp.status().is_success() {
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let text = response_error_body(resp, is_nvidia).await;
         // Achado ao vivo (2026-08-21): alguns modelos "stealth"/beta na
         // OpenRouter (ex: stealth/ox-alpha) rejeitam reasoning desligado —
         // "Reasoning is mandatory for this endpoint and cannot be disabled."
@@ -381,22 +427,48 @@ pub async fn chat_stream(
         let mandates_reasoning = status == reqwest::StatusCode::BAD_REQUEST
             && text.to_lowercase().contains("reasoning")
             && text.to_lowercase().contains("mandatory");
-        if forced_reasoning_off && mandates_reasoning {
+        let nvidia_rejected_reasoning = is_nvidia
+            && (body.get("reasoning_effort").is_some() || body.get("thinking").is_some())
+            && nvidia::rejected_reasoning_parameter(status, &text);
+        if (forced_reasoning_off && mandates_reasoning) || nvidia_rejected_reasoning {
             if let Some(obj) = body.as_object_mut() {
                 obj.remove("reasoning");
+                obj.remove("reasoning_effort");
+                obj.remove("thinking");
             }
             let mut retry_req = client.post(&url).json(&body);
             retry_req = apply_openrouter_attribution(retry_req, cfg.kind);
             if let Some(key) = api_key {
                 retry_req = retry_req.bearer_auth(key);
             }
-            resp = retry_req.send().await?;
+            resp = if is_nvidia {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(nvidia::RESPONSE_TIMEOUT_SECS),
+                    retry_req.send(),
+                )
+                .await
+                .map_err(|_| anyhow!("NVIDIA não respondeu ao repetir o pedido sem reasoning_effort (modelo {model})."))??
+            } else {
+                retry_req.send().await?
+            };
             if !resp.status().is_success() {
                 let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
+                let text = response_error_body(resp, is_nvidia).await;
+                if is_nvidia {
+                    return Err(anyhow!(
+                        "NVIDIA respondeu HTTP {status} para {model} após {:.1}s: {text}",
+                        request_started.elapsed().as_secs_f64()
+                    ));
+                }
                 return Err(anyhow!("provider request failed ({status}): {text}"));
             }
         } else {
+            if is_nvidia {
+                return Err(anyhow!(
+                    "NVIDIA respondeu HTTP {status} para {model} após {:.1}s: {text}",
+                    request_started.elapsed().as_secs_f64()
+                ));
+            }
             return Err(anyhow!("provider request failed ({status}): {text}"));
         }
     }
@@ -408,7 +480,18 @@ pub async fn chat_stream(
     let mut tool_calls: Vec<(String, String, String)> = Vec::new();
     let mut usage = StreamUsage::default();
 
-    while let Some(chunk) = stream.next().await {
+    loop {
+        let next_chunk = if is_nvidia {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(nvidia::RESPONSE_TIMEOUT_SECS),
+                stream.next(),
+            )
+            .await
+            .map_err(|_| anyhow!("NVIDIA parou de enviar dados por 180 segundos (modelo {model})."))?
+        } else {
+            stream.next().await
+        };
+        let Some(chunk) = next_chunk else { break };
         let chunk = chunk?;
         buf.push_str(&String::from_utf8_lossy(&chunk));
 
@@ -601,9 +684,15 @@ pub async fn list_models(cfg: &ProviderConfig, api_key: Option<String>, app_data
                 .into_iter()
                 .filter_map(|m| {
                     let id = m["id"].as_str()?.to_string();
+                    let nvidia_metadata = if nvidia::is_endpoint(&cfg.base_url) {
+                        nvidia::model_metadata(&id)
+                    } else {
+                        None
+                    };
                     let api_ctx = m["context_length"]
                         .as_u64()
                         .or_else(|| m["top_provider"]["context_length"].as_u64())
+                        .or_else(|| nvidia_metadata.map(|meta| meta.context_length as u64))
                         .map(|v| v as u32);
                     let resolved = match api_ctx {
                         Some(len) => len,
@@ -641,7 +730,8 @@ pub async fn list_models(cfg: &ProviderConfig, api_key: Option<String>, app_data
                     // suporta".
                     let input_modalities = m["architecture"]["input_modalities"].as_array();
                     let supports_vision = input_modalities
-                        .map(|arr| arr.iter().any(|v| v.as_str() == Some("image")));
+                        .map(|arr| arr.iter().any(|v| v.as_str() == Some("image")))
+                        .or_else(|| nvidia_metadata.map(|meta| meta.supports_vision));
                     let supports_audio = input_modalities
                         .map(|arr| arr.iter().any(|v| v.as_str() == Some("audio")));
                     let supports_tools = m["supported_parameters"]
@@ -687,6 +777,9 @@ pub async fn get_context_length(
     let client = reqwest::Client::new();
 
     match cfg.kind {
+        ProviderKind::Custom if nvidia::is_endpoint(&cfg.base_url) => nvidia::model_metadata(model)
+            .map(|meta| meta.context_length)
+            .or(cfg.context_length_override),
         ProviderKind::Custom if cfg.context_length_override.is_some() => cfg.context_length_override,
         // Se o contexto deste modelo já está no cache (visto numa listagem
         // anterior — ex: o usuário abriu "Nova sessão" e já viu a lista),
@@ -833,6 +926,9 @@ pub async fn supports_vision(cfg: &ProviderConfig, api_key: Option<String>, mode
         // na confirmacao manual do usuario (`CustomProviderConfig.supports_vision`,
         // ver tela de Configuracoes) - continua false por padrao ate o
         // usuario marcar explicitamente que aquela conexao aceita imagem.
+        ProviderKind::Custom if nvidia::is_endpoint(&cfg.base_url) => nvidia::model_metadata(model)
+            .map(|meta| meta.supports_vision)
+            .unwrap_or(cfg.supports_vision_override),
         ProviderKind::Custom => cfg.supports_vision_override,
         // CLI externo tem sua própria política de anexos (ou nenhuma); o
         // Cerne não sabe nem controla isso.
@@ -911,6 +1007,16 @@ mod tests {
         assert_eq!(to_provider_wire_messages(&messages, ProviderKind::Openrouter), to_wire_messages(&messages));
         assert_eq!(to_provider_wire_messages(&[text_message("user", "plain")], ProviderKind::LlamaCpp),
             to_wire_messages(&[text_message("user", "plain")]));
+    }
+
+    #[test]
+    fn audio_data_uri_becomes_input_audio_block() {
+        let block = attachment_block(&"data:audio/wav;base64,UklGRg==".to_string());
+        assert_eq!(block["type"], json!("input_audio"));
+        assert_eq!(block["input_audio"]["format"], json!("wav"));
+        assert_eq!(block["input_audio"]["data"], json!("UklGRg=="));
+        let image = attachment_block(&"data:image/png;base64,AAAA".to_string());
+        assert_eq!(image["type"], json!("image_url"));
     }
 
     #[test]

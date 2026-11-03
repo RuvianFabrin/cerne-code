@@ -75,12 +75,12 @@ export const useProviderStore = defineStore("provider", {
       this.loading = true;
       try {
         this.config = await api.getConfig();
+        this.cliReadiness = await api.checkExternalCliReadiness();
         this.hasOpenrouterKey = await api.hasOpenrouterKey();
         this.openrouterKeyPreview = await api.openrouterKeyPreview();
         this.forks = await api.listLlamaForks();
         this.imageGenPresets = await api.listImageGenPresets();
         this.customProviders = await api.listCustomProviders();
-        this.cliReadiness = await api.checkExternalCliReadiness();
         await this.refreshModels(this.config.active_provider, undefined, this.config.active_custom_provider_id ?? undefined);
       } catch (e) {
         this.error = String(e);
@@ -95,7 +95,15 @@ export const useProviderStore = defineStore("provider", {
       // já carregada em `cliReadiness`), não um catálogo consultável.
       if (kind === "cli") {
         const backend = this.cliReadiness.find((b) => b.backend === customProviderId);
-        this.models[key] = (backend?.models ?? []).map((id) => ({ id, label: id }));
+        this.modelsLoading[key] = true;
+        try {
+          const ids = backend ? await api.listExternalCliModels(backend.backend) : [];
+          this.models[key] = ids.map((id) => ({ id, label: id }));
+          this.error = "";
+        } catch (e) {
+          this.models[key] = (backend?.models ?? []).map((id) => ({ id, label: id }));
+          this.error = String(e);
+        } finally { this.modelsLoading[key] = false; }
         return;
       }
       this.modelsLoading[key] = true;

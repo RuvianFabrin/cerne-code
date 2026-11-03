@@ -1,0 +1,5 @@
+# Portable, vendored JS dependencies of the runtime are release resources.
+!node_modules/
+!node_modules/**
+# Platform executables are downloaded and checksum-verified at build time.
+node/

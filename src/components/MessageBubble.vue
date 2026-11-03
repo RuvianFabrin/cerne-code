@@ -175,7 +175,10 @@ const shownText = computed(() =>
   <div v-if="!isTool" class="row" :class="{ user: isUser }">
     <div class="bubble" :class="{ user: isUser }">
       <div v-if="message.images?.length" class="image-row">
-        <img v-for="(src, i) in message.images" :key="i" :src="src" class="message-image" />
+        <template v-for="(src, i) in message.images" :key="i">
+          <audio v-if="src.startsWith('data:audio/')" :src="src" controls class="message-audio" />
+          <img v-else :src="src" class="message-image" />
+        </template>
       </div>
       <div ref="contentEl">
         <MarkdownContent :content="shownText" />

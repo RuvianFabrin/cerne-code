@@ -1,5 +1,5 @@
 use crate::models::{
-    ChatMessage, ExecutionMode, LongHorizonState, MessagesPage, ProviderKind, ReasoningEffort,
+    ChatMessage, ExecutionMode, FixedContextState, LongHorizonState, MessagesPage, ProviderKind, ReasoningEffort,
     Session, TaskItem,
 };
 use anyhow::Result;
@@ -57,6 +57,7 @@ pub fn create_session(
         llama_fork,
         custom_provider_id,
         external_cli_backend,
+        external_cli_mode: Default::default(),
         extra_read_paths: Vec::new(),
         execution_mode: ExecutionMode::default(),
         // Pensamento sempre desligado por padrão — o usuário liga manualmente
@@ -80,7 +81,10 @@ pub fn create_session(
         folder_id: None,
         parent_session_id: None,
         long_horizon: LongHorizonState::default(),
+        fixed_context: FixedContextState::default(),
         task_queue_enabled: false,
+        plain_queue_enabled: false,
+        context_economy: false,
     };
     let dir = session_dir(app_data_dir, &id);
     std::fs::create_dir_all(&dir)?;
@@ -96,6 +100,21 @@ pub fn create_session(
 pub fn get_session(app_data_dir: &PathBuf, id: &str) -> Result<Session> {
     let text = std::fs::read_to_string(session_dir(app_data_dir, id).join("session.json"))?;
     Ok(serde_json::from_str(&text)?)
+}
+
+pub fn update_cli_mode(app_data_dir: &PathBuf, id: &str, mode: crate::agent::cli_inference::CliMode) -> Result<Session> {
+    let mut session = get_session(app_data_dir, id)?;
+    session.external_cli_mode = mode;
+    write_atomic(&session_dir(app_data_dir, id).join("session.json"), &serde_json::to_string_pretty(&session)?)?;
+    Ok(session)
+}
+
+pub fn update_context_economy(app_data_dir: &PathBuf, id: &str, enabled: bool) -> Result<Session> {
+    let mut session = get_session(app_data_dir, id)?;
+    session.context_economy = enabled;
+    session.last_prompt_tokens = None;
+    std::fs::write(session_dir(app_data_dir, id).join("session.json"), serde_json::to_vec_pretty(&session)?)?;
+    Ok(session)
 }
 
 /// Updates which provider/model a session talks to. Sessions pin their
@@ -255,6 +274,54 @@ pub fn update_fable_method(app_data_dir: &PathBuf, id: &str, enabled: bool) -> R
     Ok(session)
 }
 
+/// Liga/desliga o "Ctx fixo" da sessão e grava o orçamento em tokens
+/// (limitado a [1000, 1_000_000] pra não virar zero nem absurdo).
+pub fn update_fixed_context(
+    app_data_dir: &PathBuf,
+    id: &str,
+    enabled: bool,
+    tokens: u32,
+    rolling: bool,
+) -> Result<Session> {
+    let mut session = get_session(app_data_dir, id)?;
+    session.fixed_context = FixedContextState {
+        enabled,
+        tokens: tokens.clamp(1_000, 1_000_000),
+        rolling,
+    };
+    let dir = session_dir(app_data_dir, id);
+    std::fs::write(
+        dir.join("session.json"),
+        serde_json::to_string_pretty(&session)?,
+    )?;
+    Ok(session)
+}
+
+/// Resumo rolante do "Ctx fixo": texto e quantas mensagens (a partir do índice
+/// 1, depois do sistema) ele já cobre. Fica em `fixed_context_summary.json`.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct RollingSummary {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub covered: usize,
+}
+
+fn rolling_summary_path(app_data_dir: &PathBuf, id: &str) -> PathBuf {
+    session_dir(app_data_dir, id).join("fixed_context_summary.json")
+}
+
+pub fn read_rolling_summary(app_data_dir: &PathBuf, id: &str) -> RollingSummary {
+    std::fs::read_to_string(rolling_summary_path(app_data_dir, id))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+pub fn write_rolling_summary(app_data_dir: &PathBuf, id: &str, summary: &RollingSummary) -> Result<()> {
+    write_atomic(&rolling_summary_path(app_data_dir, id), &serde_json::to_string_pretty(summary)?)
+}
+
 pub fn update_long_horizon_enabled(
     app_data_dir: &PathBuf,
     id: &str,
@@ -403,6 +470,57 @@ pub fn write_task_queue_tasks(app_data_dir: &PathBuf, id: &str, tasks: &[serde_j
     write_atomic(&dir.join("tarefas.json"), &crate::agent::task_queue::serialize_tasks(tasks))
 }
 
+/// Fila sem Long Horizon (`agent::plain_queue`) — mesmo formato de
+/// `tarefas.json`, mas numa pasta própria pra não misturar com a fila do LH.
+pub fn update_plain_queue_enabled(app_data_dir: &PathBuf, id: &str, enabled: bool) -> Result<Session> {
+    let mut session = get_session(app_data_dir, id)?;
+    session.plain_queue_enabled = enabled;
+    let dir = session_dir(app_data_dir, id);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("session.json"), serde_json::to_string_pretty(&session)?)?;
+    Ok(session)
+}
+
+pub fn read_plain_queue(app_data_dir: &PathBuf, id: &str) -> Result<String> {
+    let path = session_dir(app_data_dir, id).join("plain_queue").join("tarefas.json");
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => Ok(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(anyhow::anyhow!("Não foi possível ler {}: {error}", path.display())),
+    }
+}
+
+pub fn write_plain_queue(app_data_dir: &PathBuf, id: &str, json_text: &str) -> Result<()> {
+    crate::agent::task_queue::parse_tasks(json_text)?;
+    let dir = session_dir(app_data_dir, id).join("plain_queue");
+    std::fs::create_dir_all(&dir)?;
+    write_atomic(&dir.join("tarefas.json"), json_text)
+}
+
+pub fn write_plain_queue_tasks(app_data_dir: &PathBuf, id: &str, tasks: &[serde_json::Value]) -> Result<()> {
+    let dir = session_dir(app_data_dir, id).join("plain_queue");
+    std::fs::create_dir_all(&dir)?;
+    write_atomic(&dir.join("tarefas.json"), &crate::agent::task_queue::serialize_tasks(tasks))
+}
+
+/// Memória da sessão (`agent::plain_queue`): fatos desta sessão só. Sem limite
+/// de tamanho e nunca tocada pela compactação — vai inteira no system prompt
+/// de cada turno, não dentro de `messages`.
+pub fn read_session_memory(app_data_dir: &PathBuf, id: &str) -> Result<String> {
+    let path = session_dir(app_data_dir, id).join("memoria_sessao.md");
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => Ok(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(anyhow::anyhow!("Não foi possível ler {}: {error}", path.display())),
+    }
+}
+
+pub fn write_session_memory(app_data_dir: &PathBuf, id: &str, conteudo: &str) -> Result<()> {
+    let dir = session_dir(app_data_dir, id);
+    std::fs::create_dir_all(&dir)?;
+    write_atomic(&dir.join("memoria_sessao.md"), conteudo)
+}
+
 /// Incrementa `long_horizon.iteracao_atual` — chamado a cada turno em que o
 /// modo está ligado (ver `agent::long_horizon::apply_reset`, chamado de
 /// `agent::run_turn`). Recarrega a sessão do disco antes de mutar (mesmo
@@ -535,6 +653,13 @@ pub fn accumulate_usage(
     Ok(session)
 }
 
+pub fn invalidate_prompt_usage(app_data_dir: &PathBuf, id: &str) -> Result<Session> {
+    let mut session = get_session(app_data_dir, id)?;
+    session.last_prompt_tokens = None;
+    std::fs::write(session_dir(app_data_dir, id).join("session.json"), serde_json::to_vec_pretty(&session)?)?;
+    Ok(session)
+}
+
 pub fn load_messages(app_data_dir: &PathBuf, id: &str) -> Result<Vec<ChatMessage>> {
     let path = session_dir(app_data_dir, id).join("chat_log.json");
     match std::fs::read_to_string(&path) {
@@ -610,6 +735,41 @@ pub fn delete_session(app_data_dir: &PathBuf, id: &str) -> Result<()> {
         std::fs::remove_dir_all(dir)?;
     }
     Ok(())
+}
+
+/// Limpa sessões "zuadas": diretorios de sessao que existem mas nao tem
+/// session.json valido, ou que estao com corrompido. Retorna o numero de
+/// sessoes removidas.
+pub fn cleanup_orphaned_sessions(app_data_dir: &PathBuf) -> Result<u32> {
+    let dir = sessions_dir(app_data_dir);
+    let mut removed = 0;
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries {
+            if let Ok(e) = entry {
+                if e.path().is_dir() {
+                    let session_path = e.path().join("session.json");
+                    if !session_path.exists() {
+                        // Diretorio sem session.json — remover.
+                        if let Err(e) = std::fs::remove_dir_all(e.path()) {
+                            eprintln!("[sessions] Erro ao remover sessao orphaned {}: {}", e, e);
+                        } else {
+                            removed += 1;
+                        }
+                    } else if let Ok(text) = std::fs::read_to_string(&session_path) {
+                        if serde_json::from_str::<Session>(&text).is_err() {
+                            // session.json corrompido — remover.
+                            if let Err(e) = std::fs::remove_dir_all(e.path()) {
+                                eprintln!("[sessions] Erro ao remover sessao corrompida {}: {}", e, e);
+                            } else {
+                                removed += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(removed)
 }
 
 #[cfg(test)]

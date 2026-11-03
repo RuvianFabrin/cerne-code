@@ -788,7 +788,7 @@ watch(
   () => providerStore.config?.external_cli,
   (cfg) => {
     if (!cfg) return;
-    for (const backend of ["claude", "codex", "gemini", "qwen"] as const) {
+    for (const backend of ["claude", "codex", "gemini", "qwen", "pi"] as const) {
       externalCliBinOverride.value[backend] = cfg[backend]?.bin_path ?? "";
       externalCliExtraArgs.value[backend] = (cfg[backend]?.extra_args ?? []).join(" ");
     }
@@ -796,7 +796,7 @@ watch(
   { immediate: true },
 );
 
-async function saveExternalCliOverride(backend: "claude" | "codex" | "gemini" | "qwen") {
+async function saveExternalCliOverride(backend: "claude" | "codex" | "gemini" | "qwen" | "pi") {
   if (!providerStore.config) return;
   const binPath = externalCliBinOverride.value[backend]?.trim() || null;
   const extraArgs = (externalCliExtraArgs.value[backend] ?? "").trim().split(/\s+/).filter(Boolean);
@@ -1825,6 +1825,16 @@ watch(csGruposVisiveis, (grupos) => {
           <label>{{ $t("settings.longHorizonTetoFalhaRepetida") }}</label>
           <input
             v-model.number="providerStore.config.long_horizon.teto_falha_repetida"
+            type="number"
+            min="1"
+            class="text-input"
+            @change="providerStore.saveConfig"
+          />
+        </div>
+        <div class="field">
+          <label>{{ $t("settings.longHorizonTetoTempo") }}</label>
+          <input
+            v-model.number="providerStore.config.long_horizon.teto_tempo_por_turno_min"
             type="number"
             min="1"
             class="text-input"

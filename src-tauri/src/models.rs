@@ -36,6 +36,32 @@ pub struct ChatMessage {
 /// anteriores). Existe pra sessões que ficam MUITO longas (ex.: modo Long
 /// Horizon, onde o histórico nunca é podado — ver `agent/long_horizon.rs`)
 /// não precisarem carregar/renderizar tudo de uma vez no chat.
+/// Configuração do "Ctx fixo" de uma sessão. `tokens` é o orçamento total
+/// enviado ao modelo a cada envio (instruções + trecho final do histórico).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FixedContextState {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_fixed_context_tokens")]
+    pub tokens: u32,
+    /// "Ctx fixo rolante": em vez de só cortar o começo, mantém um resumo
+    /// do que saiu da janela, atualizado em segundo plano depois de cada turno.
+    #[serde(default)]
+    pub rolling: bool,
+}
+
+pub const DEFAULT_FIXED_CONTEXT_TOKENS: u32 = 10_000;
+
+fn default_fixed_context_tokens() -> u32 {
+    DEFAULT_FIXED_CONTEXT_TOKENS
+}
+
+impl Default for FixedContextState {
+    fn default() -> Self {
+        Self { enabled: false, tokens: DEFAULT_FIXED_CONTEXT_TOKENS, rolling: false }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessagesPage {
     pub messages: Vec<ChatMessage>,
@@ -221,6 +247,8 @@ pub struct ProviderConfig {
     /// campo de contexto utilizável.
     #[serde(default)]
     pub context_length_override: Option<u32>,
+    #[serde(skip)]
+    pub cli_inference: Option<crate::agent::cli_inference::CliInferenceConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -367,6 +395,14 @@ pub struct LongHorizonConfig {
     /// papel do `TETO_DE_REPETICAO_IDENTICA` do protótipo (padrão lá: 2).
     #[serde(default = "default_long_horizon_teto_falha_repetida")]
     pub teto_falha_repetida: u32,
+    /// Limite de TEMPO (em minutos) que um turno do Long Horizon pode durar
+    /// antes de devolver o controle ao usuário. Pedido do usuário
+    /// (2026-09-24): o guard de tempo existia fixo em 600s (10 min), o que
+    /// servia pra um modelo pequeno preso em loop, mas corta um modelo
+    /// grande/fronteira que trabalha legitimamente por horas. Configurável
+    /// aqui em vez de constante no código.
+    #[serde(default = "default_long_horizon_teto_tempo_min")]
+    pub teto_tempo_por_turno_min: u32,
 }
 
 fn default_long_horizon_prompt() -> String {
@@ -388,6 +424,11 @@ fn default_long_horizon_teto_tool() -> u32 {
 fn default_long_horizon_teto_falha_repetida() -> u32 {
     5
 }
+// 60 min: 10 min cortava modelos grandes que trabalham legitimamente por mais
+// tempo (pedido do usuário, 2026-11-02). Continua configurável em Configurações.
+fn default_long_horizon_teto_tempo_min() -> u32 {
+    60
+}
 
 impl Default for LongHorizonConfig {
     fn default() -> Self {
@@ -396,6 +437,7 @@ impl Default for LongHorizonConfig {
             max_iteracoes: default_long_horizon_max_iteracoes(),
             teto_tool_por_passo: default_long_horizon_teto_tool(),
             teto_falha_repetida: default_long_horizon_teto_falha_repetida(),
+            teto_tempo_por_turno_min: default_long_horizon_teto_tempo_min(),
         }
     }
 }
@@ -577,6 +619,8 @@ pub struct Session {
     /// do modelo dentro desse CLI (ex: "claude-sonnet-5").
     #[serde(default)]
     pub external_cli_backend: Option<String>,
+    #[serde(default)]
+    pub external_cli_mode: crate::agent::cli_inference::CliMode,
     /// Pastas extras (fora de `project_root`) que as ferramentas podem acessar
     /// via caminho absoluto. Cada entrada tem um modo: `Read` (só leitura —
     /// `read_file`/`list_dir`/`grep`/`ast_grep`) ou `ReadWrite` (leitura +
@@ -656,6 +700,12 @@ pub struct Session {
     /// (mesmo padrão de retrocompatibilidade de `fable_method`/`folder_id`).
     #[serde(default)]
     pub long_horizon: LongHorizonState,
+    /// "Ctx fixo": limita o que é MANDADO ao modelo a um orçamento de tokens,
+    /// em todo envio, sem mexer no histórico nem no modo Long Horizon. Ver
+    /// `context::fixed_window`. Sessões antigas desserializam com o modo
+    /// desligado.
+    #[serde(default)]
+    pub fixed_context: FixedContextState,
     /// Fila de tarefas (ver `agent::task_queue`): roda uma lista de itens
     /// colada pelo usuário (`task_queue/tarefas.json`) contra o Long Horizon,
     /// um item por vez, sem interação até acabar ou até dar Stop. Ligado
@@ -663,6 +713,14 @@ pub struct Session {
     /// Long Horizon manualmente (digitando ele mesmo) sem a fila automática.
     #[serde(default)]
     pub task_queue_enabled: bool,
+    /// Fila de tarefas SEM Long Horizon (ver `agent::plain_queue`): contexto
+    /// normal, sem limites, salva a memória da sessão e compacta entre tarefas.
+    /// Lista própria em `plain_queue/tarefas.json`, separada da fila acima.
+    #[serde(default)]
+    pub plain_queue_enabled: bool,
+    /// Context Mode tools + lossless session recall; opt-in for old/new chats.
+    #[serde(default)]
+    pub context_economy: bool,
 }
 
 /// Estado do modo Long Horizon **desta sessão**. Separado de `LongHorizonConfig`

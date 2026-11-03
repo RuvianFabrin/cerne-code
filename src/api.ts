@@ -5,7 +5,8 @@ export type ProviderKind = "openrouter" | "llama_cpp" | "ollama" | "lm_studio" |
 export type ExecutionMode = "manual" | "auto" | "yolo";
 
 /** Um dos 4 CLIs externos suportados (ver `agent::external_cli::CliBackendId`). */
-export type CliBackendId = "claude" | "codex" | "gemini" | "qwen";
+export type CliBackendId = "claude" | "codex" | "gemini" | "qwen" | "pi";
+export type CliMode = "agent" | "provider";
 
 export interface CliBackendOverride {
   bin_path: string | null;
@@ -17,6 +18,7 @@ export interface ExternalCliConfig {
   codex: CliBackendOverride;
   gemini: CliBackendOverride;
   qwen: CliBackendOverride;
+  pi: CliBackendOverride;
 }
 
 /** Status "está instalado?" de um CLI externo — devolvido por `check_external_cli_readiness`. */
@@ -95,6 +97,7 @@ export interface LongHorizonConfig {
   max_iteracoes: number;
   teto_tool_por_passo: number;
   teto_falha_repetida: number;
+  teto_tempo_por_turno_min: number;
 }
 
 export type VoiceBackend = "openai_compatible" | "voicebox";
@@ -172,6 +175,7 @@ export interface Session {
   llama_fork: string | null;
   custom_provider_id: string | null;
   external_cli_backend: CliBackendId | null;
+  external_cli_mode: CliMode;
   extra_read_paths: Array<{ path: string; mode: "read" | "read_write" }>;
   execution_mode: ExecutionMode;
   reasoning_effort: "off" | "on" | "low" | "medium" | "high" | null;
@@ -181,7 +185,12 @@ export interface Session {
   folder_id: string | null;
   parent_session_id: string | null;
   long_horizon: LongHorizonState;
+  /** "Ctx fixo": limita o que é enviado ao modelo a `tokens` por envio. */
+  fixed_context?: { enabled: boolean; tokens: number; rolling: boolean };
   task_queue_enabled: boolean;
+  /** Fila de tarefas sem Long Horizon (memória da sessão + compactação entre tarefas). */
+  plain_queue_enabled?: boolean;
+  context_economy: boolean;
 }
 
 export interface TaskItem {
@@ -290,6 +299,37 @@ export interface LlamaForkConfig {
   server_exe: string;
   models_ini: string;
   port: number;
+}
+
+/** Estado de um modelo LFM3 no `models.ini` do fork (ver `lfm3_catalog`). */
+export interface Lfm3ModelStatus {
+  id: string;
+  chat: boolean;
+  image: boolean;
+  audio: boolean;
+  speech_out: boolean;
+  configured: boolean;
+  files_exist: boolean;
+  model_path: string | null;
+  mmproj_path: string | null;
+}
+
+export interface Lfm3Message {
+  role: "system" | "user" | "assistant";
+  content: string | Array<Record<string, unknown>>;
+}
+
+/** Resposta do d1-Omni: uma entrada por pergunta, no formato do endpoint `/v1/systemone`. */
+export interface Lfm3ClassifyResult {
+  model: string;
+  answers: Record<string, {
+    type: "noul" | "choice" | "score";
+    noul?: number;
+    choice?: string;
+    probabilities?: Record<string, number>;
+    confidence?: number;
+    score?: number;
+  }>;
 }
 
 export interface ImageGenPreset {
@@ -440,6 +480,15 @@ export const api = {
   addLlamaFork: (fork: LlamaForkConfig) => invoke<LlamaForkConfig[]>("add_llama_fork", { fork }),
   removeLlamaFork: (id: string) => invoke<LlamaForkConfig[]>("remove_llama_fork", { id }),
   listLlamaPresets: (forkId: string) => invoke<ModelInfo[]>("list_llama_presets", { forkId }),
+  lfm3Catalog: (forkId: string) => invoke<Lfm3ModelStatus[]>("lfm3_catalog", { forkId }),
+  lfm3Classify: (forkId: string, contextText: string, questions: Record<string, unknown>, images: string[], audios: string[]) =>
+    invoke<Lfm3ClassifyResult>("lfm3_classify", { forkId, contextText, questions, images, audios }),
+  lfm3Chat: (forkId: string, model: string, messages: Lfm3Message[], maxTokens?: number) =>
+    invoke<string>("lfm3_chat", { forkId, model, messages, maxTokens }),
+  lfm3Transcribe: (forkId: string, audioDataUri: string, lang: string) =>
+    invoke<string>("lfm3_transcribe", { forkId, audioDataUri, lang }),
+  lfm3Speak: (forkId: string, text: string, lang: string, voice: string) =>
+    invoke<string>("lfm3_speak", { forkId, text, lang, voice }),
   llamaServerStatus: (forkId: string) => invoke<"ready" | "loading" | "stopped">("llama_server_status", { forkId }),
   llamaServerHealth: (forkId: string) => invoke<boolean>("llama_server_health", { forkId }),
   startLlamaServer: (forkId: string) => invoke<void>("start_llama_server", { forkId }),
@@ -488,8 +537,11 @@ export const api = {
       customProviderId,
       externalCliBackend,
     }),
+  listExternalCliModels: (backend: CliBackendId) => invoke<string[]>("list_external_cli_models", { backend }),
   checkExternalCliReadiness: () => invoke<CliReadiness[]>("check_external_cli_readiness"),
   updateSessionTitle: (id: string, title: string) => invoke<Session>("update_session_title", { id, title }),
+  updateSessionCliMode: (id: string, mode: CliMode) =>
+    invoke<Session>("update_session_cli_mode", { id, mode }),
   updateSessionExecutionMode: (id: string, executionMode: ExecutionMode) =>
     invoke<Session>("update_session_execution_mode", { id, executionMode }),
   updateSessionReadPaths: (id: string, extraReadPaths: Array<{ path: string; mode: "read" | "read_write" }>) =>
@@ -504,8 +556,16 @@ export const api = {
   ) => invoke<Session>("update_session_reasoning_effort", { id, effort }),
   updateSessionFableMethod: (id: string, enabled: boolean) =>
     invoke<Session>("update_session_fable_method", { id, enabled }),
+  appendRealtimeTurn: (id: string, audioDataUri: string, replyText: string) =>
+    invoke<ChatMessage[]>("append_realtime_turn", { id, audioDataUri, replyText }),
+  updateSessionFixedContext: (id: string, enabled: boolean, tokens: number, rolling: boolean) =>
+    invoke<Session>("update_session_fixed_context", { id, enabled, tokens, rolling }),
   updateSessionLongHorizonEnabled: (id: string, enabled: boolean) =>
     invoke<Session>("update_session_long_horizon_enabled", { id, enabled }),
+  updateSessionContextEconomy: (id: string, enabled: boolean) =>
+    invoke<Session>("update_session_context_economy", { id, enabled }),
+  runContextCommand: (id: string, text: string) =>
+    invoke<ChatMessage[]>("run_context_command", { id, text }),
   readSessionLongHorizonMemoria: (id: string) =>
     invoke<string>("read_session_long_horizon_memoria", { id }),
   writeSessionLongHorizonMemoria: (id: string, conteudo: string) =>
@@ -522,6 +582,15 @@ export const api = {
   isTaskQueueRunning: (id: string) => invoke<boolean>("is_task_queue_running", { id }),
   startTaskQueue: (sessionId: string) => invoke<void>("start_task_queue", { sessionId }),
   stopTaskQueue: (sessionId: string) => invoke<void>("stop_task_queue", { sessionId }),
+  updateSessionPlainQueueEnabled: (id: string, enabled: boolean) =>
+    invoke<Session>("update_session_plain_queue_enabled", { id, enabled }),
+  readSessionPlainQueue: (id: string) => invoke<string>("read_session_plain_queue", { id }),
+  writeSessionPlainQueue: (id: string, jsonText: string) =>
+    invoke<void>("write_session_plain_queue", { id, jsonText }),
+  readSessionMemory: (id: string) => invoke<string>("read_session_memory", { id }),
+  writeSessionMemory: (id: string, conteudo: string) =>
+    invoke<void>("write_session_memory", { id, conteudo }),
+  startPlainQueue: (sessionId: string) => invoke<void>("start_plain_queue", { sessionId }),
   updateSessionMcpServers: (id: string, enabledNames: string[] | null) =>
     invoke<Session>("update_session_mcp_servers", { id, enabledNames }),
   updateSessionPersona: (id: string, personaId: string | null) =>
@@ -687,6 +756,17 @@ export interface TaskQueueStatusEvent {
 
 export function onTaskQueueStatus(cb: (event: TaskQueueStatusEvent) => void): Promise<UnlistenFn> {
   return listen<TaskQueueStatusEvent>("agent:task_queue_status", (e) => cb(e.payload));
+}
+
+export interface PlainQueueStatusEvent {
+  session_id: string;
+  status: "processing" | "confirmed" | "saving_memory" | "compacting" | "stuck" | "finished" | "error";
+  item_id: string | null;
+  message: string | null;
+}
+
+export function onPlainQueueStatus(cb: (event: PlainQueueStatusEvent) => void): Promise<UnlistenFn> {
+  return listen<PlainQueueStatusEvent>("agent:plain_queue_status", (e) => cb(e.payload));
 }
 
 // Fase 3: progresso do pipeline determinístico Dev→QA→Analista (run_pipeline).

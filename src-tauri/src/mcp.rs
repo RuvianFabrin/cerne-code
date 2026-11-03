@@ -302,7 +302,15 @@ async fn connect_server(server: &McpServerConfig) -> Result<McpClient> {
     } else {
         let args = server.args.clone();
         let env = server.env.clone();
-        let transport = TokioChildProcess::new(build_command(&server.command).configure(|cmd| {
+        // Cerne's bundled Node runtime is an executable, not a .cmd shim.
+        // Run it directly so paths with spaces don't go through shell parsing.
+        let process = if server.name.starts_with("context_economy_") {
+            let mut command = Command::new(&server.command);
+            crate::agent::shell::apply_creation_flags(&mut command);
+            if let Some(project) = env.get("CONTEXT_MODE_PROJECT_DIR") { command.current_dir(project); }
+            command
+        } else { build_command(&server.command) };
+        let transport = TokioChildProcess::new(process.configure(|cmd| {
             cmd.args(&args);
             for (key, value) in &env {
                 cmd.env(key, value);

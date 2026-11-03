@@ -18,6 +18,7 @@ import {
   onPendingEdit,
   onPermissionRequest,
   onTaskQueueStatus,
+  onPlainQueueStatus,
   onToolCall,
   onToolResult,
   onTurnStats,
@@ -27,6 +28,7 @@ import {
   type ChatMessage,
   type MediaRecord,
   type CliBackendId,
+  type CliMode,
   type ContextUsage,
   type ExecutionMode,
   type Folder,
@@ -38,6 +40,7 @@ import {
   type Session,
   type SkillMeta,
   type TaskItem,
+  type PlainQueueStatusEvent,
   type TaskQueueStatusEvent,
   type TodoItem,
   type TurnStats,
@@ -84,6 +87,11 @@ export const useSessionStore = defineStore("session", {
     // `agent:task_queue_status`, nunca filtrado por currentId na escrita.
     taskQueueRunningIds: new Set<string>() as Set<string>,
     taskQueueLastEvent: null as TaskQueueStatusEvent | null,
+    // Fila sem Long Horizon: mesmo padrão, mas evento e conjunto próprios
+    // (`agent:plain_queue_status`). Só os eventos marcam "rodando" — o mapa
+    // de execuções do backend é compartilhado com a fila do LH.
+    plainQueueRunningIds: new Set<string>() as Set<string>,
+    plainQueueLastEvent: null as PlainQueueStatusEvent | null,
     // Compartilhados entre ComposerBar.vue (menu `/`, seletor de persona) e
     // AgentsSkillsPanel.vue (aba de gerenciamento) — cada um tinha sua
     // PRÓPRIA cópia local antes, carregada só uma vez ao montar, então uma
@@ -96,6 +104,8 @@ export const useSessionStore = defineStore("session", {
     currentFork: "turboquant",
     currentCustomProviderId: "",
     messages: [] as ChatMessage[],
+    /** Mensagens enviadas enquanto o modelo ainda respondia; saem uma a uma quando o turno termina. */
+    queue: [] as Array<{ sessionId: string; text: string; displayText: string; images: string[] }>,
     mediaMessages: [] as MediaRecord[],
     mediaBusyIds: [] as string[],
     // Carga lenta do histórico (2026-09-20): índice absoluto da PRIMEIRA
@@ -210,6 +220,15 @@ export const useSessionStore = defineStore("session", {
           if (event.status !== "confirmed") this.taskQueueRunningIds.delete(event.session_id);
         }
         if (event.session_id === this.currentId) this.taskQueueLastEvent = event;
+      });
+
+      await onPlainQueueStatus((event) => {
+        if (event.status === "stuck" || event.status === "finished" || event.status === "error") {
+          this.plainQueueRunningIds.delete(event.session_id);
+        } else {
+          this.plainQueueRunningIds.add(event.session_id);
+        }
+        if (event.session_id === this.currentId) this.plainQueueLastEvent = event;
       });
 
       await onAgentStatus((sessionId, status) => {
@@ -532,6 +551,7 @@ export const useSessionStore = defineStore("session", {
       this.turnStats = {};
       this.pipelineStatus = null;
       this.taskQueueLastEvent = null;
+      this.plainQueueLastEvent = null;
       await this.reloadCurrent();
       await this.applyRememberedContextLength();
       // Sincroniza com o backend (não só com eventos já vistos) — cobre o
@@ -697,8 +717,38 @@ export const useSessionStore = defineStore("session", {
       } finally { this.mediaBusyIds = this.mediaBusyIds.filter((busyId) => busyId !== id); }
     },
 
+    /** Guarda uma mensagem pra enviar depois que o turno atual terminar. */
+    enqueueMessage(text: string, displayText: string, images: string[]) {
+      if (!this.currentId) return;
+      this.queue.push({ sessionId: this.currentId, text, displayText, images });
+    },
+
+    /** Tira da fila a próxima mensagem da sessão aberta (ou devolve undefined). */
+    takeQueued() {
+      const index = this.queue.findIndex((q) => q.sessionId === this.currentId);
+      if (index === -1) return undefined;
+      return this.queue.splice(index, 1)[0];
+    },
+
     async send(text: string, displayText?: string, images: string[] = []) {
-      if (!this.currentId || !text.trim()) return;
+      // Mensagem só com anexo de áudio/imagem é válida (ex.: fala da conversa por voz).
+      if (!this.currentId || (!text.trim() && images.length === 0)) return;
+      if (/^\/(?:context-mode:)?ctx-(?:stats|doctor|index|search|purge|insight|upgrade)(?:\s|$)/.test(text)) {
+        if (this.status !== "idle") return;
+        const id = this.currentId;
+        this.status = "thinking";
+        this.error = "";
+        try {
+          const messages = await api.runContextCommand(id, text);
+          if (this.currentId === id) {
+            this.messages = messages;
+            const updated = await api.getSession(id);
+            this.sessions = this.sessions.map((s) => s.id === id ? updated : s);
+          }
+        } catch (e) { this.error = String(e); }
+        finally { if (this.currentId === id) this.status = "idle"; }
+        return;
+      }
       this.messages.push({ role: "user", content: displayText ?? text, images });
       this.liveBlocks = [];
       this.status = "thinking";
@@ -848,6 +898,32 @@ export const useSessionStore = defineStore("session", {
       if (idx !== -1) this.sessions[idx] = updated;
     },
 
+    async updateCliMode(mode: CliMode) {
+      if (!this.currentId) return;
+      const updated = await api.updateSessionCliMode(this.currentId, mode);
+      this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === updated.id);
+      if (idx !== -1) this.sessions[idx] = updated;
+    },
+
+    async updateContextEconomy(enabled: boolean) {
+      if (!this.currentId) return;
+      const updated = await api.updateSessionContextEconomy(this.currentId, enabled);
+      this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === updated.id);
+      if (idx !== -1) this.sessions[idx] = updated;
+    },
+
+    async updateFixedContext(enabled: boolean, tokens: number, rolling?: boolean) {
+      if (!this.currentId) return;
+      const safeTokens = Number.isFinite(tokens) && tokens >= 1000 ? Math.round(tokens) : 10000;
+      const keepRolling = rolling ?? this.currentSession?.fixed_context?.rolling ?? false;
+      const updated = await api.updateSessionFixedContext(this.currentId, enabled, safeTokens, keepRolling);
+      this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === updated.id);
+      if (idx !== -1) this.sessions[idx] = updated;
+    },
+
     async updateLongHorizonEnabled(enabled: boolean) {
       if (!this.currentId) return;
       const updated = await api.updateSessionLongHorizonEnabled(this.currentId, enabled);
@@ -880,6 +956,33 @@ export const useSessionStore = defineStore("session", {
       if (!this.currentId) return;
       await api.stopTaskQueue(this.currentId);
       this.taskQueueRunningIds.delete(this.currentId);
+    },
+
+    async updatePlainQueueEnabled(enabled: boolean) {
+      if (!this.currentId) return;
+      const updated = await api.updateSessionPlainQueueEnabled(this.currentId, enabled);
+      this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === updated.id);
+      if (idx !== -1) this.sessions[idx] = updated;
+    },
+
+    async startPlainQueue() {
+      if (!this.currentId) return;
+      this.plainQueueRunningIds.add(this.currentId);
+      this.plainQueueLastEvent = null;
+      try {
+        await api.startPlainQueue(this.currentId);
+      } catch (e) {
+        this.plainQueueRunningIds.delete(this.currentId);
+        throw e;
+      }
+    },
+
+    async stopPlainQueue() {
+      if (!this.currentId) return;
+      // Mesmo comando de parada da fila do LH: o mapa de execuções é um só por sessão.
+      await api.stopTaskQueue(this.currentId);
+      this.plainQueueRunningIds.delete(this.currentId);
     },
 
     async updatePersona(personaId: string | null) {

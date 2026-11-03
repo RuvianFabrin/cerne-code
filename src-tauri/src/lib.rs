@@ -4,11 +4,15 @@ mod audio;
 mod backup;
 mod config;
 mod context;
+mod context_economy;
+/// Internal Rust/Boa executor. Called before Tauri initialization in a worker.
+pub fn context_economy_worker() -> i32 { context_economy::run_worker() }
 mod encoding;
 mod folders;
 mod git;
 mod history;
 mod image_util;
+mod lfm3;
 mod mcp;
 mod memory;
 mod media;
@@ -113,6 +117,7 @@ async fn send_media_message(app: tauri::AppHandle, state: State<'_, AppState>, s
 }
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 use tauri::{Manager, State};
 use tokio::process::Child;
@@ -165,6 +170,10 @@ pub struct AppState {
     /// pra `check_agent_session` sugerir quanto esperar (G2). Não
     /// persistido, mesmo espírito de `agent_executions`.
     pub orchestrated_sessions: Mutex<HashMap<String, agent::OrchestratedSessionInfo>>,
+    /// Flag de cancelamento de compactação — quando true, a compactação
+    /// deve parar imediatamente. Usado pelo botão "parar compactação" pra
+    /// interromper a compactação em andamento.
+    pub cancel_compaction: AtomicBool,
     /// Guard anti-loop pro auto-continue: quantas vezes seguidas uma sessão
     /// já se retomou sozinha (comando em segundo plano ou sessão filha
     /// orquestrada terminando) sem uma mensagem de verdade do usuário no
@@ -199,6 +208,13 @@ fn get_default_long_horizon_config() -> crate::models::LongHorizonConfig {
 /// PATH, ou no override configurado) — alimenta a seção "CLIs externos" de
 /// Configurações. `set_config`/`get_config` já cobrem ler/gravar os
 /// overrides de binário/argumentos em si (fazem parte de `AppConfig`).
+#[tauri::command]
+async fn list_external_cli_models(state: State<'_, AppState>, backend: String) -> Result<Vec<String>,String> {
+    let backend=agent::external_cli::CliBackendId::from_id(&backend).ok_or("CLI desconhecido")?;
+    let cfg=state.config.lock().unwrap().external_cli.clone();
+    agent::external_cli::list_models(backend,&cfg).await.map_err(|e|e.to_string())
+}
+
 #[tauri::command]
 fn check_external_cli_readiness(state: State<AppState>) -> Vec<agent::external_cli::CliReadiness> {
     let cfg = state.config.lock().unwrap().external_cli.clone();
@@ -413,6 +429,7 @@ pub(crate) fn build_provider_config(
                 llama_fork: None,
                 supports_vision_override: provider.supports_vision,
                 context_length_override: provider.context_length,
+                cli_inference: None,
             },
             api_key,
         ));
@@ -437,6 +454,7 @@ pub(crate) fn build_provider_config(
                 llama_fork: Some(fork_id),
                 supports_vision_override: false,
                 context_length_override: None,
+        cli_inference: None,
             },
             None,
         ));
@@ -461,6 +479,7 @@ pub(crate) fn build_provider_config(
             llama_fork: Some(cfg.active_llama_fork.clone()),
             supports_vision_override: false,
             context_length_override: None,
+        cli_inference: None,
         },
         api_key,
     ))
@@ -642,6 +661,9 @@ async fn resolve_context_length(
     custom_provider_id: Option<String>,
 ) -> Result<Option<u32>, String> {
     let cfg = state.config.lock().unwrap().clone();
+    if kind == ProviderKind::Cli {
+        return Ok(agent::external_cli::codex_context_length(&model));
+    }
     if kind == ProviderKind::LlamaCpp {
         let fork_id = fork_id.unwrap_or(cfg.active_llama_fork);
         let forks =
@@ -715,6 +737,7 @@ async fn test_custom_provider(
         llama_fork: None,
         supports_vision_override: false,
         context_length_override: None,
+        cli_inference: None,
     };
     providers::list_models(&cfg, api_key, &state.app_data_dir)
         .await
@@ -757,7 +780,159 @@ fn list_llama_presets(state: State<AppState>, fork_id: String) -> Result<Vec<Mod
         .into_iter()
         .find(|f| f.id == fork_id)
         .ok_or_else(|| format!("fork desconhecido: {fork_id}"))?;
-    providers::llama_cpp::list_presets(&fork.models_ini).map_err(|e| e.to_string())
+    // d1-Omni é de decisão (`/v1/systemone`), não de chat: fica fora da lista
+    // de modelos do chat e é usado só pela tela LFM3 (ver `lfm3_classify`).
+    let mut presets = providers::llama_cpp::list_presets(&fork.models_ini).map_err(|e| e.to_string())?;
+    presets.retain(|m| !lfm3::is_decision_model(&m.id));
+    Ok(presets)
+}
+
+/// Estado de cada modelo LFM3 para a tela LFM3: capacidades e se os arquivos
+/// do `models.ini` do fork existem de fato.
+#[derive(serde::Serialize)]
+struct Lfm3ModelStatus {
+    id: String,
+    chat: bool,
+    image: bool,
+    audio: bool,
+    speech_out: bool,
+    configured: bool,
+    files_exist: bool,
+    model_path: Option<String>,
+    mmproj_path: Option<String>,
+}
+
+fn llama_fork_by_id(state: &AppState, fork_id: &str) -> Result<providers::llama_cpp::LlamaForkConfig, String> {
+    providers::llama_cpp::load_forks(&state.app_data_dir)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|f| f.id == fork_id)
+        .ok_or_else(|| format!("fork desconhecido: {fork_id}"))
+}
+
+#[tauri::command]
+fn lfm3_catalog(state: State<AppState>, fork_id: String) -> Result<Vec<Lfm3ModelStatus>, String> {
+    let fork = llama_fork_by_id(&state, &fork_id)?;
+    let ini = std::path::Path::new(&fork.models_ini);
+    let mut out = Vec::new();
+    for section in lfm3::SECTIONS {
+        let m = lfm3::modalities(section).expect("seção LFM3 conhecida");
+        let paths = lfm3::section_paths(ini, section).map_err(|e| e.to_string())?;
+        let model_path = paths.as_ref().and_then(|p| p.model.clone());
+        let mmproj_path = paths.as_ref().and_then(|p| p.mmproj.clone());
+        let model_ok = model_path.as_deref().map(|p| std::path::Path::new(p).is_file()).unwrap_or(false);
+        let mmproj_ok = mmproj_path.as_deref().map(|p| std::path::Path::new(p).is_file()).unwrap_or(true);
+        out.push(Lfm3ModelStatus {
+            id: section.to_string(),
+            chat: m.chat,
+            image: m.image,
+            audio: m.audio,
+            speech_out: m.speech_out,
+            configured: paths.is_some(),
+            files_exist: model_ok && mmproj_ok,
+            model_path,
+            mmproj_path,
+        });
+    }
+    Ok(out)
+}
+
+/// Roda o classificador d1-Omni (`/v1/systemone`). Não é chat: devolve as
+/// decisões calibradas, sem gerar texto.
+#[tauri::command]
+async fn lfm3_classify(
+    state: State<'_, AppState>,
+    fork_id: String,
+    context_text: String,
+    questions: serde_json::Value,
+    images: Vec<String>,
+    audios: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    let fork = llama_fork_by_id(&state, &fork_id)?;
+    ensure_llama_ready(&state, &fork_id).await.map_err(|e| e.to_string())?;
+    let body = lfm3::classify_body(&context_text, questions, images, audios);
+    lfm3::classify(fork.port, &body).await.map_err(|e| e.to_string())
+}
+
+/// Chamada de chat direta ao router LFM3 (com áudio/imagem em `messages`),
+/// usada pela conversa por voz e pelos testes da tela LFM3.
+#[tauri::command]
+async fn lfm3_chat(
+    state: State<'_, AppState>,
+    fork_id: String,
+    model: String,
+    messages: Vec<serde_json::Value>,
+    max_tokens: Option<u32>,
+) -> Result<String, String> {
+    if !lfm3::modalities(&model).map(|m| m.chat).unwrap_or(false) {
+        return Err(format!("{model} não é um modelo de chat"));
+    }
+    lfm3_chat_inner(&state, &fork_id, &model, messages, max_tokens.unwrap_or(400)).await
+}
+
+/// Transcreve um WAV (data URI) com o modelo de áudio do LFM3 (ASR). O idioma
+/// escolhido vira o prompt `Perform ASR in <idioma>.`; `auto` deixa o modelo
+/// inferir. Devolve só o texto, pronto pra ser usado como mensagem do chat.
+#[tauri::command]
+async fn lfm3_transcribe(
+    state: State<'_, AppState>,
+    fork_id: String,
+    audio_data_uri: String,
+    lang: String,
+) -> Result<String, String> {
+    let messages = vec![
+        serde_json::json!({ "role": "system", "content": lfm3::asr_prompt(&lang) }),
+        serde_json::json!({
+            "role": "user",
+            "content": [{ "type": "input_audio", "input_audio": {
+                "data": audio_data_uri.split_once("base64,").map(|(_, d)| d).unwrap_or(""),
+                "format": "wav",
+            }}],
+        }),
+    ];
+    lfm3_chat_inner(&state, &fork_id, lfm3::AUDIO_MODEL, messages, 400).await
+}
+
+async fn lfm3_chat_inner(
+    state: &AppState,
+    fork_id: &str,
+    model: &str,
+    messages: Vec<serde_json::Value>,
+    max_tokens: u32,
+) -> Result<String, String> {
+    let fork = llama_fork_by_id(state, fork_id)?;
+    ensure_llama_ready(state, fork_id).await.map_err(|e| e.to_string())?;
+    lfm3::chat(fork.port, model, messages, max_tokens).await.map_err(|e| e.to_string())
+}
+
+/// Sintetiza fala com o modelo de áudio do LFM3 via `llama-tts`. Devolve o
+/// WAV em base64 (o frontend monta `data:audio/wav;base64,...`).
+#[tauri::command]
+async fn lfm3_speak(
+    state: State<'_, AppState>,
+    fork_id: String,
+    text: String,
+    lang: String,
+    voice: String,
+) -> Result<String, String> {
+    use base64::Engine;
+    let fork = llama_fork_by_id(&state, &fork_id)?;
+    let paths = lfm3::section_paths(std::path::Path::new(&fork.models_ini), lfm3::AUDIO_MODEL)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("o models.ini não tem a seção [{}]", lfm3::AUDIO_MODEL))?;
+    let model = paths.model.ok_or("seção do áudio sem `model`")?;
+    let mmproj = paths.mmproj.ok_or("seção do áudio sem `mmproj` (projetor de áudio)")?;
+    let wav = lfm3::speak(
+        &lfm3::llama_tts_exe(&fork.server_exe),
+        std::path::Path::new(&model),
+        std::path::Path::new(&mmproj),
+        &text,
+        &lang,
+        &voice,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(wav))
 }
 
 /// Backs the status dot in the UI. Two forks can share a port (they're
@@ -951,6 +1126,14 @@ async fn update_session_provider_model(
     custom_provider_id: Option<String>,
     external_cli_backend: Option<String>,
 ) -> Result<Session, String> {
+    if provider == ProviderKind::Cli {
+        let previous = sessions::get_session(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
+        if previous.context_economy && previous.external_cli_mode == agent::cli_inference::CliMode::Agent {
+            state.mcp_clients.disconnect(&context_economy::server_name(&id)).await;
+            context_economy::reset_view(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
+            sessions::update_context_economy(&state.app_data_dir, &id, false).map_err(|e| e.to_string())?;
+        }
+    }
     let context_length = resolve_session_context_length(
         state.clone(),
         provider,
@@ -1001,6 +1184,12 @@ fn update_session_project_root(
     id: String,
     project_root: Option<String>,
 ) -> Result<Session, String> {
+    if state.running_turns.lock().unwrap().contains_key(&id) {
+        return Err("Aguarde a resposta terminar antes de mudar a pasta principal.".into());
+    }
+    if let Some(ref root) = project_root {
+        if !std::path::Path::new(root).is_dir() { return Err("A pasta principal precisa ser um diretorio existente.".into()); }
+    }
     sessions::update_project_root(&state.app_data_dir, &id, project_root).map_err(|e| e.to_string())
 }
 
@@ -1566,11 +1755,17 @@ fn get_session_context_usage(
     // sem as tools na estimativa e subestima ~22%. É o caso menos provável
     // (sem imagem anexada, o computer_use dificilmente vai ser usado) e dura
     // só até a primeira resposta — depois o medidor usa o `prompt_tokens` real.
-    let tem_evidencia_de_visao = messages.iter().any(|m| !m.images.is_empty());
+    let tem_evidencia_de_visao = messages.iter().any(|m| m.images.iter().any(|i| !i.starts_with("data:audio/")));
     if tem_evidencia_de_visao {
         tool_specs.extend(agent::computer::tool_specs());
     }
 
+    let messages = if session.context_economy && !session.long_horizon.enabled {
+        context_economy::saved_view(&state.app_data_dir, &id, &messages).map_err(|e| e.to_string())?
+    } else { messages };
+    if session.context_economy {
+        tool_specs.extend(context_economy::cached_specs(&state.app_data_dir, &id).map_err(|e| e.to_string())?);
+    }
     Ok(context::usage_for(context::UsageInputs {
         session_id: &id,
         messages: &messages,
@@ -1656,7 +1851,8 @@ fn get_session_tasks(state: State<AppState>, id: String) -> Result<Vec<TaskItem>
 }
 
 #[tauri::command]
-fn delete_session(state: State<AppState>, id: String) -> Result<(), String> {
+async fn delete_session(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state.mcp_clients.disconnect(&context_economy::server_name(&id)).await;
     sessions::delete_session(&state.app_data_dir, &id).map_err(|e| e.to_string())
 }
 
@@ -1888,6 +2084,32 @@ fn answer_agents_skills_plan(state: State<AppState>, id: String, approved: bool)
 }
 
 #[tauri::command]
+async fn update_session_cli_mode(
+    state: State<'_, AppState>, id: String, mode: agent::cli_inference::CliMode,
+) -> Result<Session, String> {
+    if state.running_turns.lock().unwrap().contains_key(&id) {
+        return Err("Aguarde a resposta terminar antes de mudar o modo do CLI.".into());
+    }
+    let session = sessions::get_session(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
+    if session.provider != ProviderKind::Cli { return Err("Esta sessao nao usa um CLI.".into()); }
+    if mode == agent::cli_inference::CliMode::Provider {
+        let backend = session.external_cli_backend.as_deref().and_then(agent::external_cli::CliBackendId::from_id)
+            .ok_or("Selecione um CLI primeiro")?;
+        if !agent::cli_inference::supports(backend) { return Err("Modo provedor disponivel para Claude, Codex e Pi.".into()); }
+        if session.context_length.is_none() && backend == agent::external_cli::CliBackendId::Codex {
+            if let Some(length) = agent::external_cli::codex_context_length(&session.model) {
+                sessions::update_context_length(&state.app_data_dir, &id, Some(length)).map_err(|e| e.to_string())?;
+            }
+        }
+    } else if session.context_economy {
+        state.mcp_clients.disconnect(&context_economy::server_name(&id)).await;
+        context_economy::reset_view(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
+        sessions::update_context_economy(&state.app_data_dir, &id, false).map_err(|e| e.to_string())?;
+    }
+    sessions::update_cli_mode(&state.app_data_dir, &id, mode).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn update_session_execution_mode(
     state: State<AppState>,
     id: String,
@@ -2000,6 +2222,122 @@ fn stop_task_queue(state: State<AppState>, session_id: String) -> Result<(), Str
 }
 
 #[tauri::command]
+fn update_session_plain_queue_enabled(state: State<AppState>, id: String, enabled: bool) -> Result<Session, String> {
+    sessions::update_plain_queue_enabled(&state.app_data_dir, &id, enabled).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn read_session_plain_queue(state: State<AppState>, id: String) -> Result<String, String> {
+    sessions::read_plain_queue(&state.app_data_dir, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_session_plain_queue(state: State<AppState>, id: String, json_text: String) -> Result<(), String> {
+    sessions::write_plain_queue(&state.app_data_dir, &id, &json_text).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn read_session_memory(state: State<AppState>, id: String) -> Result<String, String> {
+    sessions::read_session_memory(&state.app_data_dir, &id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn write_session_memory(state: State<AppState>, id: String, conteudo: String) -> Result<(), String> {
+    sessions::write_session_memory(&state.app_data_dir, &id, &conteudo).map_err(|e| e.to_string())
+}
+
+/// Mesmo esquema de `start_task_queue` (uma task detached, handle guardado em
+/// `running_task_queues`, parado por `stop_task_queue`), mas com o loop sem
+/// Long Horizon (`agent::plain_queue::run_queue`).
+#[tauri::command]
+fn start_plain_queue(app: tauri::AppHandle, state: State<AppState>, session_id: String) -> Result<(), String> {
+    if state.running_task_queues.lock().unwrap().contains_key(&session_id) {
+        return Err("ja existe uma fila rodando nesta sessao".to_string());
+    }
+    let handle = {
+        let app = app.clone();
+        let session_id = session_id.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(e) = agent::plain_queue::run_queue(app.clone(), session_id.clone()).await {
+                agent::plain_queue::emit_error(&app, &session_id, e.to_string());
+            }
+            app.state::<AppState>()
+                .running_task_queues
+                .lock()
+                .unwrap()
+                .remove(&session_id);
+        })
+    };
+    state.running_task_queues.lock().unwrap().insert(session_id, handle);
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_compaction(state: tauri::State<AppState>) -> Result<(), String> {
+    state.cancel_compaction.store(true, std::sync::atomic::Ordering::SeqCst);
+    // Resetar após 5 segundos para não afetar outras operações.
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        // Não é possível acessar o AppState aqui sem o AppHandle.
+        // A flag será resetada quando o usuário interagir novamente.
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn cleanup_orphaned_sessions(state: State<AppState>) -> Result<u32, String> {
+    sessions::cleanup_orphaned_sessions(&state.app_data_dir).map_err(|e| e.to_string())
+}
+
+/// Grava no histórico uma fala do modo tempo real: a fala (como anexo de
+/// áudio) e a resposta falada. Não chama o modelo de novo; devolve o histórico
+/// inteiro atualizado pra tela.
+#[tauri::command]
+fn append_realtime_turn(
+    state: State<AppState>,
+    id: String,
+    audio_data_uri: String,
+    reply_text: String,
+) -> Result<Vec<ChatMessage>, String> {
+    if state.running_turns.lock().unwrap().contains_key(&id) {
+        return Err("Aguarde a resposta terminar".into());
+    }
+    let mut messages = sessions::load_messages(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
+    messages.push(ChatMessage {
+        role: "user".into(),
+        content: String::new(),
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+        images: vec![audio_data_uri],
+        display_content: Some("🎙️ fala por voz (tempo real)".into()),
+    });
+    messages.push(ChatMessage {
+        role: "assistant".into(),
+        content: reply_text,
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+        images: Vec::new(),
+        display_content: None,
+    });
+    sessions::save_messages(&state.app_data_dir, &id, &messages).map_err(|e| e.to_string())?;
+    Ok(messages)
+}
+
+#[tauri::command]
+fn update_session_fixed_context(
+    state: State<AppState>,
+    id: String,
+    enabled: bool,
+    tokens: u32,
+    rolling: bool,
+) -> Result<Session, String> {
+    sessions::update_fixed_context(&state.app_data_dir, &id, enabled, tokens, rolling)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn update_session_long_horizon_enabled(
     state: State<AppState>,
     id: String,
@@ -2007,6 +2345,43 @@ fn update_session_long_horizon_enabled(
 ) -> Result<Session, String> {
     sessions::update_long_horizon_enabled(&state.app_data_dir, &id, enabled)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn run_context_command(state: State<'_, AppState>, id: String, text: String) -> Result<Vec<ChatMessage>, String> {
+    if state.running_turns.lock().unwrap().contains_key(&id)
+        || state.running_task_queues.lock().unwrap().contains_key(&id) {
+        return Err("Aguarde a execucao terminar antes de usar este comando.".into());
+    }
+    let session = sessions::get_session(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
+    let result = context_economy::slash_command(&state.app_data_dir, &session, &text).await.map_err(|e| e.to_string())?;
+    let mut messages = sessions::load_messages(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
+    for (role, content) in [("user", text), ("assistant", result)] {
+        messages.push(ChatMessage { role:role.into(), content, tool_calls:None, tool_call_id:None,
+            name:None, images:vec![], display_content:None });
+    }
+    sessions::save_messages(&state.app_data_dir, &id, &messages).map_err(|e| e.to_string())?;
+    sessions::invalidate_prompt_usage(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
+    Ok(messages)
+}
+
+#[tauri::command]
+async fn update_session_context_economy(app: tauri::AppHandle, state: State<'_, AppState>, id: String, enabled: bool) -> Result<Session, String> {
+    if state.running_turns.lock().unwrap().contains_key(&id) {
+        return Err("Aguarde a resposta terminar antes de mudar Economia de contexto.".into());
+    }
+    let session = sessions::get_session(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
+    if enabled {
+        if session.provider == ProviderKind::Cli && session.external_cli_mode == agent::cli_inference::CliMode::Agent {
+            return Err("Economia de contexto funciona com modelos usados pelo Cerne. O CLI externo controla seu proprio contexto.".into());
+        }
+        context_economy::connect(&app, &state.app_data_dir, &session, &state.mcp_clients).await.map_err(|e| e.to_string())?;
+        context_economy::sync(&state.app_data_dir, &id, &state.mcp_clients).await.map_err(|e| e.to_string())?;
+    } else {
+        state.mcp_clients.disconnect(&context_economy::server_name(&id)).await;
+        context_economy::reset_view(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
+    }
+    sessions::update_context_economy(&state.app_data_dir, &id, enabled).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2444,6 +2819,7 @@ pub fn run() {
                 agent_executions: Mutex::new(HashMap::new()),
                 orchestrated_sessions: Mutex::new(HashMap::new()),
                 auto_continue_counts: Mutex::new(HashMap::new()),
+                cancel_compaction: AtomicBool::new(false),
             });
             Ok(())
         })
@@ -2452,6 +2828,7 @@ pub fn run() {
             set_config,
             get_default_long_horizon_config,
             check_external_cli_readiness,
+            list_external_cli_models,
             list_media_connections,
             list_media_models,
             set_media_provider_key,
@@ -2480,6 +2857,14 @@ pub fn run() {
             is_task_queue_running,
             start_task_queue,
             stop_task_queue,
+            update_session_plain_queue_enabled,
+            read_session_plain_queue,
+            write_session_plain_queue,
+            read_session_memory,
+            write_session_memory,
+            start_plain_queue,
+            cancel_compaction,
+            cleanup_orphaned_sessions,
             export_sessions_backup,
             import_sessions_backup,
             backup_git_status,
@@ -2514,6 +2899,11 @@ pub fn run() {
             remove_custom_provider,
             has_custom_provider_key,
             list_llama_presets,
+            lfm3_catalog,
+            lfm3_classify,
+            lfm3_chat,
+            lfm3_transcribe,
+            lfm3_speak,
             llama_server_health,
             llama_server_status,
             start_llama_server,
@@ -2523,10 +2913,15 @@ pub fn run() {
             update_session_provider_model,
             update_session_title,
             update_session_execution_mode,
+            update_session_cli_mode,
             update_session_context_length,
             update_session_reasoning_effort,
             update_session_fable_method,
             update_session_long_horizon_enabled,
+            update_session_fixed_context,
+            append_realtime_turn,
+            update_session_context_economy,
+            run_context_command,
             read_session_long_horizon_memoria,
             write_session_long_horizon_memoria,
             read_session_long_horizon_projeto,

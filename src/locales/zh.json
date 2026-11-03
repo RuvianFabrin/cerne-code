@@ -42,7 +42,35 @@
     "wait": "请稍候",
     "accept": "我已阅读并知晓"
   },
+  "plainQueue": {
+    "title": "任务队列和会话记忆",
+    "toggleLabel": "任务队列（不使用 Long Horizon）",
+    "toggleTooltip": "不使用 Long Horizon 运行任务列表：每项完成后，把重要内容保存到会话记忆，并在下一项之前压缩上下文。没有步骤限制。",
+    "buttonTooltip": "会话记忆和任务队列",
+    "memoriaTab": "会话记忆",
+    "filaTab": "任务",
+    "memoriaHint": "仅限本会话。每轮都会完整发送给模型，且从不压缩。",
+    "memoriaPlaceholder": "暂时为空——每项任务完成后队列会填写。",
+    "filaHint": "粘贴任务列表的 JSON。每个 \"fazer\" 项会被执行、确认并标记为 \"testar\"。",
+    "filaPlaceholder": "在这里粘贴任务列表的 JSON...",
+    "requirements": "需要本会话开启 YOLO 模式",
+    "start": "开始队列",
+    "stop": "停止队列",
+    "status": {
+      "processing": "正在执行任务…",
+      "confirmed": "任务已确认",
+      "saving_memory": "正在保存会话记忆…",
+      "compacting": "正在压缩上下文…",
+      "stuck": "队列已停止",
+      "finished": "队列已完成",
+      "error": "队列出错"
+    }
+  },
   "composer": {
+    "cliModeLabel": "CLI 模式",
+    "cliModeAgent": "CLI 代理",
+    "cliModeProvider": "Cerne 提供方",
+    "cliModeHint": "代理：CLI 管理工具和上下文。提供方：Cerne 管理工具与历史，每次 CLI 调用开始全新会话。",
     "modeAuto": "自动",
     "modeManual": "手动",
     "reasoningOff": "关闭",
@@ -71,6 +99,8 @@
     "plusMenuTooltip": "添加附件、人格、Fable 方法、Long Horizon、任务队列、MCP",
     "personaLabel": "人格",
     "fableLabel": "Fable 方法",
+    "contextEconomyLabel": "上下文节省",
+    "contextEconomyTooltip": "保存完整输出，仅向模型发送较小片段，通过搜索检索详情。需要 Node.js 22.13+。",
     "longHorizonLabel": "Long Horizon",
     "mcpLabel": "MCP",
     "addFolder": "添加文件夹",
@@ -118,9 +148,28 @@
       "persona": "角色设定",
       "mcp": "MCP",
       "prompt": "提示词",
-      "pipeline": "流水线"
+      "pipeline": "流水线",
+      "context": "上下文"
     },
-    "cancelExecution": "取消执行"
+    "cancelExecution": "取消执行",
+    "contextCommands": {
+      "stats": "按工具查看字节节省和估计令牌",
+      "doctor": "本地 Rust 引擎与 SQLite 诊断",
+      "index": "索引文件或目录：/ctx-index 路径",
+      "search": "搜索已保存内容：/ctx-search 关键词",
+      "purge": "清除此聊天的索引；需要 --confirm",
+      "insight": "本地上下文节省与记忆报告",
+      "upgrade": "通过更新 Cerne 来更新引擎"
+    },
+    "fixedContextLabel": "固定上下文",
+    "fixedContextTooltip": "每次发送时限制发给模型的内容，截去最早的历史。完整历史仍会保存。",
+    "fixedContextTokens": "每次发送的 token 数",
+    "fixedContextTokensHint": "指令和记忆始终包含；之后加入最近的消息直到达到总数。",
+    "fixedContextRolling": "滑动固定上下文",
+    "fixedContextRollingHint": "滚动摘要：每轮结束后由模型在后台总结移出窗口的内容。同时开启固定上下文。",
+    "queueSend": "加入队列",
+    "queued": "队列中 {count} 条",
+    "clearQueue": "清空队列"
   },
   "toolLabels": {
     "web_search": "搜索了网页",
@@ -368,6 +417,7 @@
     "longHorizonMaxIteracoes": "放弃前的最大迭代次数",
     "longHorizonTetoTool": "每步最大工具调用次数",
     "longHorizonTetoFalhaRepetida": "连续相同回复达到此次数后中断该步骤",
+    "longHorizonTetoTempo": "每轮时间上限（分钟）",
     "longHorizonReset": "恢复默认值",
     "longHorizonResetDone": "已恢复",
     "playwrightBrowser": "任务浏览器",
@@ -402,6 +452,8 @@
     "cli": "外部 CLI"
   },
   "providerPicker": {
+    "manualModel": "输入模型",
+    "manualModelPlaceholder": "准确的模型 ID（Pi：provider/model）",
     "connection": "连接",
     "loading": "正在加载...",
     "model": "模型",
@@ -411,7 +463,8 @@
     "testImageSupport": "测试该模型是否支持图片",
     "cliBackend": "CLI",
     "cliInstalled": "已安装",
-    "cliNotInstalled": "未在 PATH 中找到 — 请检查设置"
+    "cliNotInstalled": "未在 PATH 中找到 — 请检查设置",
+    "lfm3OpenTooltip": "打开 LFM3 页面（LiquidAI 模型）"
   },
   "newSession": {
     "defaultTitle": "新建会话",
@@ -754,5 +807,138 @@
     "fal": "fal.ai · 图片和视频模型",
     "aspectRatio": "宽高比",
     "resolution": "分辨率"
+  },
+  "lfm3": {
+    "title": "LFM3 — LiquidAI 模型",
+    "intro": "五个小模型通过 llama.cpp 在你的电脑上运行：文本、视觉、带语音的音频、全模态和一个决策分类器。它们可以单独工作，也可以配合聊天使用，减少发给昂贵模型的内容。",
+    "howTo": {
+      "title": "使用方法",
+      "step1": "安装 llama.cpp b11960 或更新版本（构建需支持 LFM3）。",
+      "step2": "在下方填写 llama-server.exe 和 models-lfm3.ini 的路径，然后保存 “lfm3” fork。",
+      "step3": "确认每个模型在卡片上显示为“就绪”。",
+      "step4": "对聊天模型使用“在聊天中使用”，或用下面的测试体验各项功能。"
+    },
+    "setup": {
+      "title": "配置",
+      "hint": "Cerne 不假设你把东西装在哪里：路径由你填写。models-lfm3.ini 必须包含 lfm3-1.7b-text、lfm3-vl-2b、lfm3-audio-2b、lfm3-omni-2b 和 d1-omni-2b 几个段，每段都有 model 和 mmproj（见 LFM3 文件夹中的 README）。",
+      "label": "名称",
+      "serverExe": "llama-server.exe（b11960+）",
+      "modelsIni": "models-lfm3.ini",
+      "port": "端口",
+      "create": "保存 LFM3 fork",
+      "update": "更新 LFM3 fork",
+      "saved": "已保存。"
+    },
+    "errors": {
+      "fillPaths": "请填写 llama-server 和 models-lfm3.ini 的路径。",
+      "noImageModel": "发送图片需要选择带视觉的模型（LFM3-VL 或 Omni）。",
+      "micDenied": "无法使用麦克风：{error}",
+      "badJson": "分类器的问题不是有效的 JSON。"
+    },
+    "models": {
+      "title": "5 个模型",
+      "text": "仅文本聊天。最轻量：适合简短回答和简单任务。",
+      "vision": "图像聊天。可描述照片、截图和扫描文档。",
+      "audio": "听取音频（转写）并朗读回复（TTS，通过 llama-tts）。语言在此页面选择。",
+      "omni": "支持图像、音频和视频的聊天，以文本和语音回复。没有内部推理。",
+      "decision": "不是聊天模型。回答经过校准的决策问题（是/否、多选一、评分），不生成文本。",
+      "when": {
+        "text": "适合改写、简短摘要和简单问题。",
+        "vision": "当对话含有聊天模型看不到的图片时使用。",
+        "audio": "用同一模型听写并朗读回复。",
+        "omni": "用于语音对话，或同时询问照片和音频。",
+        "decision": "在聊天前用于分流、路由和校验。"
+      },
+      "useInChat": "在聊天中使用",
+      "decisionNote": "请使用下方的分类器或 /v1/systemone 端点。"
+    },
+    "status": {
+      "noFork": "保存 LFM3 fork 后再检查。",
+      "notInIni": "models-lfm3.ini 中缺少该段。",
+      "missingFiles": "找不到模型或 mmproj 文件。",
+      "ready": "就绪。"
+    },
+    "badges": {
+      "chat": "聊天",
+      "decision": "决策",
+      "image": "图像",
+      "audio": "音频",
+      "speech": "语音"
+    },
+    "test": {
+      "title": "快速测试",
+      "hint": "每个测试都会真正调用模型。第一次调用较慢，因为模型要加载到 GPU。",
+      "chatTitle": "聊天（文本或图像）",
+      "defaultPrompt": "巴西的首都是哪里？请用一句话回答。",
+      "running": "运行中…",
+      "run": "运行",
+      "voiceTitle": "语音（麦克风）",
+      "classifyTitle": "d1-Omni 分类器",
+      "classifyHint": "问题格式与 /v1/systemone 端点相同。每个回答附带校准后的概率。"
+    },
+    "voice": {
+      "language": "语言",
+      "voice": "声音",
+      "female": "女声",
+      "male": "男声",
+      "mode": "模式",
+      "modeTranscribe": "转写（ASR）",
+      "modeReply": "对话（音频 → 回复）",
+      "replyModel": "模型",
+      "record": "录音",
+      "stop": "停止并发送",
+      "speak": "听回复",
+      "replySystem": "请用简短的回答，并使用说话人的语言。",
+      "conversation": "连续语音对话",
+      "endConversation": "结束语音对话",
+      "listening": "正在聆听…",
+      "recording": "正在录音…",
+      "thinking": "正在回复…",
+      "needsLlama": "语音回复需要 LFM3 音频模型（llama.cpp）。",
+      "modeChatShort": "聊天",
+      "modeRealtimeShort": "实时"
+    },
+    "lang": {
+      "auto": "自动",
+      "pt": "葡萄牙语",
+      "en": "英语",
+      "es": "西班牙语",
+      "fr": "法语",
+      "de": "德语",
+      "it": "意大利语",
+      "zh": "中文",
+      "ja": "日语",
+      "ko": "韩语",
+      "ru": "俄语",
+      "ar": "阿拉伯语",
+      "nl": "荷兰语"
+    },
+    "useCases": {
+      "title": "何时与聊天配合使用",
+      "intro": "思路是只把模型真正需要的内容发给昂贵的模型。节省多少取决于你的使用情况：请用真实提示词测量。",
+      "item1": {
+        "title": "聊天前分流",
+        "body": "d1 对消息分类（主题、紧急程度、负责团队），只有需要长回答的内容才交给聊天模型。"
+      },
+      "item2": {
+        "title": "仅在需要时升级",
+        "body": "小模型先回答；如果 d1 的置信度低，问题再交给大模型。"
+      },
+      "item3": {
+        "title": "先把音频转成文本",
+        "body": "用 Audio 或 Omni 在本地转写，只把文本发给聊天模型，不把音频上传到云端。"
+      },
+      "item4": {
+        "title": "把图片变成简短描述",
+        "body": "VL 用几行文字描述图片，再把描述交给只支持文本的模型。"
+      },
+      "item5": {
+        "title": "本地语音朗读回复",
+        "body": "Audio 在你的电脑上生成回复的语音，无需付费的 TTS 服务。"
+      }
+    },
+    "chat": {
+      "attachAudio": "附加音频"
+    }
   }
 }

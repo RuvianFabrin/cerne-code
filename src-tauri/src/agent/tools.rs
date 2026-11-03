@@ -239,7 +239,7 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
         ),
         spec(
             "run_command",
-            "Roda um comando de shell no diretorio do projeto. Por padrao e sincrono e retorna stdout/stderr so quando o comando termina - NUNCA use isso pra dev server, watch mode, ou qualquer processo que fica rodando de proposito (o comando trava ate alguem matar o processo, e a chamada nunca retorna). Pra esses casos, passe background=true: retorna na hora com um id, sem esperar terminar; use check_background_output(id) pra ver o progresso depois e stop_background(id) pra encerrar.",
+            "Roda um comando de shell no diretorio do projeto. Por padrao e sincrono e retorna stdout/stderr so quando o comando termina - NUNCA use isso pra dev server, watch mode, ou qualquer processo que fica rodando de proposito (o comando trava ate alguem matar o processo, e a chamada nunca retorna). Pra esses casos, passe background=true: retorna na hora com um id, sem esperar terminar; use check_background_output(id) pra ver o progresso depois e stop_background(id) pra encerrar. SEMPRE use background=true pra comandos que podem demorar mais de 5 segundos. Ao usar background=true, verifique o output a cada 10 segundos ou mais (o modelo LLM pode decidir o intervalo). Ao fechar o Cerne Code, todos os processos em background sao automaticamente encerrados.",
             json!({
                 "type": "object",
                 "properties": {
@@ -1195,7 +1195,12 @@ async fn execute_project_tool(
                 entries.push(format!("{ty}\t{}", entry.file_name().to_string_lossy()));
             }
             entries.sort();
-            Ok(ok(entries.join("\n")))
+            let listing = if entries.is_empty() {
+                "Pasta vazia (0 itens).".to_string()
+            } else {
+                format!("{} itens:\n{}", entries.len(), entries.join("\n"))
+            };
+            Ok(ok(format!("Pasta consultada: {}\n{listing}", path.display())))
         }
         "grep" => {
             let pattern = args["pattern"]
@@ -2763,6 +2768,17 @@ mod tests {
 
         fs::remove_dir_all(&project).ok();
         fs::remove_dir_all(&outsider).ok();
+    }
+
+    #[tokio::test]
+    async fn empty_directory_listing_reports_success_and_the_selected_path() {
+        let project = scratch_dir();
+        let listed = execute_project_tool("list_dir", &json!({"path": project.to_string_lossy()}),
+            &project, &[], &[], &crate::agent::background::BackgroundJobs::default(),
+            &crate::models::ExecutionMode::Manual, &project, "empty-list-test").await.unwrap();
+        assert!(listed.observation.contains("Pasta vazia (0 itens)."));
+        assert!(listed.observation.contains(&project.to_string_lossy().to_string()));
+        fs::remove_dir_all(project).ok();
     }
 
     #[tokio::test]

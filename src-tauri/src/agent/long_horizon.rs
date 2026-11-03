@@ -232,17 +232,35 @@ pub fn build_briefing(app_data_dir: &std::path::PathBuf, session_id: &str) -> Re
 
     let state = read_checkpoint(app_data_dir, session_id);
     briefing.push_str("\n### Objetivo original do usuário\n");
-    briefing.push_str(&bounded(&state.objective, 3000));
+    briefing.push_str(&bounded(&state.objective, 5000));
     briefing.push_str("\n### Plano e passo ativo (registrados pelo Cerne)\n");
-    briefing.push_str(&bounded(&state.plan.to_string(), 6000));
+    briefing.push_str(&bounded(&state.plan.to_string(), 10000));
     briefing.push_str("\n### Contexto recente — conversa, não prova de conclusão\n");
-    for (role, text) in state.recent.iter().rev().take(4).rev() {
-        briefing.push_str(&format!("{role}: {}\n", bounded(text, 2500)));
+    for (role, text) in state.recent.iter().rev().take(6).rev() {
+        briefing.push_str(&format!("{role}: {}\n", bounded(text, 3000)));
     }
     briefing.push_str("\n### Resultados recentes de ferramentas — trechos, verificar pendências\n");
     for result in &state.tool_results {
         briefing.push_str(result);
         briefing.push('\n');
+    }
+    // Adicionar mais contexto: resultados de ferramentas dos ultimos turnos.
+    briefing.push_str("\n### Estado do projeto — arquivos e estrutura\n");
+    if let Ok(project_root) = std::fs::canonicalize(app_data_dir.join("sessions").join(session_id).join("..").join("..").join("..")) {
+        if let Ok(entries) = std::fs::read_dir(&project_root) {
+            let mut file_count = 0;
+            let mut dir_count = 0;
+            for entry in entries.take(50) {
+                if let Ok(e) = entry {
+                    if e.metadata().map(|m| m.is_dir()).unwrap_or(false) {
+                        dir_count += 1;
+                    } else {
+                        file_count += 1;
+                    }
+                }
+            }
+            briefing.push_str(&format!("Diretorio: {} ({} arquivos, {} subpastas)\n", project_root.display(), file_count, dir_count));
+        }
     }
     Ok(briefing)
 }

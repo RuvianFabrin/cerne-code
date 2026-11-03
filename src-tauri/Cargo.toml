@@ -59,6 +59,9 @@ async-trait = "0.1"
 configparser = "3"
 toml = "0.8"
 regex = "1"
+rusqlite = { version = "0.40", features = ["bundled"] }
+sha2 = "0.10"
+boa_engine = { version = "0.22", default-features = false }
 scraper = "0.20"
 url = "2"
 ast-grep-core = "0.44"

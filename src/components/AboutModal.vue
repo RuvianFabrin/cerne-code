@@ -5,6 +5,9 @@ const props = defineProps<{ visible: boolean }>();
 const emit = defineEmits<{ "update:visible": [value: boolean] }>();
 
 const credits = [
+  { name: "Context Mode — Mert Koseoğlu (mksglu)", desc: "Referência e portabilidade para Rust: busca, indexação e memória. v1.0.169 — Elastic License 2.0", url: "https://github.com/mksglu/context-mode" },
+  { name: "Boa", desc: "Motor JavaScript escrito em Rust, embutido para análise de dados — MIT / Unlicense", url: "https://boajs.dev" },
+  { name: "rusqlite / SQLite", desc: "Banco e FTS5 incluídos no aplicativo — MIT / domínio público", url: "https://github.com/rusqlite/rusqlite" },
   { name: "Tauri", desc: "Framework desktop Rust + WebView", url: "https://tauri.app" },
   { name: "Vue.js", desc: "Framework frontend reativo", url: "https://vuejs.org" },
   { name: "PrimeVue", desc: "Componentes UI (Dialog, Select, Popover)", url: "https://primevue.org" },

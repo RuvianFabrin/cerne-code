@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
 import Select from "primevue/select";
+import Dialog from "primevue/dialog";
+import Lfm3Dialog from "./Lfm3Dialog.vue";
+import InputText from "primevue/inputtext";
 import { PROVIDER_KINDS, providerLabel, useProviderStore } from "../stores/provider";
 import { api } from "../api";
 import type { ProviderKind } from "../api";
@@ -32,6 +35,20 @@ const emit = defineEmits<{
 }>();
 
 const providerStore = useProviderStore();
+const manualModelVisible = ref(false);
+const manualModel = ref("");
+function openManualModel() { manualModel.value = props.model ?? ""; manualModelVisible.value = true; }
+function applyManualModel() {
+  if (!manualModel.value.trim()) return;
+  emit("update:model", manualModel.value.trim());
+  manualModelVisible.value = false;
+}
+
+const lfm3Open = ref(false);
+function onLfm3Select(payload: { fork: string; model: string }) {
+  emit("update:fork", payload.fork);
+  emit("update:model", payload.model);
+}
 
 const providerOptions = computed(() => PROVIDER_KINDS.map((kind) => ({
   kind,
@@ -55,6 +72,7 @@ const modelOptions = computed(() => {
       .modelsFor(props.provider, props.fork, props.customProviderId)
       .find((m) => m.id === props.model);
     if (current) return [current, ...visible];
+    if (props.provider === "cli") return [{ id: props.model, label: props.model }, ...visible];
   }
   return visible;
 });
@@ -143,6 +161,21 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
       class="picker-select fork-select"
       size="small"
     />
+    <button
+      v-if="provider === 'llama_cpp'"
+      type="button"
+      class="btn-secondary lfm3-open"
+      v-tooltip.top="$t('providerPicker.lfm3OpenTooltip')"
+      @click="lfm3Open = true"
+    >
+      LFM3
+    </button>
+    <Lfm3Dialog
+      v-if="provider === 'llama_cpp'"
+      :visible="lfm3Open"
+      @update:visible="(v: boolean) => (lfm3Open = v)"
+      @select="onLfm3Select"
+    />
     <Select
       v-if="provider === 'custom'"
       :modelValue="customProviderId"
@@ -203,6 +236,15 @@ watch(() => props.model, () => { visionStatus.value = "idle"; });
         </div>
       </template>
     </Select>
+    <button v-if="provider === 'cli'" class="vision-btn" @click="openManualModel"
+      :aria-label="$t('providerPicker.manualModel')" v-tooltip.top="$t('providerPicker.manualModel')">
+      <span class="msi">edit</span>
+    </button>
+    <Dialog v-model:visible="manualModelVisible" modal :header="$t('providerPicker.manualModel')" :style="{ width: '420px' }">
+      <InputText v-model="manualModel" autofocus :placeholder="$t('providerPicker.manualModelPlaceholder')"
+        style="width: 100%" @keydown.enter="applyManualModel" />
+      <template #footer><button class="btn-primary" :disabled="!manualModel.trim()" @click="applyManualModel">{{ $t('sidebar.save') }}</button></template>
+    </Dialog>
     <span v-if="currentModelInfo?.supports_vision" class="cap-badge vision" v-tooltip.top="$t('modelBrowser.acceptsImage')">
       <span class="msi">image</span>
     </span>

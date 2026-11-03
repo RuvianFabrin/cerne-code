@@ -149,9 +149,8 @@ fn count(enc: Option<&tiktoken::CoreBpe>, text: &str) -> u32 {
 
 /// Conta os tokens de um texto solto com o tokenizador do modelo.
 ///
-/// Só existe pros testes: em produção a contagem sempre parte de uma lista de
-/// mensagens (`estimate_messages_tokens`), porque é isso que vai no request.
-#[cfg(test)]
+/// Usado também nas estatísticas locais da Economia de contexto. O medidor
+/// do request usa `estimate_messages_tokens` para incluir mensagens e tools.
 pub fn estimate_tokens_for(model: &str, text: &str) -> u32 {
     count(encoder_for(model), text)
 }
@@ -259,6 +258,171 @@ pub fn usage_for(input: UsageInputs<'_>) -> ContextUsage {
     }
 }
 
+/// Marcador que vai antes de um trecho final de mensagem que não coube inteiro.
+const FIXED_CONTEXT_OMITTED: &str = "[trecho anterior omitido pelo Ctx fixo]";
+
+/// "Ctx fixo": monta o que é MANDADO ao modelo neste envio, dentro de um
+/// orçamento de `budget` tokens. Não altera `messages` (o histórico completo
+/// continua salvo e visível).
+///
+/// Regras:
+/// - a mensagem `system` inicial sempre entra (instruções, memórias);
+/// - as ferramentas (`tool_specs`) ocupam o orçamento antes de tudo;
+/// - depois, entram as mensagens mais recentes, de trás pra frente, inteiras,
+///   enquanto couberem;
+/// - a primeira que não couber entra só pelos parágrafos finais que cabem
+///   (nunca corta um parágrafo no meio). Se nem um parágrafo couber, não entra;
+/// - mensagens `tool` órfãs no começo do trecho são descartadas (sem a
+///   chamada que as gerou, o provedor recusa a requisição).
+pub fn fixed_window(
+    messages: &[ChatMessage],
+    budget: u32,
+    tool_specs: &[ToolSpec],
+    model: &str,
+) -> Vec<ChatMessage> {
+    let (head, rest): (Vec<ChatMessage>, &[ChatMessage]) = match messages.first() {
+        Some(first) if first.role == "system" => (vec![first.clone()], &messages[1..]),
+        _ => (Vec::new(), messages),
+    };
+    let fixed = estimate_messages_tokens(&[], tool_specs, model)
+        .saturating_add(estimate_messages_tokens(&head, &[], model));
+    let mut left = budget.saturating_sub(fixed);
+
+    let mut tail: Vec<ChatMessage> = Vec::new();
+    for message in rest.iter().rev() {
+        let cost = estimate_messages_tokens(std::slice::from_ref(message), &[], model);
+        if cost <= left {
+            left -= cost;
+            tail.push(message.clone());
+            continue;
+        }
+        let eligible = message.role != "tool" && message.tool_calls.as_ref().map_or(true, |c| c.is_empty());
+        if eligible {
+            if let Some(partial) = last_paragraphs_within(&message.content, left, model) {
+                tail.push(ChatMessage { content: partial, ..message.clone() });
+            }
+        }
+        break;
+    }
+    tail.reverse();
+    while tail.first().map_or(false, |m| m.role == "tool") {
+        tail.remove(0);
+    }
+
+    let mut out = head;
+    out.extend(tail);
+    out
+}
+
+/// Pega os parágrafos do fim de `text` que cabem em `budget` tokens, sem
+/// cortar nenhum no meio. `None` se nem o último parágrafo couber.
+fn last_paragraphs_within(text: &str, budget: u32, model: &str) -> Option<String> {
+    let marker_cost = estimate_tokens_for(model, FIXED_CONTEXT_OMITTED) + 2;
+    if budget <= marker_cost {
+        return None;
+    }
+    let mut left = budget - marker_cost;
+    let mut kept: Vec<&str> = Vec::new();
+    let paragraphs: Vec<&str> = text.split("\n\n").collect();
+    for paragraph in paragraphs.into_iter().rev() {
+        let cost = estimate_tokens_for(model, paragraph) + 2;
+        if cost > left {
+            break;
+        }
+        left -= cost;
+        kept.push(paragraph);
+    }
+    if kept.is_empty() {
+        return None;
+    }
+    kept.reverse();
+    Some(format!("{FIXED_CONTEXT_OMITTED}\n\n{}", kept.join("\n\n")))
+}
+
+/// Primeiro índice, a partir de `from`, em que todas as mensagens inteiras
+/// até o fim cabem em `left` tokens (anda de trás pra frente). Devolve `from`
+/// se tudo cabe e `messages.len()` se nada cabe.
+pub fn whole_tail_start(messages: &[ChatMessage], from: usize, left: u32, model: &str) -> usize {
+    let mut left = left;
+    let mut start = messages.len();
+    for i in (from..messages.len()).rev() {
+        let cost = estimate_messages_tokens(std::slice::from_ref(&messages[i]), &[], model);
+        if cost > left {
+            break;
+        }
+        left -= cost;
+        start = i;
+    }
+    start
+}
+
+/// Mensagem de sistema que carrega o resumo rolante (vazia quando não há).
+fn summary_message(summary: &str) -> Option<ChatMessage> {
+    if summary.trim().is_empty() {
+        return None;
+    }
+    Some(ChatMessage {
+        role: "system".to_string(),
+        content: format!("[Resumo da conversa anterior]\n{}", summary.trim()),
+        tool_calls: None,
+        tool_call_id: None,
+        name: None,
+        images: Vec::new(),
+        display_content: None,
+    })
+}
+
+/// "Ctx fixo rolante": índice em `messages` onde começa o trecho recente
+/// literal. Tudo entre `covered` e esse índice é o que o resumo precisa cobrir.
+/// O orçamento desconta ferramentas, sistema e o próprio resumo.
+pub fn rolling_split(
+    messages: &[ChatMessage],
+    budget: u32,
+    tool_specs: &[ToolSpec],
+    model: &str,
+    summary: &str,
+    covered: usize,
+) -> usize {
+    let (head_cost, from) = match messages.first() {
+        Some(first) if first.role == "system" => {
+            (estimate_messages_tokens(std::slice::from_ref(first), &[], model), 1)
+        }
+        _ => (0, 0),
+    };
+    let summary_cost = summary_message(summary)
+        .map(|m| estimate_messages_tokens(std::slice::from_ref(&m), &[], model))
+        .unwrap_or(0);
+    let fixed = estimate_messages_tokens(&[], tool_specs, model)
+        .saturating_add(head_cost)
+        .saturating_add(summary_cost);
+    let left = budget.saturating_sub(fixed);
+    whole_tail_start(messages, covered.clamp(from, messages.len()), left, model)
+}
+
+/// "Ctx fixo rolante": o que vai ao modelo = sistema + resumo + trecho recente
+/// literal (só mensagens inteiras). Não altera `messages`.
+pub fn rolling_window(
+    messages: &[ChatMessage],
+    budget: u32,
+    tool_specs: &[ToolSpec],
+    model: &str,
+    summary: &str,
+    covered: usize,
+) -> Vec<ChatMessage> {
+    let start = rolling_split(messages, budget, tool_specs, model, summary, covered);
+    let mut out: Vec<ChatMessage> = match messages.first() {
+        Some(first) if first.role == "system" => vec![first.clone()],
+        _ => Vec::new(),
+    };
+    out.extend(summary_message(summary));
+    let mut tail: Vec<ChatMessage> = messages[start.min(messages.len())..].to_vec();
+    while tail.first().map_or(false, |m| m.role == "tool") {
+        tail.remove(0);
+    }
+    out.extend(tail);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +449,59 @@ mod tests {
                 parameters: serde_json::json!({ "type": "object" }),
             },
         }
+    }
+
+    #[test]
+    fn fixed_window_keeps_system_and_the_newest_messages_that_fit() {
+        let model = "gpt-4o";
+        let mut messages = vec![msg("system", "Instrucoes fixas do agente.")];
+        for i in 0..10 {
+            let role = if i % 2 == 0 { "user" } else { "assistant" };
+            messages.push(msg(role, &format!("mensagem numero {i} com algum texto de apoio")));
+        }
+        let head = estimate_messages_tokens(&messages[..1], &[], model);
+        let last_three: u32 = messages[8..]
+            .iter()
+            .map(|m| estimate_messages_tokens(std::slice::from_ref(m), &[], model))
+            .sum();
+        let out = fixed_window(&messages, head + last_three, &[], model);
+        let contents: Vec<&str> = out.iter().map(|m| m.content.as_str()).collect();
+        assert_eq!(out[0].role, "system");
+        assert_eq!(contents.len(), 4, "sistema + 3 mensagens finais: {contents:?}");
+        assert!(contents[1].contains("numero 7"));
+        assert!(contents[3].contains("numero 9"));
+        assert!(!out.iter().any(|m| m.content.contains("numero 0 ")));
+    }
+
+    #[test]
+    fn fixed_window_never_starts_with_an_orphan_tool_message() {
+        let model = "gpt-4o";
+        let messages = vec![
+            msg("system", "sistema"),
+            msg("tool", "resultado de uma ferramenta"),
+            msg("user", "pergunta"),
+        ];
+        let out = fixed_window(&messages, 1_000_000, &[], model);
+        assert_eq!(out[1].role, "user", "tool sem a chamada não pode abrir o trecho");
+        assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn fixed_window_cuts_only_between_paragraphs() {
+        let model = "gpt-4o";
+        let long = |tag: &str| format!("{tag} {}", "palavra ".repeat(120));
+        let paragraphs = ["PRIMEIRO", "SEGUNDO", "TERCEIRO"].map(long);
+        let body = paragraphs.join("\n\n");
+        let messages = vec![msg("system", "sistema"), msg("assistant", &body)];
+        let head = estimate_messages_tokens(&messages[..1], &[], model);
+        let last = estimate_tokens_for(model, &paragraphs[2]);
+        let budget = head + last * 2 + 60;
+        let out = fixed_window(&messages, budget, &[], model);
+        let tail = &out[1].content;
+        assert!(tail.starts_with(FIXED_CONTEXT_OMITTED));
+        assert!(tail.contains("TERCEIRO"));
+        assert!(!tail.contains("PRIMEIRO"));
+        assert!(tail.split("\n\n").any(|p| p.starts_with("TERCEIRO ")), "parágrafo inteiro preservado");
     }
 
     #[test]
@@ -448,5 +665,64 @@ mod tests {
         m.tool_calls = None;
         let sem = estimate_messages_tokens(&[m], &[], "deepseek-v4-flash");
         assert!(com > sem, "os argumentos da chamada contam ({com} vs {sem})");
+    }
+}
+
+#[cfg(test)]
+mod rolling_tests {
+    use super::*;
+
+    fn msg(role: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: role.to_string(),
+            content: content.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            images: Vec::new(),
+            display_content: None,
+        }
+    }
+
+    fn cost(m: &ChatMessage) -> u32 {
+        estimate_messages_tokens(std::slice::from_ref(m), &[], "gpt-4o")
+    }
+
+    #[test]
+    fn rolling_split_leaves_only_whole_messages_that_fit() {
+        let messages = vec![
+            msg("system", "sistema"),
+            msg("user", "primeira pergunta"),
+            msg("assistant", "primeira resposta"),
+            msg("user", "segunda pergunta"),
+            msg("assistant", "segunda resposta"),
+        ];
+        let recent = cost(&messages[3]) + cost(&messages[4]);
+        let head = cost(&messages[0]);
+        let start = rolling_split(&messages, head + recent + 2, &[], "gpt-4o", "", 1);
+        assert_eq!(start, 3, "o trecho recente começa na segunda pergunta");
+    }
+
+    #[test]
+    fn rolling_window_puts_the_summary_after_the_system_prompt_and_skips_covered_messages() {
+        let messages = vec![
+            msg("system", "sistema"),
+            msg("user", "antiga"),
+            msg("assistant", "antiga resposta"),
+            msg("user", "recente"),
+        ];
+        let out = rolling_window(&messages, 1_000_000, &[], "gpt-4o", "resumo do que veio antes", 3);
+        assert_eq!(out[0].role, "system");
+        assert!(out[1].content.contains("resumo do que veio antes"));
+        assert_eq!(out.last().unwrap().content, "recente");
+        assert!(!out.iter().any(|m| m.content == "antiga"), "o que o resumo cobre não volta literal");
+    }
+
+    #[test]
+    fn rolling_window_without_summary_matches_a_plain_recent_window() {
+        let messages = vec![msg("system", "sistema"), msg("user", "um"), msg("assistant", "dois")];
+        let out = rolling_window(&messages, 1_000_000, &[], "gpt-4o", "", 1);
+        assert_eq!(out.len(), 3);
+        assert!(!out.iter().any(|m| m.content.contains("Resumo da conversa")));
     }
 }

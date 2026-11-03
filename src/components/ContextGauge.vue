@@ -129,7 +129,7 @@ async function compactNow() {
       </span>
     </button>
     <button
-      v-if="!editing && sessionStore.currentSession?.provider !== 'cli'"
+      v-if="!editing && (sessionStore.currentSession?.provider !== 'cli' || sessionStore.currentSession?.external_cli_mode === 'provider')"
       class="compact-now-btn"
       :class="{ done: compactDone }"
       :disabled="compacting"

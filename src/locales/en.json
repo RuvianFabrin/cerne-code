@@ -42,7 +42,35 @@
     "wait": "Please wait",
     "accept": "I have read and understand"
   },
+  "plainQueue": {
+    "title": "Task queue and session memory",
+    "toggleLabel": "Task queue (no Long Horizon)",
+    "toggleTooltip": "Runs a task list without Long Horizon: after each item, saves what matters to session memory and compacts the context before the next one. No step limit.",
+    "buttonTooltip": "Session memory and task queue",
+    "memoriaTab": "Session memory",
+    "filaTab": "Tasks",
+    "memoriaHint": "This session only. It goes whole to the model every turn and is never compacted.",
+    "memoriaPlaceholder": "Still empty — the queue fills it in as each task is completed.",
+    "filaHint": "Paste the task list JSON. Each 'fazer' item is run, confirmed, and marked 'testar'.",
+    "filaPlaceholder": "Paste the task list JSON here...",
+    "requirements": "Requires YOLO mode on this session",
+    "start": "Start queue",
+    "stop": "Stop queue",
+    "status": {
+      "processing": "Running task…",
+      "confirmed": "Task confirmed",
+      "saving_memory": "Saving session memory…",
+      "compacting": "Compacting context…",
+      "stuck": "Queue stopped",
+      "finished": "Queue finished",
+      "error": "Queue error"
+    }
+  },
   "composer": {
+    "cliModeLabel": "CLI mode",
+    "cliModeAgent": "CLI agent",
+    "cliModeProvider": "Cerne provider",
+    "cliModeHint": "Agent: the CLI owns tools and context. Provider: Cerne owns tools and history; every CLI call starts a fresh session.",
     "modeAuto": "Automatic",
     "modeManual": "Manual",
     "reasoningOff": "Off",
@@ -71,6 +99,8 @@
     "plusMenuTooltip": "Attach file, persona, Fable method, Long Horizon, Task queue, MCP",
     "personaLabel": "Persona",
     "fableLabel": "Fable method",
+    "contextEconomyLabel": "Context economy",
+    "contextEconomyTooltip": "Stores full outputs and sends smaller excerpts to the model. Retrieves details with search. Requires Node.js 22.13+.",
     "longHorizonLabel": "Long Horizon",
     "mcpLabel": "MCP",
     "addFolder": "Add folder",
@@ -118,9 +148,28 @@
       "persona": "persona",
       "mcp": "MCP",
       "prompt": "prompt",
-      "pipeline": "pipeline"
+      "pipeline": "pipeline",
+      "context": "Context"
     },
-    "cancelExecution": "Cancel execution"
+    "cancelExecution": "Cancel execution",
+    "contextCommands": {
+      "stats": "Savings by tool, bytes and estimated tokens",
+      "doctor": "Local Rust engine and SQLite diagnostics",
+      "index": "Index a file or directory: /ctx-index path",
+      "search": "Search saved content: /ctx-search terms",
+      "purge": "Clear this chat index; requires --confirm",
+      "insight": "Local context savings and memory report",
+      "upgrade": "Update the engine with a Cerne update"
+    },
+    "fixedContextLabel": "Fixed ctx",
+    "fixedContextTooltip": "Limits what is sent to the model on each message by cutting the oldest history. The full history stays saved.",
+    "fixedContextTokens": "Tokens per send",
+    "fixedContextTokensHint": "Instructions and memories always go in; then the most recent messages up to the total.",
+    "fixedContextRolling": "Sliding fixed ctx",
+    "fixedContextRollingHint": "Rolling summary: the model summarizes what leaves the window in the background after each turn. Also turns on Fixed ctx.",
+    "queueSend": "Send to queue",
+    "queued": "{count} queued",
+    "clearQueue": "Clear queue"
   },
   "toolLabels": {
     "web_search": "Searched the web",
@@ -368,6 +417,7 @@
     "longHorizonMaxIteracoes": "Max iterations before giving up",
     "longHorizonTetoTool": "Max tool calls per step",
     "longHorizonTetoFalhaRepetida": "Identical responses in a row before cutting the step",
+    "longHorizonTetoTempo": "Time limit per turn (minutes)",
     "longHorizonReset": "Restore default",
     "longHorizonResetDone": "Restored",
     "playwrightBrowser": "Task browser",
@@ -402,6 +452,8 @@
     "cli": "External CLI"
   },
   "providerPicker": {
+    "manualModel": "Enter model",
+    "manualModelPlaceholder": "Exact model ID (Pi: provider/model)",
     "connection": "Connection",
     "loading": "Loading...",
     "model": "Model",
@@ -411,7 +463,8 @@
     "testImageSupport": "Test whether the model supports images",
     "cliBackend": "CLI",
     "cliInstalled": "Installed",
-    "cliNotInstalled": "Not found on PATH — check Settings"
+    "cliNotInstalled": "Not found on PATH — check Settings",
+    "lfm3OpenTooltip": "Open the LFM3 screen (LiquidAI models)"
   },
   "newSession": {
     "defaultTitle": "New session",
@@ -754,5 +807,138 @@
     "fal": "fal.ai · image and video models",
     "aspectRatio": "Aspect ratio",
     "resolution": "Resolution"
+  },
+  "lfm3": {
+    "title": "LFM3 — LiquidAI models",
+    "intro": "Five small models that run on your machine through llama.cpp: text, vision, audio with speech, omni, and a decision classifier. They can work alone or alongside the chat to reduce what goes to the expensive model.",
+    "howTo": {
+      "title": "How to use",
+      "step1": "Install llama.cpp b11960 or newer (the build must support LFM3).",
+      "step2": "Enter the paths to llama-server.exe and models-lfm3.ini below and save the “lfm3” fork.",
+      "step3": "Check that each model shows as “ready” on the cards.",
+      "step4": "Use “Use in chat” for a chat model, or the tests below to try each function."
+    },
+    "setup": {
+      "title": "Setup",
+      "hint": "Cerne does not assume where you installed anything: the paths are yours. models-lfm3.ini must have the sections lfm3-1.7b-text, lfm3-vl-2b, lfm3-audio-2b, lfm3-omni-2b and d1-omni-2b, each with model and mmproj (see the README in the LFM3 folder).",
+      "label": "Name",
+      "serverExe": "llama-server.exe (b11960+)",
+      "modelsIni": "models-lfm3.ini",
+      "port": "Port",
+      "create": "Save LFM3 fork",
+      "update": "Update LFM3 fork",
+      "saved": "Saved."
+    },
+    "errors": {
+      "fillPaths": "Enter the paths to llama-server and models-lfm3.ini.",
+      "noImageModel": "Choose a vision model (LFM3-VL or Omni) to send an image.",
+      "micDenied": "Could not use the microphone: {error}",
+      "badJson": "The classifier questions are not valid JSON."
+    },
+    "models": {
+      "title": "The 5 models",
+      "text": "Text-only chat. The lightest: good for short answers and simple tasks.",
+      "vision": "Chat with images. Describes photos, screenshots and scanned documents.",
+      "audio": "Hears audio (transcription) and speaks the reply (TTS, via llama-tts). Language is chosen on this screen.",
+      "omni": "Chat with image, audio and video, replying in text and voice. No internal reasoning.",
+      "decision": "Not a chat model. Answers calibrated decision questions (yes/no, choice among options, score) without generating text.",
+      "when": {
+        "text": "Use for rewrites, short summaries and simple questions.",
+        "vision": "Use when the conversation has an image and the chat model cannot see it.",
+        "audio": "Use to dictate and hear replies with the same model.",
+        "omni": "Use for voice conversation or for questions about a photo and audio together.",
+        "decision": "Use before the chat for triage, routing and validation."
+      },
+      "useInChat": "Use in chat",
+      "decisionNote": "Use the classifier below or the /v1/systemone endpoint."
+    },
+    "status": {
+      "noFork": "Save the LFM3 fork to check.",
+      "notInIni": "Section missing from models-lfm3.ini.",
+      "missingFiles": "Model or mmproj file not found.",
+      "ready": "Ready."
+    },
+    "badges": {
+      "chat": "chat",
+      "decision": "decision",
+      "image": "image",
+      "audio": "audio",
+      "speech": "speech"
+    },
+    "test": {
+      "title": "Quick tests",
+      "hint": "Each test really calls the model. The first call is slower because the model loads on the GPU.",
+      "chatTitle": "Chat (text or image)",
+      "defaultPrompt": "What is the capital of Brazil? Answer in one sentence.",
+      "running": "Running…",
+      "run": "Run",
+      "voiceTitle": "Voice (microphone)",
+      "classifyTitle": "d1-Omni classifier",
+      "classifyHint": "Questions in the /v1/systemone format. Each answer comes with a calibrated probability."
+    },
+    "voice": {
+      "language": "Language",
+      "voice": "Voice",
+      "female": "Female",
+      "male": "Male",
+      "mode": "Mode",
+      "modeTranscribe": "Transcribe (ASR)",
+      "modeReply": "Converse (audio → reply)",
+      "replyModel": "Model",
+      "record": "Record",
+      "stop": "Stop and send",
+      "speak": "Listen to reply",
+      "replySystem": "Reply briefly, in the same language the speaker used.",
+      "conversation": "Continuous voice conversation",
+      "endConversation": "End voice conversation",
+      "listening": "Listening…",
+      "recording": "Recording speech…",
+      "thinking": "Replying…",
+      "needsLlama": "Spoken replies need an LFM3 audio model (llama.cpp).",
+      "modeChatShort": "Chat",
+      "modeRealtimeShort": "Realtime"
+    },
+    "lang": {
+      "auto": "Automatic",
+      "pt": "Portuguese",
+      "en": "English",
+      "es": "Spanish",
+      "fr": "French",
+      "de": "German",
+      "it": "Italian",
+      "zh": "Chinese",
+      "ja": "Japanese",
+      "ko": "Korean",
+      "ru": "Russian",
+      "ar": "Arabic",
+      "nl": "Dutch"
+    },
+    "useCases": {
+      "title": "When to use it alongside the chat",
+      "intro": "The idea is to send the expensive model only what it needs. Savings depend on your usage: measure with real prompts.",
+      "item1": {
+        "title": "Triage before the chat",
+        "body": "d1 classifies the message (topic, urgency, team) and only what needs a long answer goes to the chat model."
+      },
+      "item2": {
+        "title": "Escalate only when needed",
+        "body": "A small model answers first; if d1's confidence is low, the question goes up to the large model."
+      },
+      "item3": {
+        "title": "Audio becomes text first",
+        "body": "Transcribe locally with Audio or Omni and send only the text to the chat model, without sending audio to the cloud."
+      },
+      "item4": {
+        "title": "Image becomes a short description",
+        "body": "VL describes the image in a few lines and that description goes to a text-only model."
+      },
+      "item5": {
+        "title": "Local speech for replies",
+        "body": "Audio generates the spoken reply on your machine, with no paid TTS service."
+      }
+    },
+    "chat": {
+      "attachAudio": "Attach audio"
+    }
   }
 }

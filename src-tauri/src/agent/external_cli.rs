@@ -33,15 +33,17 @@ pub enum CliBackendId {
     Codex,
     Gemini,
     Qwen,
+    Pi,
 }
 
 impl CliBackendId {
-    pub fn all() -> [CliBackendId; 4] {
+    pub fn all() -> [CliBackendId; 5] {
         [
             CliBackendId::Claude,
             CliBackendId::Codex,
             CliBackendId::Gemini,
             CliBackendId::Qwen,
+            CliBackendId::Pi,
         ]
     }
 
@@ -51,6 +53,7 @@ impl CliBackendId {
             CliBackendId::Codex => "codex",
             CliBackendId::Gemini => "gemini",
             CliBackendId::Qwen => "qwen",
+            CliBackendId::Pi => "pi",
         }
     }
 
@@ -60,6 +63,7 @@ impl CliBackendId {
             CliBackendId::Codex => "Codex CLI",
             CliBackendId::Gemini => "Gemini CLI",
             CliBackendId::Qwen => "Qwen Code CLI",
+            CliBackendId::Pi => "Pi CLI",
         }
     }
 
@@ -75,6 +79,7 @@ impl CliBackendId {
             CliBackendId::Codex => "codex",
             CliBackendId::Gemini => "gemini",
             CliBackendId::Qwen => "qwen",
+            CliBackendId::Pi => "pi",
         }
     }
 
@@ -97,12 +102,13 @@ impl CliBackendId {
             // dos flags dele; o usuário pode corrigir via override se o nome
             // do modelo mudar numa versão nova.
             CliBackendId::Qwen => &["qwen3-coder-plus", "qwen3-coder-flash"],
+            CliBackendId::Pi => &[],
         }
     }
 
     fn prompt_via(self) -> PromptVia {
         match self {
-            CliBackendId::Claude | CliBackendId::Codex => PromptVia::Stdin,
+            CliBackendId::Claude | CliBackendId::Codex | CliBackendId::Pi => PromptVia::Stdin,
             CliBackendId::Gemini | CliBackendId::Qwen => PromptVia::Arg,
         }
     }
@@ -111,6 +117,7 @@ impl CliBackendId {
         match self {
             CliBackendId::Claude => OutputParse::ClaudeJson,
             CliBackendId::Codex => OutputParse::LastMessageFile,
+            CliBackendId::Pi => OutputParse::PlainText,
             CliBackendId::Gemini | CliBackendId::Qwen => OutputParse::GeminiJson,
         }
     }
@@ -160,6 +167,11 @@ impl CliBackendId {
                     args.push(m.into());
                 }
             }
+            CliBackendId::Pi => {
+                args.extend(["--print".into(), "--no-session".into()]);
+                if !full_access { args.extend(["--tools".into(), "read,grep,find,ls".into()]); }
+                if let Some(m) = model { args.extend(["--model".into(), m.into()]); }
+            }
             CliBackendId::Qwen => {
                 args.push("--output-format".into());
                 args.push("json".into());
@@ -184,6 +196,7 @@ enum PromptVia {
 
 #[derive(Debug, Clone, Copy)]
 enum OutputParse {
+    PlainText,
     /// `claude -p --output-format json`: `{"result": "...", "is_error": bool}`.
     ClaudeJson,
     /// `gemini/qwen --output-format json`: `{"response": "..."}`.
@@ -214,6 +227,8 @@ pub struct ExternalCliConfig {
     pub gemini: CliBackendOverride,
     #[serde(default)]
     pub qwen: CliBackendOverride,
+    #[serde(default)]
+    pub pi: CliBackendOverride,
 }
 
 impl ExternalCliConfig {
@@ -223,18 +238,61 @@ impl ExternalCliConfig {
             CliBackendId::Codex => &self.codex,
             CliBackendId::Gemini => &self.gemini,
             CliBackendId::Qwen => &self.qwen,
+            CliBackendId::Pi => &self.pi,
         }
     }
 }
 
-/// Resolve o caminho/nome do binário: override explícito do usuário, senão o
-/// nome default (procurado no PATH pelo próprio `Command::new`/`shell::command_exists`).
-fn resolve_bin(backend: CliBackendId, cfg: &ExternalCliConfig) -> String {
-    cfg.override_for(backend)
-        .bin_path
-        .clone()
-        .filter(|p| !p.trim().is_empty())
-        .unwrap_or_else(|| backend.bin_default().to_string())
+/// Explicit paths take precedence. Discovery also checks standard installation
+/// directories because a GUI process can have an older PATH than the terminal.
+pub(super) fn resolve_bin(backend: CliBackendId, cfg: &ExternalCliConfig) -> String {
+    cfg.override_for(backend).bin_path.clone().filter(|p| !p.trim().is_empty())
+        .unwrap_or_else(|| discover_bin(backend).unwrap_or_else(|| backend.bin_default().into()))
+}
+
+fn find_in_dirs(name: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    #[cfg(windows)]
+    let names = [format!("{name}.exe"), format!("{name}.ps1"), format!("{name}.cmd"), format!("{name}.bat")];
+    #[cfg(not(windows))]
+    let names = [name.to_owned()];
+    dirs.iter().flat_map(|dir| names.iter().map(move |name| dir.join(name)))
+        .find(|path| {
+            if !path.is_file() { return false; }
+            #[cfg(unix)] {
+                use std::os::unix::fs::PermissionsExt;
+                return path.metadata().is_ok_and(|m| m.permissions().mode() & 0o111 != 0);
+            }
+            #[cfg(not(unix))] { true }
+        })
+}
+
+// Only enumerate one installation directory level; never search project files.
+fn append_install_versions(dirs: &mut Vec<PathBuf>, root: PathBuf) {
+    let mut entries: Vec<_> = std::fs::read_dir(root).into_iter().flatten()
+        .filter_map(Result::ok).filter(|e| e.path().is_dir()).collect();
+    entries.sort_by_key(|e| std::cmp::Reverse(e.metadata().ok().and_then(|m| m.modified().ok())));
+    dirs.extend(entries.into_iter().map(|e| e.path()));
+}
+
+fn discover_bin(backend: CliBackendId) -> Option<String> {
+    let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|path| std::env::split_paths(&path).filter(|p| !p.as_os_str().is_empty()).collect())
+        .unwrap_or_default();
+    if let Some(home) = dirs::home_dir() {
+        candidates.extend([home.join(".local/bin"), home.join(".cargo/bin")]);
+    }
+    #[cfg(windows)] {
+        if let Some(appdata) = std::env::var_os("APPDATA") { candidates.push(PathBuf::from(appdata).join("npm")); }
+        if let Some(nvm) = std::env::var_os("NVM_SYMLINK") { candidates.push(PathBuf::from(nvm)); }
+        if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+            let local = PathBuf::from(local);
+            if backend == CliBackendId::Codex { append_install_versions(&mut candidates, local.join("OpenAI/Codex/bin")); }
+            append_install_versions(&mut candidates, local.join("nvm"));
+        }
+        if let Some(nvm) = std::env::var_os("NVM_HOME") { append_install_versions(&mut candidates, PathBuf::from(nvm)); }
+    }
+    #[cfg(not(windows))] candidates.extend([PathBuf::from("/usr/local/bin"), PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/usr/bin")]);
+    find_in_dirs(backend.bin_default(), &candidates).map(|p| p.to_string_lossy().into_owned())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -243,7 +301,7 @@ pub struct CliReadiness {
     pub label: &'static str,
     pub installed: bool,
     pub bin: String,
-    pub models: Vec<&'static str>,
+    pub models: Vec<String>,
 }
 
 /// Checagem "está instalado?" pra Configurações — reusa `shell::command_exists`
@@ -264,10 +322,80 @@ pub fn check_readiness(cfg: &ExternalCliConfig) -> Vec<CliReadiness> {
                 label: backend.label(),
                 installed,
                 bin,
-                models: backend.known_models().to_vec(),
+                models: models_for(backend),
             }
         })
         .collect()
+}
+
+/// Use the installed CLI catalog when available, instead of stale model names.
+fn models_for(backend: CliBackendId) -> Vec<String> {
+    if backend == CliBackendId::Codex {
+        let home = std::env::var_os("CODEX_HOME").map(PathBuf::from)
+            .or_else(|| dirs::home_dir().map(|p| p.join(".codex")));
+        if let Some(cache) = home.and_then(|p| std::fs::read_to_string(p.join("models_cache.json")).ok())
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()) {
+            let models: Vec<String> = cache["models"].as_array().into_iter().flatten()
+                .filter_map(|m| m["slug"].as_str().map(str::to_owned)).collect();
+            if !models.is_empty() { return models; }
+        }
+    }
+    backend.known_models().iter().map(|s| s.to_string()).collect()
+}
+
+pub async fn list_models(backend: CliBackendId, cfg: &ExternalCliConfig) -> Result<Vec<String>> {
+    if backend != CliBackendId::Pi { return Ok(models_for(backend)); }
+    let bin=resolve_bin(backend,cfg);
+    let mut command=command_for_bin(&bin)?;
+    command.args(["--offline","--no-extensions","--no-skills","--no-context-files","--no-session","--list-models"])
+        .env("NO_COLOR","1").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+    shell::apply_creation_flags(&mut command);
+    shell::apply_process_group(&mut command);
+    let child=command.spawn()?;
+    let mut tree=super::cli_inference::ProcessTree(child.id());
+    let output=tokio::time::timeout(Duration::from_secs(20),child.wait_with_output()).await
+        .map_err(|_|anyhow!("Pi demorou para listar os modelos; voce pode informar o identificador manualmente"))??;
+    tree.0=None;
+    if !output.status.success() { return Err(anyhow!("Pi nao conseguiu listar modelos: {}",String::from_utf8_lossy(&output.stderr).chars().take(500).collect::<String>())); }
+    Ok(parse_pi_models(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn parse_pi_models(text: &str) -> Vec<String> {
+    text.lines().filter_map(|line| {
+        let cols:Vec<_>=line.split_whitespace().collect();
+        if cols.len()==6 && matches!(cols[4],"yes"|"no") && matches!(cols[5],"yes"|"no") {
+            Some(format!("{}/{}",cols[0],cols[1]))
+        } else { None }
+    }).collect()
+}
+
+pub fn codex_context_length(model: &str) -> Option<u32> {
+    let home = std::env::var_os("CODEX_HOME").map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|p| p.join(".codex")))?;
+    let cache: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(home.join("models_cache.json")).ok()?).ok()?;
+    cache["models"].as_array()?.iter().find(|m| m["slug"].as_str() == Some(model))?
+        ["context_window"].as_u64().and_then(|n| u32::try_from(n).ok())
+}
+
+/// npm Windows launchers need their script host; never build a shell command.
+pub(super) fn command_for_bin(bin: &str) -> Result<tokio::process::Command> {
+    #[cfg(windows)]
+    {
+        let path = PathBuf::from(bin);
+        if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("ps1")) {
+            let mut cmd = tokio::process::Command::new("powershell.exe");
+            cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", bin]);
+            return Ok(cmd);
+        }
+        if bin == "pi" {
+            if let Ok(output) = std::process::Command::new("where.exe").arg("pi.ps1").output() {
+                if let Some(path) = String::from_utf8_lossy(&output.stdout).lines().find(|p| PathBuf::from(p).is_file()) {
+                    return command_for_bin(path);
+                }
+            }
+        }
+    }
+    Ok(tokio::process::Command::new(bin))
 }
 
 const DEFAULT_TIMEOUT_SECS: u64 = 300;
@@ -282,11 +410,15 @@ pub async fn dispatch(
     model: Option<&str>,
     full_access: bool,
     cfg: &ExternalCliConfig,
+    cwd: Option<&std::path::Path>,
+    attachments: &[crate::models::ChatMessage],
 ) -> Result<String> {
     let bin = resolve_bin(backend, cfg);
     let mut args = backend.build_args(model, full_access);
     args.extend(cfg.override_for(backend).extra_args.iter().cloned());
-
+    let has_images = attachments.iter().any(|m| !m.images.is_empty());
+    let mut input_payload = prompt.to_owned();
+    let mut image_workspace = None;
     let tmp_path = if matches!(backend.output_parse(), OutputParse::LastMessageFile) {
         let p = std::env::temp_dir().join(format!(
             "cerne-cli-{}-{}.txt",
@@ -300,14 +432,35 @@ pub async fn dispatch(
         None
     };
 
+    if has_images {
+        match backend {
+            CliBackendId::Claude => {
+                let output = args.iter().position(|s| s == "--output-format").unwrap();
+                args[output + 1] = "stream-json".into();
+                args.extend(["--input-format".into(), "stream-json".into(), "--verbose".into()]);
+                input_payload = super::cli_inference::claude_input(prompt, attachments)?;
+            }
+            CliBackendId::Codex => {
+                let workspace = super::cli_inference::Workspace::new()?;
+                // The helper keeps the stdin marker last.
+                args.push("-".into());
+                super::cli_inference::append_codex_images(&workspace.0, &mut args, attachments)?;
+                image_workspace = Some(workspace);
+            }
+            _ => return Err(anyhow!("Imagens anexadas estao disponiveis nos adaptadores Claude e Codex")),
+        }
+    }
+
     if matches!(backend.prompt_via(), PromptVia::Arg) {
         args.push("-p".into());
         args.push(prompt.to_string());
     }
 
-    let mut command = tokio::process::Command::new(&bin);
+    let mut command = command_for_bin(&bin)?;
+    if let Some(cwd) = cwd { command.current_dir(cwd); }
     command
         .args(&args)
+        .kill_on_drop(true)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -318,27 +471,40 @@ pub async fn dispatch(
         .spawn()
         .map_err(|e| anyhow!("nao foi possivel iniciar '{bin}' ({backend_label}): {e} — confira em Configuracoes se o CLI esta instalado e no PATH", backend_label = backend.label()))?;
 
-    if matches!(backend.prompt_via(), PromptVia::Stdin) {
+    let mut tree = super::cli_inference::ProcessTree(child.id());
+    let stdin = child.stdin.take();
+    let write = async {
         use tokio::io::AsyncWriteExt;
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(prompt.as_bytes()).await;
-            let _ = stdin.shutdown().await;
+        if matches!(backend.prompt_via(), PromptVia::Stdin) {
+            if let Some(mut stdin) = stdin {
+                match stdin.write_all(input_payload.as_bytes()).await {
+                    Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => {},
+                    result => { result?; }
+                }
+                let _ = stdin.shutdown().await;
+            }
         }
-    } else {
-        drop(child.stdin.take());
-    }
-
+        Ok::<_, std::io::Error>(())
+    };
     let timeout = Duration::from_secs(DEFAULT_TIMEOUT_SECS);
-    let output = tokio::time::timeout(timeout, child.wait_with_output())
-        .await
+    let (_, output) = tokio::time::timeout(timeout, async {
+        tokio::try_join!(write, child.wait_with_output())
+    }).await
         .map_err(|_| anyhow!("{} nao respondeu em {}s (timeout)", backend.label(), DEFAULT_TIMEOUT_SECS))?
         .map_err(|e| anyhow!("erro esperando '{bin}' terminar: {e}"))?;
+    tree.0 = None;
 
     let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
+    drop(image_workspace);
     let content = match backend.output_parse() {
-        OutputParse::ClaudeJson => parse_claude_json(&stdout)?,
+        OutputParse::PlainText => stdout.trim().to_string(),
+        OutputParse::ClaudeJson => {
+            if has_images {
+                parse_claude_json(&super::cli_inference::claude_envelope(&stdout)?.to_string())?
+            } else { parse_claude_json(&stdout)? }
+        },
         OutputParse::GeminiJson => parse_gemini_json(&stdout)?,
         OutputParse::LastMessageFile => {
             let from_file = tmp_path
@@ -465,7 +631,7 @@ mod tests {
     #[test]
     fn resolve_bin_usa_default_sem_override() {
         let cfg = ExternalCliConfig::default();
-        assert_eq!(resolve_bin(CliBackendId::Claude, &cfg), "claude");
+        assert_eq!(resolve_bin(CliBackendId::Claude, &cfg), discover_bin(CliBackendId::Claude).unwrap_or_else(|| "claude".into()));
     }
 
     #[test]
@@ -479,7 +645,37 @@ mod tests {
     fn resolve_bin_ignora_override_vazio() {
         let mut cfg = ExternalCliConfig::default();
         cfg.claude.bin_path = Some("   ".to_string());
-        assert_eq!(resolve_bin(CliBackendId::Claude, &cfg), "claude");
+        assert_eq!(resolve_bin(CliBackendId::Claude, &cfg), discover_bin(CliBackendId::Claude).unwrap_or_else(|| "claude".into()));
+    }
+
+    #[test]
+    fn discovery_respects_directory_priority_and_missing_files() {
+        let root = std::env::temp_dir().join(format!("cerne-cli-discovery-{}", uuid::Uuid::new_v4()));
+        let first = root.join("first");
+        let second = root.join("second");
+        std::fs::create_dir_all(&first).unwrap();
+        std::fs::create_dir_all(&second).unwrap();
+        #[cfg(windows)] let filename = "claude.exe";
+        #[cfg(not(windows))] let filename = "claude";
+        let file = second.join(filename);
+        std::fs::write(&file, b"fixture").unwrap();
+        #[cfg(unix)] {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        assert_eq!(find_in_dirs("claude", &[first.clone(),second.clone()]), Some(file.clone()));
+        assert!(find_in_dirs("absent", &[first.clone(),second.clone()]).is_none());
+        std::fs::copy(&file, first.join(filename)).unwrap();
+        assert_eq!(find_in_dirs("claude", &[first.clone(),second]), Some(first.join(filename)));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[ignore = "Local installation diagnostic; runs no inference"]
+    fn local_cli_installations() {
+        for cli in check_readiness(&ExternalCliConfig::default()) {
+            println!("{}: installed={} bin={}",cli.backend,cli.installed,cli.bin);
+        }
     }
 
     #[test]
@@ -502,10 +698,16 @@ mod tests {
     }
 
     #[test]
-    fn check_readiness_devolve_os_quatro_backends() {
+    fn pi_model_listing_ignores_headers_and_returns_qualified_ids() {
+        let text="provider model context max-out thinking images\nopenai example 256K 32K yes yes\nlocal local-model 32K 8K no no\nNo models available";
+        assert_eq!(parse_pi_models(text),vec!["openai/example","local/local-model"]);
+    }
+
+    #[test]
+    fn check_readiness_devolve_os_cinco_backends() {
         let cfg = ExternalCliConfig::default();
         let readiness = check_readiness(&cfg);
-        assert_eq!(readiness.len(), 4);
+        assert_eq!(readiness.len(), 5);
         assert!(readiness.iter().any(|r| r.backend == "claude"));
         assert!(readiness.iter().any(|r| r.backend == "codex"));
         assert!(readiness.iter().any(|r| r.backend == "gemini"));

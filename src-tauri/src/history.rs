@@ -20,7 +20,7 @@
 //!    concluído" no histórico a qualquer momento — inclusive no meio de um
 //!    turno, entre o `tool_calls` já salvo e o resultado ainda não salvo.
 //! 3. `agent::maybe_compact` corta o histórico num ponto arbitrário pra
-//!    resumir (`KEEP_LAST_MESSAGES`), sem olhar se o corte separa um
+//!    resumir (cauda por tokens, `COMPACT_TAIL_RATIO`), sem olhar se o corte separa um
 //!    `tool_calls` das respostas dele.
 //!
 //! `repair` normaliza tudo isso de uma vez: descarta respostas `tool` órfãs
