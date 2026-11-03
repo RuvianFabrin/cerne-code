@@ -58,3 +58,6 @@ docs/*-preview.png
 .env
 .env.*
 !.env.example
+
+# Node privado do app: baixado pelo build (scripts/prepare-node-runtime.mjs)
+src-tauri/resources/node-runtime/bin/

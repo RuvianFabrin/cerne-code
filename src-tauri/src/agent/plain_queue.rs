@@ -11,7 +11,8 @@
 //!   todo turno e nunca passa pela compactação (que mexe só em `messages`).
 //!
 //! A lista usa o mesmo formato de `tarefas.json` (ver `task_queue::parse_tasks`),
-//! mas fica numa pasta própria (`plain_queue/`), separada da fila do LH.
+//! mas fica no arquivo que o usuário escolhe (`plain_queue_path`), separado da
+//! fila do LH. A memória da sessão não depende da fila: vale em qualquer sessão.
 
 use anyhow::Result;
 use serde::Serialize;
@@ -29,15 +30,18 @@ pub const STATUS_EVENT: &str = "agent:plain_queue_status";
 
 pub const MEMORY_TOOL: &str = "update_session_memory";
 
-/// Instruções de sistema desta fila e da memória da sessão.
-const PLAIN_QUEUE_PROMPT: &str = "## Fila de tarefas (sem Long Horizon)\n\
+/// Instruções da fila (só entram quando a fila está ligada na sessão).
+const QUEUE_PROMPT: &str = "## Fila de tarefas (sem Long Horizon)\n\
 Você está executando uma lista de tarefas, uma por vez. Cada tarefa chega como uma mensagem do usuário. \
 Quando perguntarem se a tarefa foi feita, responda somente 'feito' se ela foi realmente executada e verificada; \
-caso contrário, diga o que falta.\n\n\
-## Memória da sessão\n\
+caso contrário, diga o que falta.";
+
+/// Instruções da memória da sessão. Entra em TODAS as sessões que têm memória
+/// ou a ferramenta, independente da fila.
+const MEMORY_PROMPT: &str = "## Memória da sessão\n\
 Abaixo está a memória desta sessão, inteira. Ela vale só para esta sessão e nunca é compactada. \
 Para alterá-la use `update_session_memory` com o conteúdo COMPLETO (substitui o arquivo inteiro), \
-mantendo o que já estava lá. Registre só o que ajuda as próximas tarefas desta sessão: decisões, \
+mantendo o que já estava lá. Registre só o que ajuda as próximas vezes nesta sessão: decisões, \
 caminhos de arquivos, comandos que funcionaram e erros a não repetir.";
 
 /// Mandado depois que um item foi confirmado: pede o registro na memória.
@@ -56,7 +60,12 @@ mantendo o que já estava na memória. Se nada for relevante, não chame a ferra
 pub fn memory_prompt_block(app_data_dir: &PathBuf, session_id: &str) -> Result<String> {
     let memoria = sessions::read_session_memory(app_data_dir, session_id)?;
     let conteudo = if memoria.trim().is_empty() { "(vazia)" } else { memoria.as_str() };
-    Ok(format!("\n\n{PLAIN_QUEUE_PROMPT}\n\n<memoria_da_sessao>\n{conteudo}\n</memoria_da_sessao>"))
+    Ok(format!("\n\n{MEMORY_PROMPT}\n\n<memoria_da_sessao>\n{conteudo}\n</memoria_da_sessao>"))
+}
+
+/// Instruções da fila, anexadas ao prompt só quando a fila está ligada.
+pub fn queue_prompt_block() -> String {
+    format!("\n\n{QUEUE_PROMPT}")
 }
 
 /// Ferramenta que reescreve a memória da sessão (sem limite de tamanho).

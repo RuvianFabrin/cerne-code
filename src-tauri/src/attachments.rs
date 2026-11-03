@@ -28,6 +28,8 @@ pub fn extract_text(path: &Path) -> Result<String> {
         "pdf" => pdf_extract::extract_text(path)
             .map_err(|e| anyhow!("falha ao extrair texto do PDF: {e}"))?,
         "docx" => extract_docx(path)?,
+        "odt" => crate::office::extract_odt_text(path)?,
+        "doc" => crate::office::extract_doc_text(path)?,
         "xlsx" | "xlsm" | "xls" | "ods" => extract_spreadsheet(path)?,
         _ => {
             let bytes = std::fs::read(path).map_err(|e| anyhow!("falha ao ler arquivo: {e}"))?;

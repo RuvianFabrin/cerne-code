@@ -71,6 +71,7 @@ chardetng = "1"
 rmcp = { version = "2", features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 calamine = "0.36.0"
 pdf-extract = "0.12.0"
+lopdf = "0.42"
 docx-rust = "0.1.11"
 base64 = "0.22.1"
 enigo = { version = "0.6", optional = true }

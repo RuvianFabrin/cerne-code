@@ -1,0 +1,8 @@
+{
+  "bundle": {
+    "resources": {
+      "resources/node-runtime/bin/darwin-arm64/node": "node-runtime/bin/darwin-arm64/node",
+      "resources/node-runtime/bin/darwin-x64/node": "node-runtime/bin/darwin-x64/node"
+    }
+  }
+}

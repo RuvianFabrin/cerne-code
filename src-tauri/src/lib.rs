@@ -18,6 +18,8 @@ mod memory;
 mod media;
 mod media_providers;
 mod models;
+mod node_runtime;
+mod office;
 mod osv;
 mod personas;
 mod providers;
@@ -1654,6 +1656,29 @@ async fn test_vision(
 /// **Se a otimização falhar, devolve o original.** Motivo: um formato que o
 /// `image` não decodifica (BMP, TIFF, HEIC…) é motivo pra mandar a imagem
 /// grande, nunca pra perder a imagem do usuário.
+/// Imagens embutidas de um documento (docx/odt/pdf/doc) como data URIs, pra
+/// entrarem no composer como anexos de imagem — só o frontend chama, e só
+/// quando o modelo da sessão aceita visão.
+#[tauri::command]
+async fn extract_attachment_images(path: String) -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use base64::Engine;
+        let imagens = office::embedded_images(std::path::Path::new(&path)).map_err(|e| e.to_string())?;
+        Ok(imagens
+            .into_iter()
+            .map(|img| {
+                format!(
+                    "data:{};base64,{}",
+                    img.mime,
+                    base64::engine::general_purpose::STANDARD.encode(&img.bytes)
+                )
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 #[tauri::command]
 async fn read_image_as_data_url(path: String, original: Option<bool>) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -2227,13 +2252,8 @@ fn update_session_plain_queue_enabled(state: State<AppState>, id: String, enable
 }
 
 #[tauri::command]
-fn read_session_plain_queue(state: State<AppState>, id: String) -> Result<String, String> {
-    sessions::read_plain_queue(&state.app_data_dir, &id).map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn write_session_plain_queue(state: State<AppState>, id: String, json_text: String) -> Result<(), String> {
-    sessions::write_plain_queue(&state.app_data_dir, &id, &json_text).map_err(|e| e.to_string())
+fn update_session_plain_queue_path(state: State<AppState>, id: String, path: Option<String>) -> Result<Session, String> {
+    sessions::update_plain_queue_path(&state.app_data_dir, &id, path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2799,6 +2819,9 @@ pub fn run() {
         .setup(|app| {
             let app_data_dir = app.path().app_data_dir().expect("no app data dir");
             std::fs::create_dir_all(&app_data_dir).ok();
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                node_runtime::set_resource_dir(&resource_dir);
+            }
             let config = config::load_config(&app_data_dir);
             skills::ensure_global_skills_dir(&app_data_dir).ok();
             if let Err(error) = mcp::ensure_playwright_default(&app_data_dir) { eprintln!("[playwright] {error}"); }
@@ -2858,8 +2881,7 @@ pub fn run() {
             start_task_queue,
             stop_task_queue,
             update_session_plain_queue_enabled,
-            read_session_plain_queue,
-            write_session_plain_queue,
+            update_session_plain_queue_path,
             read_session_memory,
             write_session_memory,
             start_plain_queue,
@@ -2948,6 +2970,7 @@ pub fn run() {
             check_vision_support,
             test_vision,
             read_image_as_data_url,
+            extract_attachment_images,
             optimize_image_data_url,
             get_session,
             get_session_messages,

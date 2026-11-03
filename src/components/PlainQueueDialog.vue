@@ -2,32 +2,24 @@
 import { computed, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
 import Dialog from "primevue/dialog";
-import { api } from "../api";
+import { open } from "@tauri-apps/plugin-dialog";
 import { useSessionStore } from "../stores/session";
 
-// Modal da fila de tarefas SEM Long Horizon: memória da sessão (vai inteira ao
-// modelo, nunca compactada) e a lista de tarefas com Iniciar/Parar.
+// Modal da fila de tarefas SEM Long Horizon: escolhe o arquivo JSON da lista
+// e inicia/para a fila. A memória da sessão tem modal próprio (SessionMemoryDialog).
 const visible = defineModel<boolean>("visible", { required: true });
 const { t } = useI18n();
 const sessionStore = useSessionStore();
 
-const tab = ref<"memoria" | "fila">("memoria");
-const memoria = ref("");
-const fila = ref("");
+const caminho = ref("");
 const saveError = ref("");
 const saved = ref(false);
 let savedTimer: ReturnType<typeof setTimeout> | undefined;
 
-watch(visible, async (open) => {
-  const id = sessionStore.currentId;
-  if (!open || !id) return;
-  tab.value = "memoria";
+watch(visible, (isOpen) => {
+  if (!isOpen) return;
   saveError.value = "";
-  try {
-    [memoria.value, fila.value] = await Promise.all([api.readSessionMemory(id), api.readSessionPlainQueue(id)]);
-  } catch (e) {
-    saveError.value = String(e);
-  }
+  caminho.value = sessionStore.currentSession?.plain_queue_path ?? "";
 });
 
 const running = computed(() => !!sessionStore.currentId && sessionStore.plainQueueRunningIds.has(sessionStore.currentId));
@@ -40,25 +32,25 @@ function flashSaved() {
   savedTimer = setTimeout(() => (saved.value = false), 2000);
 }
 
-async function saveMemoria() {
-  if (!sessionStore.currentId) return;
-  try {
-    await api.writeSessionMemory(sessionStore.currentId, memoria.value);
-    saveError.value = "";
-    flashSaved();
-  } catch (e) {
-    saveError.value = String(e);
-  }
+async function browse() {
+  const selected = await open({
+    directory: false,
+    multiple: false,
+    filters: [{ name: "JSON", extensions: ["json"] }],
+  });
+  if (typeof selected === "string") caminho.value = selected;
 }
 
-async function saveFila() {
-  if (!sessionStore.currentId) return;
+async function savePath(): Promise<boolean> {
+  if (!sessionStore.currentId) return false;
   try {
-    await api.writeSessionPlainQueue(sessionStore.currentId, fila.value);
+    await sessionStore.updatePlainQueuePath(caminho.value.trim() || null);
     saveError.value = "";
     flashSaved();
+    return true;
   } catch (e) {
     saveError.value = String(e);
+    return false;
   }
 }
 
@@ -68,9 +60,12 @@ async function toggleQueue() {
     return;
   }
   if (!canStart.value) return;
-  // Salva o que está no campo antes de iniciar — o loop lê do disco.
-  await saveFila();
-  if (saveError.value) return;
+  if (!caminho.value.trim()) {
+    saveError.value = t("plainQueue.pathMissing");
+    return;
+  }
+  // Grava o caminho antes de iniciar — o loop lê o arquivo a partir da sessão.
+  if (!(await savePath())) return;
   try {
     await sessionStore.startPlainQueue();
   } catch (e) {
@@ -84,104 +79,233 @@ async function toggleQueue() {
     v-model:visible="visible"
     modal
     :header="t('plainQueue.title')"
-    :style="{ width: 'min(760px, 94vw)' }"
-    class="plain-queue-dialog"
+    :style="{ width: 'min(620px, 94vw)' }"
+    class="pq-dialog"
   >
-    <div class="plain-queue">
-      <div class="plain-queue-tabs" role="tablist">
-        <button type="button" role="tab" :class="{ active: tab === 'memoria' }" @click="tab = 'memoria'">
-          {{ t("plainQueue.memoriaTab") }}
-        </button>
-        <button type="button" role="tab" :class="{ active: tab === 'fila' }" @click="tab = 'fila'">
-          {{ t("plainQueue.filaTab") }}
+    <div class="pq">
+      <label class="pq-label" for="pq-path">{{ t("plainQueue.pathLabel") }}</label>
+      <div class="pq-path">
+        <span class="msi pq-path-icon">description</span>
+        <input
+          id="pq-path"
+          v-model="caminho"
+          class="pq-input"
+          :placeholder="t('plainQueue.pathPlaceholder')"
+          spellcheck="false"
+          @keydown.enter.prevent="savePath"
+        />
+        <button type="button" class="pq-btn pq-btn-ghost" @click="browse">
+          <span class="msi">folder_open</span>
+          {{ t("plainQueue.pathBrowse") }}
         </button>
       </div>
-
-      <template v-if="tab === 'memoria'">
-        <p class="hint">{{ t("plainQueue.memoriaHint") }}</p>
-        <textarea
-          v-model="memoria"
-          class="text-input plain-queue-textarea"
-          :placeholder="t('plainQueue.memoriaPlaceholder')"
-        />
-        <div class="plain-queue-actions">
-          <button class="btn-primary" @click="saveMemoria">{{ t("sidebar.save") }}</button>
-        </div>
-      </template>
-
-      <template v-else>
-        <p class="hint">{{ t("plainQueue.filaHint") }}</p>
-        <code class="plain-queue-format">{{ '{"tarefas": [{"id": 1, "descricao": "...", "status": "fazer"}]}' }}</code>
-        <textarea
-          v-model="fila"
-          class="text-input plain-queue-textarea"
-          :placeholder="t('plainQueue.filaPlaceholder')"
-        />
-        <p v-if="!canStart && !running" class="hint">{{ t("plainQueue.requirements") }}</p>
-        <div class="plain-queue-actions">
-          <button class="btn-secondary" @click="saveFila">{{ t("sidebar.save") }}</button>
-          <button class="btn-primary" :disabled="!running && !canStart" @click="toggleQueue">
-            <span class="msi">{{ running ? "stop" : "play_arrow" }}</span>
-            {{ running ? t("plainQueue.stop") : t("plainQueue.start") }}
-          </button>
-          <span v-if="sessionStore.plainQueueLastEvent" class="plain-queue-event" :class="sessionStore.plainQueueLastEvent.status">
-            {{ sessionStore.plainQueueLastEvent.message ?? t(`plainQueue.status.${sessionStore.plainQueueLastEvent.status}`) }}
-          </span>
-        </div>
-      </template>
-
-      <p v-if="saveError" class="error-text">{{ saveError }}</p>
-      <span v-if="saved" class="mcp-test-success" role="status">{{ t("composer.longHorizonSaved") }}</span>
+      <p class="pq-hint">{{ t("plainQueue.pathHint") }}</p>
+      <code class="pq-format">{{ '{"tarefas": [{"id": 1, "descricao": "...", "status": "fazer"}]}' }}</code>
+      <p v-if="!canStart && !running" class="pq-warn">
+        <span class="msi">warning</span>
+        {{ t("plainQueue.requirements") }}
+      </p>
+      <p v-if="saveError" class="pq-error">{{ saveError }}</p>
     </div>
+
+    <footer class="pq-footer">
+      <button type="button" class="pq-btn pq-btn-ghost" @click="savePath">
+        <span class="msi">save</span>
+        {{ t("sidebar.save") }}
+      </button>
+      <button
+        type="button"
+        class="pq-btn pq-btn-primary"
+        :class="{ 'pq-btn-stop': running }"
+        :disabled="!running && !canStart"
+        @click="toggleQueue"
+      >
+        <span class="msi">{{ running ? "stop" : "play_arrow" }}</span>
+        {{ running ? t("plainQueue.stop") : t("plainQueue.start") }}
+      </button>
+      <span v-if="saved" class="pq-saved">
+        <span class="msi">check_circle</span>
+        {{ t("composer.longHorizonSaved") }}
+      </span>
+      <span
+        v-if="sessionStore.plainQueueLastEvent"
+        class="pq-event"
+        :class="sessionStore.plainQueueLastEvent.status"
+      >
+        {{ sessionStore.plainQueueLastEvent.message ?? t(`plainQueue.status.${sessionStore.plainQueueLastEvent.status}`) }}
+      </span>
+    </footer>
   </Dialog>
 </template>
 
 <style scoped>
-.plain-queue {
+.pq {
   display: flex;
   flex-direction: column;
   gap: 10px;
+  padding-top: 4px;
 }
-.plain-queue-tabs {
-  display: flex;
-  gap: 6px;
-}
-.plain-queue-tabs button {
-  border: var(--cerne-border);
-  border-radius: 8px;
-  padding: 6px 12px;
-  background: transparent;
-  font: inherit;
+
+.pq-label {
   font-size: 13px;
-  cursor: pointer;
-}
-.plain-queue-tabs button.active {
   font-weight: 600;
-  border-color: currentColor;
+  color: #18181b;
 }
-.plain-queue-textarea {
-  min-height: 280px;
-  font-family: "JetBrains Mono", monospace;
-  font-size: 13px;
-  resize: vertical;
-}
-.plain-queue-format {
-  font-size: 12px;
-  opacity: 0.8;
-  overflow-x: auto;
-  white-space: nowrap;
-}
-.plain-queue-actions {
+
+.pq-path {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
-.plain-queue-event {
-  font-size: 13px;
+
+.pq-path-icon {
+  color: #a1a1aa;
+  font-size: 20px;
 }
-.plain-queue-event.stuck,
-.plain-queue-event.error {
+
+.pq-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid #d4d4d8;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: var(--cerne-mono, monospace);
+  font-size: 13px;
+  color: #18181b;
+  background: #ffffff;
+  outline: none;
+}
+
+.pq-input:focus {
+  border-color: #18181b;
+  box-shadow: 0 0 0 3px rgba(24, 24, 27, 0.08);
+}
+
+.pq-hint {
+  font-size: 12px;
+  font-weight: 500;
+  color: #71717a;
+  margin: 2px 0 0;
+  line-height: 1.5;
+}
+
+.pq-format {
+  display: block;
+  font-family: var(--cerne-mono, monospace);
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.04);
+  padding: 6px 8px;
+  border-radius: 6px;
+  word-break: break-all;
+}
+
+.pq-warn,
+.pq-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  margin: 0;
+}
+
+.pq-warn {
   color: #b45309;
+}
+
+.pq-error {
+  color: #dc2626;
+}
+
+.pq-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #e4e4e7;
+}
+
+.pq-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, opacity 0.15s;
+}
+
+.pq-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pq-btn .msi {
+  font-size: 18px;
+}
+
+.pq-btn-ghost {
+  border: 1px solid #d4d4d8;
+  background: #ffffff;
+  color: #18181b;
+}
+
+.pq-btn-ghost:hover:not(:disabled) {
+  background: #f4f4f5;
+}
+
+.pq-btn-primary {
+  border: none;
+  background: #18181b;
+  color: #ffffff;
+}
+
+.pq-btn-primary:hover:not(:disabled) {
+  background: #3f3f46;
+}
+
+.pq-btn-stop {
+  background: #dc2626;
+}
+
+.pq-btn-stop:hover:not(:disabled) {
+  background: #b91c1c;
+}
+
+.pq-saved {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #16a34a;
+}
+
+.pq-saved .msi {
+  font-size: 15px;
+}
+
+.pq-event {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 500;
+  color: #52525b;
+}
+
+.pq-event.stuck,
+.pq-event.error {
+  color: #dc2626;
+}
+
+.pq-event.finished,
+.pq-event.confirmed {
+  color: #16a34a;
 }
 </style>

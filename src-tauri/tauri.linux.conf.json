@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "resources": {
+      "resources/node-runtime/bin/linux-x64/node": "node-runtime/bin/linux-x64/node"
+    }
+  }
+}

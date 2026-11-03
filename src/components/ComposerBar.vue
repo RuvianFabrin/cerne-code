@@ -13,6 +13,7 @@ import ContextGauge from "./ContextGauge.vue";
 import StatusDot from "./StatusDot.vue";
 import ExtraReadPaths from "./ExtraReadPaths.vue";
 import PlainQueueDialog from "./PlainQueueDialog.vue";
+import SessionMemoryDialog from "./SessionMemoryDialog.vue";
 import FileBrowser from "./FileBrowser.vue";
 import RepoDiffViewer from "./RepoDiffViewer.vue";
 import { useLlamaHealth } from "../composables/useLlamaHealth";
@@ -56,6 +57,8 @@ async function toggleContextEconomy() {
 const longHorizonSettingsVisible = ref(false);
 // Modal da fila sem Long Horizon (memória da sessão + tarefas) — ver PlainQueueDialog.vue.
 const plainQueueVisible = ref(false);
+// Memória da sessão: botão fixo no composer, em qualquer sessão (SessionMemoryDialog.vue).
+const sessionMemoryVisible = ref(false);
 const longHorizonActiveTab = ref<"memoria" | "projeto" | "tarefas">("memoria");
 const longHorizonMemoriaContent = ref("");
 const longHorizonProjetoContent = ref("");
@@ -121,6 +124,28 @@ async function toggleTaskQueue() {
   } else {
     if (!taskQueueCanStart.value) return;
     await sessionStore.startTaskQueue();
+  }
+}
+
+// Fila sem Long Horizon: mesmo padrão de play/stop da fila do LH. Sem caminho
+// do JSON configurado, abre o modal em vez de falhar no backend.
+const plainQueueRunning = computed(() => !!sessionStore.currentId && sessionStore.plainQueueRunningIds.has(sessionStore.currentId));
+const plainQueueCanStart = computed(() => sessionStore.currentSession?.execution_mode === "yolo");
+
+async function togglePlainQueue() {
+  if (plainQueueRunning.value) {
+    await sessionStore.stopPlainQueue();
+    return;
+  }
+  if (!plainQueueCanStart.value) return;
+  if (!sessionStore.currentSession?.plain_queue_path) {
+    plainQueueVisible.value = true;
+    return;
+  }
+  try {
+    await sessionStore.startPlainQueue();
+  } catch (e) {
+    sessionStore.error = String(e);
   }
 }
 
@@ -584,6 +609,8 @@ function onAudioFilesPicked(event: Event) {
 const DOCUMENT_EXTENSIONS = [
   "pdf",
   "docx",
+  "doc",
+  "odt",
   "xlsx",
   "xlsm",
   "xls",
@@ -735,7 +762,27 @@ async function addAttachments() {
     } else {
       attachments.value.push({ id, path, name: fileName(path), kind: "document", status: "loading" });
       extractDocument(id, path);
+      void addDocumentImages(path);
     }
+  }
+}
+
+// Imagens embutidas (docx, odt, pdf, doc) viram anexos de imagem, pro modelo
+// ver o que elas mostram. Só com vision ligada — sem ela a imagem não tem onde
+// ir, então nem é extraída.
+async function addDocumentImages(path: string) {
+  if (!visionSupported.value) return;
+  const imagens = await api.extractAttachmentImages(path).catch(() => [] as string[]);
+  for (const [index, cru] of imagens.entries()) {
+    const dataUrl = await api.optimizeImageDataUrl(cru).catch(() => cru);
+    attachments.value.push({
+      id: crypto.randomUUID(),
+      path: "",
+      name: `${fileName(path)} · imagem ${index + 1}`,
+      kind: "image",
+      status: "ready",
+      dataUrl,
+    });
   }
 }
 
@@ -1394,14 +1441,31 @@ watch(
           <span class="msi">{{ taskQueueRunning ? "stop" : "play_arrow" }}</span>
         </button>
         <button
-          v-if="sessionStore.currentSession?.plain_queue_enabled"
+          v-if="sessionStore.currentSession"
           class="attach-btn"
-          :class="{ 'task-queue-running': sessionStore.currentId && sessionStore.plainQueueRunningIds.has(sessionStore.currentId) }"
-          v-tooltip.top="$t('plainQueue.buttonTooltip')"
-          @click="plainQueueVisible = true"
+          v-tooltip.top="$t('plainQueue.memoryTooltip')"
+          @click="sessionMemoryVisible = true"
         >
-          <span class="msi">memory</span>
+          <span class="msi">psychology</span>
         </button>
+        <template v-if="sessionStore.currentSession?.plain_queue_enabled">
+          <button
+            class="attach-btn"
+            :class="{ 'task-queue-running': plainQueueRunning }"
+            :disabled="!plainQueueRunning && !plainQueueCanStart"
+            v-tooltip.top="plainQueueRunning ? $t('plainQueue.stop') : (plainQueueCanStart ? $t('plainQueue.start') : $t('plainQueue.requirements'))"
+            @click="togglePlainQueue"
+          >
+            <span class="msi">{{ plainQueueRunning ? "stop" : "play_arrow" }}</span>
+          </button>
+          <button
+            class="attach-btn"
+            v-tooltip.top="$t('plainQueue.title')"
+            @click="plainQueueVisible = true"
+          >
+            <span class="msi">settings</span>
+          </button>
+        </template>
         <Popover ref="plusMenuRef">
           <div class="plus-menu">
             <button class="plus-menu-item" @click="addAttachments(); plusMenuRef?.hide()">
@@ -1664,6 +1728,7 @@ watch(
     </Dialog>
 
     <PlainQueueDialog v-model:visible="plainQueueVisible" />
+    <SessionMemoryDialog v-model:visible="sessionMemoryVisible" />
 
     <Dialog
       v-model:visible="longHorizonSettingsVisible"

@@ -84,6 +84,7 @@ pub fn create_session(
         fixed_context: FixedContextState::default(),
         task_queue_enabled: false,
         plain_queue_enabled: false,
+        plain_queue_path: None,
         context_economy: false,
     };
     let dir = session_dir(app_data_dir, &id);
@@ -481,26 +482,36 @@ pub fn update_plain_queue_enabled(app_data_dir: &PathBuf, id: &str, enabled: boo
     Ok(session)
 }
 
-pub fn read_plain_queue(app_data_dir: &PathBuf, id: &str) -> Result<String> {
-    let path = session_dir(app_data_dir, id).join("plain_queue").join("tarefas.json");
-    match std::fs::read_to_string(&path) {
-        Ok(contents) => Ok(contents),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(error) => Err(anyhow::anyhow!("Não foi possível ler {}: {error}", path.display())),
+/// Grava (ou limpa, com `None`/vazio) o caminho do JSON da fila sem Long Horizon.
+pub fn update_plain_queue_path(app_data_dir: &PathBuf, id: &str, path: Option<String>) -> Result<Session> {
+    let mut session = get_session(app_data_dir, id)?;
+    session.plain_queue_path = path.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+    let dir = session_dir(app_data_dir, id);
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join("session.json"), serde_json::to_string_pretty(&session)?)?;
+    Ok(session)
+}
+
+/// Caminho configurado da fila; erro claro quando o usuário ainda não escolheu um.
+fn configured_plain_queue_path(app_data_dir: &PathBuf, id: &str) -> Result<PathBuf> {
+    let session = get_session(app_data_dir, id)?;
+    match session.plain_queue_path {
+        Some(path) => Ok(PathBuf::from(path)),
+        None => Err(anyhow::anyhow!("Informe o caminho do arquivo JSON da fila.")),
     }
 }
 
-pub fn write_plain_queue(app_data_dir: &PathBuf, id: &str, json_text: &str) -> Result<()> {
-    crate::agent::task_queue::parse_tasks(json_text)?;
-    let dir = session_dir(app_data_dir, id).join("plain_queue");
-    std::fs::create_dir_all(&dir)?;
-    write_atomic(&dir.join("tarefas.json"), json_text)
+/// Lê o JSON da fila no caminho configurado.
+pub fn read_plain_queue(app_data_dir: &PathBuf, id: &str) -> Result<String> {
+    let path = configured_plain_queue_path(app_data_dir, id)?;
+    std::fs::read_to_string(&path)
+        .map_err(|error| anyhow::anyhow!("Não foi possível ler {}: {error}", path.display()))
 }
 
+/// Regrava o JSON da fila no caminho configurado (usado para marcar `testar`).
 pub fn write_plain_queue_tasks(app_data_dir: &PathBuf, id: &str, tasks: &[serde_json::Value]) -> Result<()> {
-    let dir = session_dir(app_data_dir, id).join("plain_queue");
-    std::fs::create_dir_all(&dir)?;
-    write_atomic(&dir.join("tarefas.json"), &crate::agent::task_queue::serialize_tasks(tasks))
+    let path = configured_plain_queue_path(app_data_dir, id)?;
+    write_atomic(&path, &crate::agent::task_queue::serialize_tasks(tasks))
 }
 
 /// Memória da sessão (`agent::plain_queue`): fatos desta sessão só. Sem limite

@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "resources": {
+      "resources/node-runtime/bin/win-x64/node.exe": "node-runtime/bin/win-x64/node.exe"
+    }
+  }
+}

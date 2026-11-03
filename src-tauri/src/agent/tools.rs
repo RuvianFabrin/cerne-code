@@ -202,6 +202,11 @@ pub fn image_gen_tool_specs() -> Vec<ToolSpec> {
 pub fn project_tool_specs() -> Vec<ToolSpec> {
     vec![
         spec(
+            "check_libreoffice",
+            "Verifica se o LibreOffice esta instalado nesta maquina. Use antes de ler um .doc ou converter um documento; se nao estiver, avise o usuario para instalar em https://www.libreoffice.org/download em vez de tentar outro caminho.",
+            json!({ "type": "object", "properties": {}, "required": [] }),
+        ),
+        spec(
             "read_file",
             // Exemplo neutro de SO (Tarefa 4.2 do port): mostra os dois
             // formatos em vez de ensinar so o Windows.
@@ -397,6 +402,31 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
                     }
                 },
                 "required": ["path", "sheets"]
+            }),
+        ),
+        spec(
+            "edit_docx",
+            "Edita o texto de um .docx que ja existe: troca um trecho por outro, sem mexer em imagens, estilos ou no resto do arquivo. O trecho precisa estar dentro de um unico paragrafo e aparecer exatamente uma vez no documento (senao a ferramenta recusa). Use read_file antes para ver o texto exato. So funciona no modo YOLO.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Caminho ABSOLUTO (preferido) do arquivo .docx a editar" },
+                    "old_str": { "type": "string", "description": "Trecho exato a substituir (um unico paragrafo, aparece uma vez)" },
+                    "new_str": { "type": "string", "description": "Texto que entra no lugar" }
+                },
+                "required": ["path", "old_str", "new_str"]
+            }),
+        ),
+        spec(
+            "run_node_script",
+            "Roda um script JavaScript (Node) com o runtime embutido no Cerne Code, sem o usuario instalar nada. Bibliotecas disponiveis: docx (Word .docx), pptxgenjs (PowerPoint .pptx) e pdf-lib (PDF: juntar, dividir, girar, marca d'agua, formularios, criar). Escreva o script antes com write_file e passe o caminho aqui. O script grava os arquivos de saida no disco (use caminhos ABSOLUTOS). Roda no diretorio do projeto, com limite de 120 segundos. Nao tem acesso a internet nem a outros programas do sistema.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "script": { "type": "string", "description": "Caminho ABSOLUTO (preferido) do arquivo .js a rodar" },
+                    "args": { "type": "array", "items": { "type": "string" }, "description": "Argumentos opcionais passados ao script (process.argv)" }
+                },
+                "required": ["script"]
             }),
         ),
         spec(
@@ -1163,7 +1193,15 @@ async fn execute_project_tool(
                 .as_str()
                 .ok_or_else(|| anyhow!("path obrigatorio"))?;
             let path = resolve_read_path(project_root, extra_read_paths, rel)?;
-            let content = read_project_file(&path, rel)?;
+            // Documentos binários (Word, LibreOffice, PDF, planilhas) viram texto
+            // extraído; sem isso o modelo recebia bytes do zip/PDF como texto.
+            let content = match path.extension().and_then(|e| e.to_str()).map(str::to_lowercase).as_deref() {
+                Some("docx" | "odt" | "doc" | "pdf" | "ods" | "xlsx" | "xlsm" | "xls") => {
+                    crate::attachments::extract_text(&path)
+                        .map_err(|e| anyhow!("nao foi possivel extrair texto de {rel}: {e}"))?
+                }
+                _ => read_project_file(&path, rel)?,
+            };
             let offset = args["offset"].as_u64().map(|n| n as usize);
             let limit = args["limit"].as_u64().map(|n| n as usize);
             let all_lines: Vec<&str> = content.lines().collect();
@@ -1214,6 +1252,51 @@ async fn execute_project_tool(
             } else {
                 Ok(ok(matches.join("\n")))
             }
+        }
+        "run_node_script" => {
+            let script = args["script"]
+                .as_str()
+                .ok_or_else(|| anyhow!("script obrigatorio"))?;
+            let script_path = resolve_path(project_root, script, execution_mode, writable_extra_roots)?;
+            if !script_path.is_file() {
+                return Err(anyhow!(
+                    "script nao encontrado: {}. Salve o arquivo com write_file antes de rodar.",
+                    script_path.display()
+                ));
+            }
+            let runtime = crate::node_runtime::runtime_dir()
+                .ok_or_else(|| anyhow!("runtime Node embutido nao encontrado nesta instalacao"))?;
+            let extra_args: Vec<String> = args["args"]
+                .as_array()
+                .map(|items| items.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default();
+            const RUN_NODE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+            let mut cmd = tokio::process::Command::new(crate::node_runtime::node_binary(&runtime));
+            cmd.arg(&script_path)
+                .args(&extra_args)
+                .env("NODE_PATH", crate::node_runtime::node_path(&runtime))
+                .current_dir(project_root)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            super::shell::apply_creation_flags(&mut cmd);
+            let child = cmd.spawn()?;
+            let result = match tokio::time::timeout(RUN_NODE_TIMEOUT, child.wait_with_output()).await {
+                Ok(output) => {
+                    let output = output?;
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    format!(
+                        "exit_code: {}\nstdout:\n{}\nstderr:\n{}",
+                        output.status.code().unwrap_or(-1),
+                        truncate(&stdout, 8000),
+                        truncate(&stderr, 4000)
+                    )
+                }
+                // kill_on_drop encerra o processo Node quando o future é descartado.
+                Err(_) => "Tempo limite atingido (120s). O script foi encerrado.".to_string(),
+            };
+            Ok(ok(result))
         }
         "run_command" => {
             let command = args["command"]
@@ -1380,6 +1463,37 @@ async fn execute_project_tool(
             }
             workbook.save(&target)?;
             Ok(ok(format!("Arquivo Excel criado: {}", target.display())))
+        }
+        "edit_docx" => {
+            let rel = args["path"]
+                .as_str()
+                .ok_or_else(|| anyhow!("path obrigatorio"))?;
+            let old_str = args["old_str"]
+                .as_str()
+                .ok_or_else(|| anyhow!("old_str obrigatorio"))?;
+            let new_str = args["new_str"]
+                .as_str()
+                .ok_or_else(|| anyhow!("new_str obrigatorio"))?;
+            if *execution_mode != crate::models::ExecutionMode::Yolo {
+                return Ok(ok(
+                    "edit_docx so funciona no modo YOLO (o .docx e gravado direto no disco, sem sandbox). Peca ao usuario para ligar o modo YOLO nesta sessao, ou gere um .docx novo com create_word.".to_string(),
+                ));
+            }
+            let target = resolve_path(project_root, rel, execution_mode, writable_extra_roots)?;
+            if !target.exists() {
+                return Ok(ok(format!("arquivo nao encontrado: {rel}")));
+            }
+            match crate::office::edit_docx_text(&target, old_str, new_str) {
+                Ok(_) => Ok(ok(format!("Trecho substituido em {}.", target.display()))),
+                Err(e) => Ok(ok(format!("nao foi possivel editar {rel}: {e}"))),
+            }
+        }
+        "check_libreoffice" => {
+            if crate::office::libreoffice_disponivel() {
+                Ok(ok("LibreOffice instalado e disponivel.".to_string()))
+            } else {
+                Ok(ok(format!("LibreOffice NAO encontrado. {}", crate::office::LIBREOFFICE_AUSENTE)))
+            }
         }
         "create_word" => {
             use docx_rust::document::{Paragraph, Table, TableCell, TableRow};
@@ -2537,6 +2651,28 @@ mod tests {
         let (decoded, _) = crate::encoding::decode(&written_bytes);
         assert_eq!(decoded, "let x = cha;\n");
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn run_node_script_grava_docx_no_projeto() {
+        let dir = scratch_dir();
+        let script = dir.join("gera.js");
+        fs::write(
+            &script,
+            r#"const fs = require("fs");
+const { Document, Packer, Paragraph, TextRun } = require("docx");
+const doc = new Document({ sections: [{ children: [new Paragraph({ children: [new TextRun("ola")] })] }] });
+Packer.toBuffer(doc).then((buf) => { fs.writeFileSync("saida.docx", buf); console.log("gravado"); });
+"#,
+        )
+        .unwrap();
+        let args = json!({ "script": script.to_string_lossy() });
+        let outcome = execute_project_tool("run_node_script", &args, &dir, &[], &[], &crate::agent::background::BackgroundJobs::default(), &crate::models::ExecutionMode::Auto, &dir, "test-session")
+            .await
+            .unwrap();
+        assert!(outcome.observation.contains("exit_code: 0"), "{}", outcome.observation);
+        assert!(outcome.observation.contains("gravado"), "{}", outcome.observation);
+        assert!(dir.join("saida.docx").is_file());
     }
 
     #[tokio::test]

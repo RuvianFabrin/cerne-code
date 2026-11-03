@@ -715,9 +715,12 @@ pub struct Session {
     pub task_queue_enabled: bool,
     /// Fila de tarefas SEM Long Horizon (ver `agent::plain_queue`): contexto
     /// normal, sem limites, salva a memória da sessão e compacta entre tarefas.
-    /// Lista própria em `plain_queue/tarefas.json`, separada da fila acima.
+    /// Lista própria: fica no arquivo JSON que o usuário escolhe em `plain_queue_path`.
     #[serde(default)]
     pub plain_queue_enabled: bool,
+    /// Caminho absoluto do JSON da fila sem Long Horizon (escolhido pelo usuário).
+    #[serde(default)]
+    pub plain_queue_path: Option<String>,
     /// Context Mode tools + lossless session recall; opt-in for old/new chats.
     #[serde(default)]
     pub context_economy: bool,

@@ -966,6 +966,14 @@ export const useSessionStore = defineStore("session", {
       if (idx !== -1) this.sessions[idx] = updated;
     },
 
+    async updatePlainQueuePath(path: string | null) {
+      if (!this.currentId) return;
+      const updated = await api.updateSessionPlainQueuePath(this.currentId, path);
+      this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === updated.id);
+      if (idx !== -1) this.sessions[idx] = updated;
+    },
+
     async startPlainQueue() {
       if (!this.currentId) return;
       this.plainQueueRunningIds.add(this.currentId);

@@ -190,6 +190,7 @@ export interface Session {
   task_queue_enabled: boolean;
   /** Fila de tarefas sem Long Horizon (memória da sessão + compactação entre tarefas). */
   plain_queue_enabled?: boolean;
+  plain_queue_path?: string | null;
   context_economy: boolean;
 }
 
@@ -584,9 +585,8 @@ export const api = {
   stopTaskQueue: (sessionId: string) => invoke<void>("stop_task_queue", { sessionId }),
   updateSessionPlainQueueEnabled: (id: string, enabled: boolean) =>
     invoke<Session>("update_session_plain_queue_enabled", { id, enabled }),
-  readSessionPlainQueue: (id: string) => invoke<string>("read_session_plain_queue", { id }),
-  writeSessionPlainQueue: (id: string, jsonText: string) =>
-    invoke<void>("write_session_plain_queue", { id, jsonText }),
+  updateSessionPlainQueuePath: (id: string, path: string | null) =>
+    invoke<Session>("update_session_plain_queue_path", { id, path }),
   readSessionMemory: (id: string) => invoke<string>("read_session_memory", { id }),
   writeSessionMemory: (id: string, conteudo: string) =>
     invoke<void>("write_session_memory", { id, conteudo }),
@@ -635,6 +635,7 @@ export const api = {
   testVision: (kind: string, customProviderId: string | null, model: string) =>
     invoke<boolean>("test_vision", { kind, customProviderId, model }),
   readImageAsDataUrl: (path: string, original = false) => invoke<string>("read_image_as_data_url", { path, original }),
+  extractAttachmentImages: (path: string) => invoke<string[]>("extract_attachment_images", { path }),
   /** Otimiza (redimensiona + JPEG) um data URI que só existe no navegador —
    * caminho de quem cola imagem com Ctrl+V. Se falhar, o backend devolve o
    * original, então nunca perde a imagem. */

@@ -115,7 +115,7 @@ fn is_doom_loop(recent_calls: &[(String, String)]) -> bool {
 /// a ferramenta opera em arquivos (read_file, write_file, edit_file, etc.).
 fn extract_file_path(tool_name: &str, args: &serde_json::Value) -> Option<String> {
     match tool_name {
-        "read_file" | "write_file" | "edit_file" | "ast_edit" | "ast_grep" => {
+        "read_file" | "write_file" | "edit_file" | "edit_docx" | "ast_edit" | "ast_grep" => {
             args["path"].as_str().map(|s| s.to_string())
         }
         "list_dir" | "grep" => args["path"].as_str().map(|s| s.to_string()),
@@ -939,10 +939,11 @@ pub async fn run_turn(
             prompt.push_str(&state.config.lock().unwrap().long_horizon.system_prompt);
             prompt.push_str(long_horizon::dynamic_prompt_block());
         }
+        // Memória da sessão inteira no prompt, em qualquer sessão: fica fora de
+        // `messages`, então a compactação nunca a alcança.
+        prompt.push_str(&plain_queue::memory_prompt_block(&app_data_dir, &session_id)?);
         if session.plain_queue_enabled {
-            // Memória da sessão inteira no prompt: fica fora de `messages`,
-            // então a compactação nunca a alcança.
-            prompt.push_str(&plain_queue::memory_prompt_block(&app_data_dir, &session_id)?);
+            prompt.push_str(&plain_queue::queue_prompt_block());
         }
         if session.task_queue_enabled {
             prompt.push_str("\n\n");
@@ -1134,9 +1135,7 @@ pub async fn run_turn(
     if session.long_horizon.enabled || session.task_queue_enabled {
         tool_specs.extend(tools::long_horizon_tool_specs());
     }
-    if session.plain_queue_enabled {
-        tool_specs.extend(plain_queue::tool_specs());
-    }
+    tool_specs.extend(plain_queue::tool_specs());
     if !state.config.lock().unwrap().image_gen.base_url.trim().is_empty() {
         tool_specs.extend(tools::image_gen_tool_specs());
     }
@@ -2379,7 +2378,7 @@ pub async fn run_turn(
             };
 
             if result.is_ok() && matches!(call.function.name.as_str(),
-                "write_file" | "edit_file" | "ast_edit" | "run_command" | "task" | "run_pipeline") {
+                "write_file" | "edit_file" | "edit_docx" | "ast_edit" | "run_command" | "run_node_script" | "task" | "run_pipeline") {
                 lh_project_work = true;
             }
             let mut observation = match &result {
