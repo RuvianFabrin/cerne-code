@@ -156,6 +156,7 @@ impl CliBackendId {
                 }
                 args.push("--color".into());
                 args.push("never".into());
+                args.push("--json".into());
             }
             CliBackendId::Gemini => {
                 args.push("--output-format".into());
@@ -168,7 +169,8 @@ impl CliBackendId {
                 }
             }
             CliBackendId::Pi => {
-                args.extend(["--print".into(), "--no-session".into()]);
+                // Agente do CLI: a sessão é guardada pelo próprio Pi (`--session-id`).
+                args.push("--print".into());
                 if !full_access { args.extend(["--tools".into(), "read,grep,find,ls".into()]); }
                 if let Some(m) = model { args.extend(["--model".into(), m.into()]); }
             }
@@ -404,6 +406,15 @@ const DEFAULT_TIMEOUT_SECS: u64 = 300;
 /// resposta final. Nunca faz streaming de verdade (os CLIs não garantem um
 /// formato incremental limpo em modo não-interativo) — o turno inteiro do
 /// CLI roda, e o texto completo chega de uma vez quando o processo termina.
+/// Resposta de um turno no modo Agente: o texto final e, quando o CLI expõe,
+/// o id da sessão dele (para o próximo turno retomar) e o uso de tokens.
+pub struct AgentReply {
+    pub content: String,
+    pub cli_session_id: Option<String>,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+}
+
 pub async fn dispatch(
     backend: CliBackendId,
     prompt: &str,
@@ -412,10 +423,32 @@ pub async fn dispatch(
     cfg: &ExternalCliConfig,
     cwd: Option<&std::path::Path>,
     attachments: &[crate::models::ChatMessage],
-) -> Result<String> {
+    resume: Option<&str>,
+) -> Result<AgentReply> {
     let bin = resolve_bin(backend, cfg);
-    let mut args = backend.build_args(model, full_access);
+    // O CLI guarda histórico e contexto da sessão: retomamos o id dele em vez
+    // de reenviar a conversa. Outros CLIs ainda abrem uma sessão por turno.
+    // Pi aceita o id no primeiro turno (`--session-id`), então o Cerne gera o
+    // id antes de chamar. Os demais CLIs devolvem o id na própria saída.
+    let cli_id: Option<String> = match (backend, resume) {
+        (_, Some(id)) => Some(id.to_string()),
+        (CliBackendId::Pi, None) => Some(uuid::Uuid::new_v4().to_string()),
+        _ => None,
+    };
+    let mut args = match (backend, resume) {
+        (CliBackendId::Codex, Some(id)) => codex_resume_args(model, full_access, id),
+        _ => backend.build_args(model, full_access),
+    };
     args.extend(cfg.override_for(backend).extra_args.iter().cloned());
+    if let Some(id) = &cli_id {
+        match backend {
+            CliBackendId::Claude | CliBackendId::Gemini | CliBackendId::Qwen if resume.is_some() => {
+                args.extend(["--resume".into(), id.clone()]);
+            }
+            CliBackendId::Pi => args.extend(["--session-id".into(), id.clone()]),
+            _ => {}
+        }
+    }
     let has_images = attachments.iter().any(|m| !m.images.is_empty());
     let mut input_payload = prompt.to_owned();
     let mut image_workspace = None;
@@ -449,6 +482,11 @@ pub async fn dispatch(
             }
             _ => return Err(anyhow!("Imagens anexadas estao disponiveis nos adaptadores Claude e Codex")),
         }
+    }
+
+    // `exec resume` sem prompt não lê stdin de forma confiável: marcador `-` explícito.
+    if matches!(backend, CliBackendId::Codex) && resume.is_some() && !has_images {
+        args.push("-".into());
     }
 
     if matches!(backend.prompt_via(), PromptVia::Arg) {
@@ -498,15 +536,42 @@ pub async fn dispatch(
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
 
     drop(image_workspace);
+    let mut cli_session_id = None;
+    let (mut prompt_tokens, mut completion_tokens) = (0u32, 0u32);
     let content = match backend.output_parse() {
-        OutputParse::PlainText => stdout.trim().to_string(),
+        OutputParse::PlainText => {
+            cli_session_id = cli_id.clone();
+            stdout.trim().to_string()
+        }
         OutputParse::ClaudeJson => {
-            if has_images {
-                parse_claude_json(&super::cli_inference::claude_envelope(&stdout)?.to_string())?
-            } else { parse_claude_json(&stdout)? }
+            let envelope = if has_images {
+                super::cli_inference::claude_envelope(&stdout)?
+            } else {
+                serde_json::from_str::<serde_json::Value>(&stdout)
+                    .map_err(|e| anyhow!("resposta do Claude CLI nao e JSON valido: {e}"))?
+            };
+            cli_session_id = envelope["session_id"].as_str().map(str::to_owned);
+            prompt_tokens = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"]
+                .iter()
+                .map(|k| envelope["usage"][k].as_u64().unwrap_or(0))
+                .sum::<u64>()
+                .min(u32::MAX as u64) as u32;
+            completion_tokens = envelope["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32;
+            parse_claude_json(&envelope.to_string())?
         },
-        OutputParse::GeminiJson => parse_gemini_json(&stdout)?,
+        OutputParse::GeminiJson => {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&stdout) {
+                cli_session_id = find_session_id(&value).or(cli_session_id);
+            }
+            parse_gemini_json(&stdout)?
+        }
         OutputParse::LastMessageFile => {
+            if matches!(backend, CliBackendId::Codex) {
+                let (id, input, output) = codex_jsonl_meta(&stdout)?;
+                cli_session_id = id;
+                prompt_tokens = input;
+                completion_tokens = output;
+            }
             let from_file = tmp_path
                 .as_ref()
                 .and_then(|p| std::fs::read_to_string(p).ok())
@@ -529,7 +594,65 @@ pub async fn dispatch(
         return Err(anyhow!("{} nao devolveu resposta: {reason}", backend.label()));
     }
 
-    Ok(content)
+    Ok(AgentReply { content, cli_session_id, prompt_tokens, completion_tokens })
+}
+
+/// Argumentos de `codex exec resume <id>`. Esse subcomando não aceita
+/// `--sandbox`, então a política vai por `-c sandbox_mode`.
+fn codex_resume_args(model: Option<&str>, full_access: bool, id: &str) -> Vec<String> {
+    let mut args: Vec<String> = [
+        "--ask-for-approval",
+        "never",
+        "exec",
+        "resume",
+        "--skip-git-repo-check",
+        "--json",
+        "-c",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    args.push(format!(
+        "sandbox_mode=\"{}\"",
+        if full_access { "danger-full-access" } else { "read-only" }
+    ));
+    if let Some(m) = model {
+        args.extend(["-m".into(), m.into()]);
+    }
+    args.push(id.to_string());
+    args
+}
+
+/// Lê o id da thread (`thread.started`) e o uso (`turn.completed`) do JSONL
+/// do `codex exec --json`. Falha explícita quando o turno falha.
+fn codex_jsonl_meta(stdout: &str) -> Result<(Option<String>, u32, u32)> {
+    let (mut id, mut input, mut output) = (None, 0u32, 0u32);
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        match event["type"].as_str() {
+            Some("thread.started") => id = event["thread_id"].as_str().map(str::to_owned),
+            Some("turn.completed") => {
+                input = event["usage"]["input_tokens"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32;
+                output = event["usage"]["output_tokens"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32;
+            }
+            Some("turn.failed") => return Err(anyhow!(
+                "Codex nao concluiu a inferencia: {}",
+                event["error"]["message"].as_str().unwrap_or("erro desconhecido")
+            )),
+            _ => {}
+        }
+    }
+    Ok((id, input, output))
+}
+
+/// Erro que indica que o CLI não conhece mais a sessão guardada (apagada ou
+/// expirada): o próximo turno deve abrir uma sessão nova.
+pub fn is_missing_session_error(message: &str) -> bool {
+    let m = message.to_lowercase();
+    m.contains("no conversation found")
+        || m.contains("no session found")
+        || m.contains("session not found")
+        || m.contains("thread not found")
 }
 
 fn parse_claude_json(stdout: &str) -> Result<String> {
@@ -553,12 +676,30 @@ fn parse_claude_json(stdout: &str) -> Result<String> {
 fn parse_gemini_json(stdout: &str) -> Result<String> {
     let value: serde_json::Value =
         serde_json::from_str(stdout).map_err(|e| anyhow!("resposta do CLI nao e JSON valido: {e}"))?;
-    Ok(value
-        .get("response")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default()
-        .trim()
-        .to_string())
+    // Qwen pode devolver um array de eventos; o resultado fica no evento `result`.
+    let text = match &value {
+        serde_json::Value::Array(items) => items
+            .iter()
+            .rev()
+            .find(|v| v["type"] == "result")
+            .and_then(|v| v["result"].as_str()),
+        _ => value.get("response").and_then(|v| v.as_str()),
+    };
+    Ok(text.unwrap_or_default().trim().to_string())
+}
+
+/// Procura o `session_id` na saída JSON (objeto ou array de eventos), que é
+/// como Gemini e Qwen informam a sessão para `--resume`.
+fn find_session_id(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::Object(map) => map
+            .get("session_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+            .or_else(|| map.values().find_map(find_session_id)),
+        serde_json::Value::Array(items) => items.iter().find_map(find_session_id),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -695,6 +836,43 @@ mod tests {
     fn parse_gemini_json_le_o_campo_response() {
         let content = parse_gemini_json(r#"{"response": "oi"}"#).unwrap();
         assert_eq!(content, "oi");
+    }
+
+    #[test]
+    fn parse_gemini_json_aceita_array_de_eventos_do_qwen() {
+        let out = r#"[{"type":"system","subtype":"session_start","session_id":"s1"},{"type":"result","result":"pronto"}]"#;
+        assert_eq!(parse_gemini_json(out).unwrap(), "pronto");
+        let value: serde_json::Value = serde_json::from_str(out).unwrap();
+        assert_eq!(find_session_id(&value).as_deref(), Some("s1"));
+    }
+
+    #[test]
+    fn find_session_id_le_objeto_e_ignora_ausencia() {
+        let obj: serde_json::Value = serde_json::from_str(r#"{"session_id":"abc","response":"x"}"#).unwrap();
+        assert_eq!(find_session_id(&obj).as_deref(), Some("abc"));
+        let none: serde_json::Value = serde_json::from_str(r#"{"response":"x"}"#).unwrap();
+        assert_eq!(find_session_id(&none), None);
+    }
+
+    #[test]
+    fn codex_resume_usa_config_para_sandbox_e_id_no_fim() {
+        let args = codex_resume_args(Some("gpt-5.5"), false, "thread-1");
+        assert_eq!(args.last().map(String::as_str), Some("thread-1"));
+        assert!(args.contains(&"resume".to_string()));
+        assert!(args.contains(&"sandbox_mode=\"read-only\"".to_string()));
+        assert!(!args.contains(&"--sandbox".to_string()));
+    }
+
+    #[test]
+    fn pi_agente_nao_desliga_a_sessao() {
+        let args = CliBackendId::Pi.build_args(None, true);
+        assert!(!args.contains(&"--no-session".to_string()));
+    }
+
+    #[test]
+    fn detecta_sessao_inexistente_no_cli() {
+        assert!(is_missing_session_error("Claude nao concluiu a inferencia: No conversation found with session ID x"));
+        assert!(!is_missing_session_error("timeout de rede"));
     }
 
     #[test]

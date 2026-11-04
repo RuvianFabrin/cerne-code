@@ -943,9 +943,11 @@ mod tests {
             &ExternalCliConfig::default(),
             Some(&work.0),
             std::slice::from_ref(&prompt),
+            None,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .content;
         assert!(result.to_lowercase().contains("red"), "{result}");
     }
 

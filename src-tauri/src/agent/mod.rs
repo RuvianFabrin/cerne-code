@@ -2669,12 +2669,27 @@ async fn run_turn_external_cli(
         },
     );
 
-    let dispatch_result = external_cli::dispatch(backend, &user_text, model, full_access, &cli_cfg, session.project_root.as_deref().map(Path::new), &messages[messages.len()-1..]).await;
+    // Turnos seguintes retomam a sessão do próprio CLI: ele já tem o histórico,
+    // o contexto e as ferramentas. Aqui só vai a mensagem nova.
+    let resume = session.external_cli_session_id.clone();
+    let dispatch_result = external_cli::dispatch(backend, &user_text, model, full_access, &cli_cfg, session.project_root.as_deref().map(Path::new), &messages[messages.len()-1..], resume.as_deref()).await;
 
-    // Erro propaga via `?` — o caller (`lib.rs::send_message`) já emite
-    // `agent:error` pra qualquer `Err` de `run_turn`, igual ao caminho
-    // normal (não duplica aqui).
-    let content = dispatch_result?;
+    let reply = match dispatch_result {
+        Ok(reply) => reply,
+        Err(error) => {
+            // Sessão apagada no CLI: o próximo envio abre uma sessão nova.
+            if resume.is_some() && external_cli::is_missing_session_error(&error.to_string()) {
+                sessions::update_external_cli_session(&app_data_dir, &session_id, None)?;
+            }
+            // Erro propaga via `?` — o caller (`lib.rs::send_message`) já emite
+            // `agent:error` pra qualquer `Err` de `run_turn`.
+            return Err(error);
+        }
+    };
+    let content = reply.content.clone();
+    if reply.cli_session_id.is_some() && reply.cli_session_id != resume {
+        session = sessions::update_external_cli_session(&app_data_dir, &session_id, reply.cli_session_id.clone())?;
+    }
 
     messages.push(ChatMessage {
         role: "assistant".to_string(),
@@ -2726,8 +2741,8 @@ async fn run_turn_external_cli(
             session_id: session_id.clone(),
             turn,
             elapsed_ms: turn_start.elapsed().as_millis() as u64,
-            prompt_tokens: 0,
-            completion_tokens: 0,
+            prompt_tokens: reply.prompt_tokens,
+            completion_tokens: reply.completion_tokens,
         },
     );
     let _ = app.emit(

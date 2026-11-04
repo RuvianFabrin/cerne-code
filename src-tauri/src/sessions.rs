@@ -58,6 +58,7 @@ pub fn create_session(
         custom_provider_id,
         external_cli_backend,
         external_cli_mode: Default::default(),
+        external_cli_session_id: None,
         extra_read_paths: Vec::new(),
         execution_mode: ExecutionMode::default(),
         // Pensamento sempre desligado por padrão — o usuário liga manualmente
@@ -106,6 +107,13 @@ pub fn get_session(app_data_dir: &PathBuf, id: &str) -> Result<Session> {
 pub fn update_cli_mode(app_data_dir: &PathBuf, id: &str, mode: crate::agent::cli_inference::CliMode) -> Result<Session> {
     let mut session = get_session(app_data_dir, id)?;
     session.external_cli_mode = mode;
+    write_atomic(&session_dir(app_data_dir, id).join("session.json"), &serde_json::to_string_pretty(&session)?)?;
+    Ok(session)
+}
+
+pub fn update_external_cli_session(app_data_dir: &PathBuf, id: &str, cli_session_id: Option<String>) -> Result<Session> {
+    let mut session = get_session(app_data_dir, id)?;
+    session.external_cli_session_id = cli_session_id;
     write_atomic(&session_dir(app_data_dir, id).join("session.json"), &serde_json::to_string_pretty(&session)?)?;
     Ok(session)
 }

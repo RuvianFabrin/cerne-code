@@ -621,6 +621,12 @@ pub struct Session {
     pub external_cli_backend: Option<String>,
     #[serde(default)]
     pub external_cli_mode: crate::agent::cli_inference::CliMode,
+    /// Id da sessão mantida pelo próprio CLI no modo Agente (ex: `claude
+    /// --resume <id>`). Capturado no primeiro turno e reusado nos seguintes,
+    /// para o CLI cuidar do histórico e do contexto. Vazio = próximo turno
+    /// abre uma sessão nova no CLI.
+    #[serde(default)]
+    pub external_cli_session_id: Option<String>,
     /// Pastas extras (fora de `project_root`) que as ferramentas podem acessar
     /// via caminho absoluto. Cada entrada tem um modo: `Read` (só leitura —
     /// `read_file`/`list_dir`/`grep`/`ast_grep`) ou `ReadWrite` (leitura +
