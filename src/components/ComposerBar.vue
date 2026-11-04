@@ -695,7 +695,10 @@ async function refreshVisionSupport(force = false) {
     return;
   }
   const cache = loadVisionCache();
-  if (!force && key in cache) {
+  // CLI: a checagem é local (sem HTTP) e o resultado depende do backend; não
+  // reaproveita o cache de uma versão anterior do app.
+  const isCli = sessionStore.currentSession?.provider === "cli";
+  if (!force && !isCli && key in cache) {
     visionSupported.value = cache[key];
     visionState.value = cache[key] ? "supported" : "unsupported";
     return;

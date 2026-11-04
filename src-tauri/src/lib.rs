@@ -1548,6 +1548,18 @@ async fn check_vision_support(
             &session.model,
         ));
     }
+    if session.provider == ProviderKind::Cli {
+        // CLI não tem config HTTP. Claude e Codex recebem imagem nos dois modos
+        // (Agente e Provedor); Pi, Gemini e Qwen ainda não.
+        let backend = session
+            .external_cli_backend
+            .as_deref()
+            .and_then(agent::external_cli::CliBackendId::from_id);
+        return Ok(matches!(
+            backend,
+            Some(agent::external_cli::CliBackendId::Claude | agent::external_cli::CliBackendId::Codex)
+        ));
+    }
     let (cfg, api_key) = agent::provider_config_for(
         &session.provider,
         &state,
