@@ -228,6 +228,111 @@ pub fn ensure_playwright_default(app_data_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Perfil de navegador do Playwright: uma pasta propria no app, com as contas e
+/// senhas salvas nela. Cada sessao escolhe um (ou usa o padrao).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BrowserProfile {
+    pub id: String,
+    pub label: String,
+    /// "chrome" ou "msedge".
+    pub browser: String,
+}
+
+fn browser_profiles_path(app_data_dir: &Path) -> PathBuf {
+    app_data_dir.join("browser-profiles.json")
+}
+
+pub fn load_browser_profiles(app_data_dir: &Path) -> Vec<BrowserProfile> {
+    std::fs::read_to_string(browser_profiles_path(app_data_dir))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn save_browser_profiles(app_data_dir: &Path, profiles: &[BrowserProfile]) -> Result<()> {
+    std::fs::create_dir_all(app_data_dir)?;
+    std::fs::write(browser_profiles_path(app_data_dir), serde_json::to_string_pretty(profiles)?)?;
+    Ok(())
+}
+
+/// Cria um perfil novo. O id vira o nome da pasta e do servidor MCP, entao so
+/// tem letras minusculas, numeros e hifen, com um sufixo aleatorio pra nao colidir.
+pub fn create_browser_profile(app_data_dir: &Path, label: &str, browser: &str) -> Result<BrowserProfile> {
+    let label = label.trim();
+    anyhow::ensure!(!label.is_empty() && label.chars().count() <= 60, "Informe um nome para o perfil (ate 60 caracteres)");
+    anyhow::ensure!(matches!(browser, "chrome" | "msedge"), "Escolha Chrome ou Edge");
+    let slug: String = label
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect::<String>()
+        .split('-')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join("-");
+    let slug: String = slug.chars().take(20).collect();
+    let suffix = &uuid::Uuid::new_v4().simple().to_string()[..6];
+    let id = if slug.is_empty() { format!("perfil-{suffix}") } else { format!("{slug}-{suffix}") };
+    let profile = BrowserProfile { id, label: label.to_string(), browser: browser.to_string() };
+    let mut profiles = load_browser_profiles(app_data_dir);
+    profiles.push(profile.clone());
+    save_browser_profiles(app_data_dir, &profiles)?;
+    Ok(profile)
+}
+
+/// Nome do servidor MCP de um perfil. O perfil padrao continua sendo `playwright`.
+pub fn browser_profile_server_name(profile_id: &str) -> String {
+    format!("playwright-{profile_id}")
+}
+
+fn browser_profile_preset(app_data_dir: &Path, profile: &BrowserProfile) -> Result<McpServerConfig> {
+    let mut preset = playwright_preset(app_data_dir, &profile.browser)?;
+    preset.name = browser_profile_server_name(&profile.id);
+    preset.env.insert(
+        "PLAYWRIGHT_MCP_USER_DATA_DIR".into(),
+        app_data_dir.join("browser-profiles").join(&profile.id).to_string_lossy().into_owned(),
+    );
+    Ok(preset)
+}
+
+/// Servidores MCP que uma sessao pode usar. `enabled` e a lista de nomes da
+/// sessao (None = todos). Com um perfil de navegador escolhido, o servidor
+/// `playwright` padrao sai e entra o do perfil, mesmo que a sessao nao o tivesse
+/// habilitado. Perfil inexistente cai no padrao e avisa no log.
+pub fn session_mcp_servers(
+    app_data_dir: &Path,
+    enabled: Option<&[String]>,
+    browser_profile: Option<&str>,
+) -> Result<Vec<McpServerConfig>> {
+    let mut servers = load_servers(app_data_dir)?;
+    let mut names: Option<Vec<String>> = enabled.map(|list| list.to_vec());
+    let profile = browser_profile.and_then(|id| {
+        let found = load_browser_profiles(app_data_dir).into_iter().find(|p| p.id == id);
+        if found.is_none() {
+            eprintln!("[playwright] perfil de navegador '{id}' nao existe; usando o padrao");
+        }
+        found
+    });
+    if let Some(profile) = profile {
+        let server_name = browser_profile_server_name(&profile.id);
+        if !servers.iter().any(|s| s.name == server_name) {
+            servers.push(browser_profile_preset(app_data_dir, &profile)?);
+            save_servers(app_data_dir, &servers)?;
+        }
+        servers.retain(|s| s.name != "playwright");
+        if let Some(list) = names.as_mut() {
+            list.retain(|n| n != "playwright");
+            if !list.contains(&server_name) {
+                list.push(server_name);
+            }
+        }
+    }
+    if let Some(list) = names {
+        servers.retain(|s| list.contains(&s.name));
+    }
+    Ok(servers)
+}
+
 type McpClient = RunningService<RoleClient, ()>;
 
 /// Monta o `Command` do processo do servidor MCP. No Windows, comandos do
@@ -781,5 +886,57 @@ mod tests {
         assert_eq!(loaded_again, loaded);
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod browser_profile_tests {
+    use super::*;
+
+    fn temp_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("cerne-bprof-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn create_profile_slugs_label_and_validates_browser() {
+        let dir = temp_dir();
+        let p = create_browser_profile(&dir, "Trabalho (Conta 2)", "msedge").unwrap();
+        assert!(p.id.starts_with("trabalho-conta-2-"), "{}", p.id);
+        assert!(p.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'));
+        assert_eq!(load_browser_profiles(&dir), vec![p.clone()]);
+        assert!(create_browser_profile(&dir, "x", "firefox").is_err());
+        assert!(create_browser_profile(&dir, "   ", "chrome").is_err());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn session_servers_swap_default_playwright_for_the_chosen_profile() {
+        let dir = temp_dir();
+        let profile = create_browser_profile(&dir, "Pessoal", "chrome").unwrap();
+        let mut default = playwright_preset(&dir, "chrome").unwrap();
+        default.name = "playwright".into();
+        let other = McpServerConfig { name: "outro".into(), command: "x".into(), args: vec![], env: HashMap::new(),
+            url: None, bearer_token: None, enabled: true };
+        save_servers(&dir, &[default, other.clone()]).unwrap();
+
+        // Sem perfil: comportamento de antes (so o que a sessao habilitou).
+        let plain = session_mcp_servers(&dir, Some(&["playwright".to_string()]), None).unwrap();
+        assert_eq!(plain.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["playwright"]);
+
+        // Com perfil: o padrao sai, entra o do perfil mesmo sem estar habilitado.
+        let chosen = session_mcp_servers(&dir, Some(&["playwright".to_string(), "outro".to_string()]), Some(&profile.id)).unwrap();
+        let names: Vec<&str> = chosen.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"outro"));
+        assert!(names.contains(&browser_profile_server_name(&profile.id).as_str()));
+        assert!(!names.contains(&"playwright"));
+        let profile_server = chosen.iter().find(|s| s.name == browser_profile_server_name(&profile.id)).unwrap();
+        assert!(profile_server.env["PLAYWRIGHT_MCP_USER_DATA_DIR"].ends_with(&profile.id));
+
+        // Perfil inexistente: cai no padrao.
+        let fallback = session_mcp_servers(&dir, Some(&["playwright".to_string()]), Some("nao-existe")).unwrap();
+        assert_eq!(fallback.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), vec!["playwright"]);
+        std::fs::remove_dir_all(dir).ok();
     }
 }

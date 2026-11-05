@@ -1,7 +1,7 @@
 // Converte um arquivo HTML em PDF usando o Edge ou o Chrome ja instalados
 // na maquina (canal do Playwright), sem baixar navegador.
 //
-// Uso: node html_to_pdf.js <entrada.html> <saida.pdf> [A4|Letter|...] [landscape: true|false]
+// Uso: node html_to_pdf.js <entrada.html> <saida.pdf> [A4|Letter|...] [landscape: true|false] [margem_mm]
 //
 // Rede bloqueada: so file:, data: e about: carregam. Imagens e fontes externas
 // somem do PDF em vez de vazar requisicoes.
@@ -26,7 +26,7 @@ async function launchBrowser() {
 }
 
 async function main() {
-  const [, , inputPath, outputPath, format = "A4", landscape = "false"] = process.argv;
+  const [, , inputPath, outputPath, format = "A4", landscape = "false", marginArg = ""] = process.argv;
   if (!inputPath || !outputPath) {
     throw new Error("uso: html_to_pdf.js <entrada.html> <saida.pdf> [formato] [landscape]");
   }
@@ -47,6 +47,10 @@ async function main() {
       format,
       landscape: landscape === "true",
       printBackground: true,
+      // Margens padrao de documento profissional (A4: 20 mm em cima e embaixo, 18 mm nas laterais).
+      margin: marginArg
+        ? { top: `${marginArg}mm`, right: `${marginArg}mm`, bottom: `${marginArg}mm`, left: `${marginArg}mm` }
+        : { top: "20mm", right: "18mm", bottom: "20mm", left: "18mm" },
     });
   } finally {
     await browser.close();

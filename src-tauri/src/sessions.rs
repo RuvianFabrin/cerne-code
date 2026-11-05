@@ -72,6 +72,7 @@ pub fn create_session(
         // pra sessões já existentes antes dessa mudança (retrocompatível —
         // esse default só afeta sessão criada a partir de agora).
         enabled_mcp_servers: Some(Vec::new()),
+        browser_profile: None,
         fable_method: false,
         persona_id: None,
         total_prompt_tokens: 0,
@@ -617,6 +618,21 @@ pub fn update_persona(app_data_dir: &PathBuf, id: &str, persona_id: Option<Strin
 pub fn update_folder(app_data_dir: &PathBuf, id: &str, folder_id: Option<String>) -> Result<Session> {
     let mut session = get_session(app_data_dir, id)?;
     session.folder_id = folder_id;
+    let dir = session_dir(app_data_dir, id);
+    std::fs::write(
+        dir.join("session.json"),
+        serde_json::to_string_pretty(&session)?,
+    )?;
+    Ok(session)
+}
+
+pub fn update_browser_profile(
+    app_data_dir: &PathBuf,
+    id: &str,
+    profile: Option<String>,
+) -> Result<Session> {
+    let mut session = get_session(app_data_dir, id)?;
+    session.browser_profile = profile;
     let dir = session_dir(app_data_dir, id);
     std::fs::write(
         dir.join("session.json"),

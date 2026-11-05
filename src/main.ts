@@ -15,12 +15,21 @@ import "@fontsource-variable/literata/wght.css";
 import "@fontsource-variable/source-serif-4/wght.css";
 import "./style.css";
 
-document.documentElement.setAttribute("lang", i18n.global.locale.value);
-applyFontSettings();
+// A mesma pagina serve a janela principal e o overlay do Computer Use
+// (janela transparente, ver src-tauri/src/overlay.rs). O overlay so desenha.
+const isOverlay = new URLSearchParams(window.location.search).get("overlay") === "1";
+if (isOverlay) {
+  void import("./ComputerUseOverlay.vue").then(({ default: Overlay }) => {
+    createApp(Overlay).mount("#app");
+  });
+} else {
+  document.documentElement.setAttribute("lang", i18n.global.locale.value);
+  applyFontSettings();
 
-const app = createApp(App);
-app.use(createPinia());
-app.use(PrimeVue, { theme: cerneThemeOptions });
-app.use(i18n);
-app.directive("tooltip", Tooltip);
-app.mount("#app");
+  const app = createApp(App);
+  app.use(createPinia());
+  app.use(PrimeVue, { theme: cerneThemeOptions });
+  app.use(i18n);
+  app.directive("tooltip", Tooltip);
+  app.mount("#app");
+}

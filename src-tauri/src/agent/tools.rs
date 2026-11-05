@@ -311,7 +311,8 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
                     "path": { "type": "string", "description": "Arquivo .html de origem (alternativa a html)" },
                     "output": { "type": "string", "description": "Caminho do PDF de saida (terminar em .pdf)" },
                     "format": { "type": "string", "description": "Formato da pagina: A4 (padrao), Letter, A3..." },
-                    "landscape": { "type": "boolean", "description": "Paisagem (padrao false)" }
+                    "landscape": { "type": "boolean", "description": "Paisagem (padrao false)" },
+                    "margin_mm": { "type": "number", "description": "Margem uniforme em mm, de 0 a 60. Omita pra usar a margem padrao (20 mm em cima e embaixo, 18 mm nas laterais)." }
                 },
                 "required": ["output"]
             }),
@@ -451,7 +452,8 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
                 "type": "object",
                 "properties": {
                     "description": { "type": "string", "description": "Resumo curto da sub-tarefa (aparece no painel de tarefas)" },
-                    "prompt": { "type": "string", "description": "Instrucao completa e autocontida pro sub-agente - ele nao ve o historico desta conversa, so o que for escrito aqui" }
+                    "prompt": { "type": "string", "description": "Instrucao completa e autocontida pro sub-agente - ele nao ve o historico desta conversa, so o que for escrito aqui" },
+                    "background": { "type": "boolean", "description": "true = roda em segundo plano: voce recebe um id na hora e continua trabalhando. Consulte com check_subagent(id) e mande instrucoes extras com send_subagent_message(id, texto). Padrao false (espera o relatorio)." }
                 },
                 "required": ["description", "prompt"]
             }),
@@ -636,6 +638,33 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
 /// NÃO são elas mesmas orquestradas (`session.parent_session_id.is_none()`
 /// em `agent/mod.rs`), guarda de profundidade de nível único, mesmo
 /// espírito do guard que `task` já tem pra não recursar.
+/// Acompanhar e falar com sub-agentes que rodam em segundo plano (task com background=true).
+pub fn background_subagent_tool_specs() -> Vec<ToolSpec> {
+    vec![
+        spec(
+            "check_subagent",
+            "Mostra o estado de um sub-agente iniciado com task(background=true): ainda rodando, ou o relatorio final se ja terminou, ou o erro.",
+            json!({
+                "type": "object",
+                "properties": { "id": { "type": "string", "description": "id devolvido pela task em segundo plano" } },
+                "required": ["id"]
+            }),
+        ),
+        spec(
+            "send_subagent_message",
+            "Manda uma instrucao extra pra um sub-agente que ainda esta rodando (iniciado com task(background=true)). Ele le a mensagem antes do proximo passo. Nao funciona depois que ele termina.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                    "message": { "type": "string", "description": "O que ele deve saber ou fazer" }
+                },
+                "required": ["id", "message"]
+            }),
+        ),
+    ]
+}
+
 pub fn orchestration_tool_specs() -> Vec<ToolSpec> {
     vec![
         spec(
@@ -1447,6 +1476,12 @@ async fn execute_project_tool(
                 .ok_or_else(|| anyhow!("runtime Node embutido nao encontrado nesta instalacao"))?;
             let page_format = args["format"].as_str().unwrap_or("A4");
             let landscape = args["landscape"].as_bool().unwrap_or(false);
+            // margem uniforme em mm (padrao do script: 20 mm em cima/embaixo, 18 mm nas laterais).
+            let margin_arg = match args["margin_mm"].as_f64() {
+                Some(mm) if (0.0..=60.0).contains(&mm) => format!("{mm}"),
+                Some(_) => return Ok(ok("margin_mm deve estar entre 0 e 60")),
+                None => String::new(),
+            };
             let pdf_path = resolve_path(project_root, output_rel, execution_mode, writable_extra_roots)?;
             if let Some(parent) = pdf_path.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -1464,6 +1499,7 @@ async fn execute_project_tool(
                 .arg(&pdf_path)
                 .arg(page_format)
                 .arg(if landscape { "true" } else { "false" })
+                .arg(&margin_arg)
                 .env("NODE_PATH", crate::node_runtime::node_path(&runtime))
                 .current_dir(project_root)
                 .stdout(Stdio::piped())

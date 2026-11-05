@@ -652,6 +652,10 @@ pub struct Session {
     /// ao agente. Permite desativar MCPs individuais por sessão via composer.
     #[serde(default)]
     pub enabled_mcp_servers: Option<Vec<String>>,
+    /// Perfil de navegador do Playwright usado nesta sessao (id em
+    /// `browser-profiles.json`). `None` = perfil padrao.
+    #[serde(default)]
+    pub browser_profile: Option<String>,
     /// Método Fable (github.com/Sahir619/fable-method) injetado no system
     /// prompt quando ligado. É um loop de trabalho (classificar → agir →
     /// verificar) que ajuda modelos pequenos/médios a não abandonar tarefas;

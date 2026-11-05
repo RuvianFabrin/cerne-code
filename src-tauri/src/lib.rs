@@ -1,4 +1,5 @@
 mod agent;
+mod overlay;
 mod attachments;
 mod audio;
 mod backup;
@@ -2447,6 +2448,21 @@ fn write_session_long_horizon_projeto(
 }
 
 #[tauri::command]
+fn list_browser_profiles(state: State<AppState>) -> Vec<mcp::BrowserProfile> {
+    mcp::load_browser_profiles(&state.app_data_dir)
+}
+
+#[tauri::command]
+fn create_browser_profile(state: State<AppState>, label: String, browser: String) -> Result<mcp::BrowserProfile, String> {
+    mcp::create_browser_profile(&state.app_data_dir, &label, &browser).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_session_browser_profile(state: State<AppState>, id: String, profile: Option<String>) -> Result<Session, String> {
+    sessions::update_browser_profile(&state.app_data_dir, &id, profile).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn update_session_mcp_servers(
     state: State<AppState>,
     id: String,
@@ -2981,6 +2997,9 @@ pub fn run() {
             read_session_long_horizon_projeto,
             write_session_long_horizon_projeto,
             update_session_mcp_servers,
+            list_browser_profiles,
+            create_browser_profile,
+            set_session_browser_profile,
             update_session_persona,
             list_personas,
             create_persona,

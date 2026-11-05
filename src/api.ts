@@ -164,6 +164,13 @@ export interface MessagesPage {
   next_before: number;
 }
 
+export interface BrowserProfile {
+  id: string;
+  label: string;
+  /** chrome ou msedge */
+  browser: "chrome" | "msedge";
+}
+
 export interface Session {
   id: string;
   title: string;
@@ -180,6 +187,8 @@ export interface Session {
   execution_mode: ExecutionMode;
   reasoning_effort: "off" | "on" | "low" | "medium" | "high" | null;
   enabled_mcp_servers: string[] | null;
+  /** Perfil de navegador do Playwright desta sessao; null = padrao. */
+  browser_profile?: string | null;
   fable_method: boolean;
   persona_id: string | null;
   folder_id: string | null;
@@ -594,6 +603,11 @@ export const api = {
   startPlainQueue: (sessionId: string) => invoke<void>("start_plain_queue", { sessionId }),
   updateSessionMcpServers: (id: string, enabledNames: string[] | null) =>
     invoke<Session>("update_session_mcp_servers", { id, enabledNames }),
+  listBrowserProfiles: () => invoke<BrowserProfile[]>("list_browser_profiles"),
+  createBrowserProfile: (label: string, browser: "chrome" | "msedge") =>
+    invoke<BrowserProfile>("create_browser_profile", { label, browser }),
+  setSessionBrowserProfile: (id: string, profile: string | null) =>
+    invoke<Session>("set_session_browser_profile", { id, profile }),
   updateSessionPersona: (id: string, personaId: string | null) =>
     invoke<Session>("update_session_persona", { id, personaId }),
   updateSessionFolder: (id: string, folderId: string | null) =>

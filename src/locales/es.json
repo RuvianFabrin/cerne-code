@@ -8,9 +8,15 @@
     "widgetFallback": "Widget"
   },
   "sidePanel": {
+    "browser": {
+      "default": "Navegador predeterminado",
+      "hint": "Cada perfil guarda sus propias cuentas y contraseñas. Inicia sesión una vez en la ventana del perfil.",
+      "newPlaceholder": "Nombre del nuevo perfil",
+      "create": "Crear perfil"
+    },
     "show": "Mostrar panel",
     "hide": "Ocultar panel",
-    "sec": { "env": "Entorno", "context": "Contexto", "mcp": "MCP activos", "git": "Cambios (git)", "jobs": "Procesos en segundo plano", "agents": "Agentes", "sub": "Subsesiones" },
+    "sec": { "env": "Entorno", "context": "Contexto", "mcp": "MCP activos", "git": "Cambios (git)", "jobs": "Procesos en segundo plano", "agents": "Agentes", "sub": "Subsesiones", "browser": "Navegador" },
     "env": { "readWrite": "Puede editar", "readOnly": "Solo lectura", "none": "Sin carpeta de proyecto" },
     "mcp": { "none": "Ningún MCP activo" },
     "git": { "none": "Nada cambiado", "notRepo": "Esta carpeta no es un repositorio git", "noProject": "Sin carpeta de proyecto" },

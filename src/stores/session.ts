@@ -1028,6 +1028,14 @@ export const useSessionStore = defineStore("session", {
       if (idx !== -1) this.sessions[idx] = updated;
     },
 
+    async setBrowserProfile(profile: string | null) {
+      if (!this.currentId) return;
+      const updated = await api.setSessionBrowserProfile(this.currentId, profile);
+      this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === updated.id);
+      if (idx !== -1) this.sessions[idx] = updated;
+    },
+
     async deleteSession(id: string) {
       await api.deleteSession(id);
       this.sessions = this.sessions.filter((s) => s.id !== id);

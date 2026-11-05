@@ -8,9 +8,15 @@
     "widgetFallback": "组件"
   },
   "sidePanel": {
+    "browser": {
+      "default": "默认浏览器",
+      "hint": "每个配置文件保存各自的账号和密码。请在该配置文件的窗口中登录一次。",
+      "newPlaceholder": "新配置文件名称",
+      "create": "创建配置文件"
+    },
     "show": "显示面板",
     "hide": "隐藏面板",
-    "sec": { "env": "环境", "context": "上下文", "mcp": "已启用的 MCP", "git": "更改 (git)", "jobs": "后台进程", "agents": "代理", "sub": "子会话" },
+    "sec": { "env": "环境", "context": "上下文", "mcp": "已启用的 MCP", "git": "更改 (git)", "jobs": "后台进程", "agents": "代理", "sub": "子会话", "browser": "浏览器" },
     "env": { "readWrite": "可编辑", "readOnly": "只读", "none": "没有项目文件夹" },
     "mcp": { "none": "没有启用的 MCP" },
     "git": { "none": "没有更改", "notRepo": "此文件夹不是 git 仓库", "noProject": "没有项目文件夹" },

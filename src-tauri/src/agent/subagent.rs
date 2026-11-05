@@ -27,9 +27,11 @@
 use super::tools;
 use crate::models::{ChatMessage, PendingEdit, ProviderConfig};
 use crate::{providers, AppState};
-use anyhow::Result;
-use std::path::Path;
-use tauri::{AppHandle, Emitter};
+use anyhow::{anyhow, Result};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use tauri::{AppHandle, Emitter, Manager};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 /// Passos de ferramenta que o sub-agente pode dar antes de ser forcado a
 /// parar e devolver o que tiver — bem menor que o `MAX_AGENTIC_STEPS` (12) da
@@ -49,6 +51,27 @@ principal so ve essa resposta final, nao os seus passos intermediarios, entao in
 precisa saber pra continuar. Voce NAO tem a ferramenta 'task' - nao pode delegar pra outro \
 sub-agente.";
 
+/// Copia as mensagens pendentes da caixa de entrada pro historico como turnos
+/// do usuario. Devolve true se entrou alguma.
+fn drain_inbox(inbox: &mut Option<&mut UnboundedReceiver<String>>, messages: &mut Vec<ChatMessage>) -> bool {
+    let mut added = false;
+    if let Some(rx) = inbox.as_mut() {
+        while let Ok(text) = rx.try_recv() {
+            messages.push(ChatMessage {
+                role: "user".to_string(),
+                content: text,
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+                images: Vec::new(),
+                display_content: None,
+            });
+            added = true;
+        }
+    }
+    added
+}
+
 /// Roda o sub-agente ate ele parar de chamar ferramentas (ou bater o limite
 /// de passos) e devolve o texto da resposta final dele.
 ///
@@ -57,6 +80,7 @@ sub-agente.";
 /// esta olhando — o sub-agente nao tem sessao/historico persistido proprio,
 /// sua conversa e efemera (existe so na memoria desta chamada).
 #[allow(clippy::too_many_arguments)]
+/// Roda o sub-agente sem caixa de entrada (chamada sincrona).
 pub async fn run(
     app: &AppHandle,
     state: &AppState,
@@ -71,6 +95,26 @@ pub async fn run(
     task_prompt: &str,
     enabled_mcp_servers: Option<&[String]>,
     execution_mode: &crate::models::ExecutionMode,
+) -> Result<String> {
+    run_with_inbox(app, state, session_id, execution_id, cfg, api_key, model, project_root, extra_read_paths, description, task_prompt, enabled_mcp_servers, execution_mode, None).await
+}
+
+/// Roda o sub-agente; `inbox` recebe mensagens do agente pai enquanto ele roda.
+pub async fn run_with_inbox(
+    app: &AppHandle,
+    state: &AppState,
+    session_id: &str,
+    execution_id: &str,
+    cfg: &ProviderConfig,
+    api_key: Option<String>,
+    model: &str,
+    project_root: &Path,
+    extra_read_paths: &[String],
+    description: &str,
+    task_prompt: &str,
+    enabled_mcp_servers: Option<&[String]>,
+    execution_mode: &crate::models::ExecutionMode,
+    mut inbox: Option<&mut UnboundedReceiver<String>>,
 ) -> Result<String> {
     let mut messages = vec![
         ChatMessage {
@@ -97,10 +141,10 @@ pub async fn run(
     // T13: respeita o mesmo filtro por sessao que o loop principal usa
     // (agent/mod.rs) - antes o sub-agente via TODOS os MCPs configurados
     // globalmente, ignorando o toggle por sessao do composer.
-    let mut mcp_servers = crate::mcp::load_servers(&state.app_data_dir).unwrap_or_default();
-    if let Some(enabled) = enabled_mcp_servers {
-        mcp_servers.retain(|s| enabled.contains(&s.name));
-    }
+    // O sub-agente usa o mesmo navegador da sessao pai: o perfil ja vem
+    // resolvido em enabled_mcp_servers (ver session_mcp_servers no mod.rs).
+    let mcp_servers = crate::mcp::session_mcp_servers(&state.app_data_dir, enabled_mcp_servers, None)
+        .unwrap_or_default();
     tool_specs.extend(state.mcp_clients.tool_specs(&mcp_servers).await);
     let mut recent_calls: Vec<(String, String)> = Vec::new();
 
@@ -112,6 +156,8 @@ pub async fn run(
     let stream_channel = format!("{session_id}::exec::{execution_id}");
 
     for step in 0..MAX_SUBAGENT_STEPS {
+        // Mensagens enviadas pelo agente pai (send_subagent_message) entram antes do proximo passo.
+        drain_inbox(&mut inbox, &mut messages);
         let assistant = providers::chat_stream(
             app,
             &stream_channel,
@@ -136,6 +182,10 @@ pub async fn run(
         messages.push(assistant.clone());
 
         if !has_tool_calls {
+            // Se o pai mandou algo enquanto isso, continua em vez de encerrar.
+            if drain_inbox(&mut inbox, &mut messages) {
+                continue;
+            }
             return Ok(assistant.content);
         }
 
@@ -182,18 +232,31 @@ pub async fn run(
                 .iter()
                 .map(|p| crate::models::FolderEntry { path: p.clone(), mode: crate::models::FolderMode::Read })
                 .collect();
-            let result = tools::execute_tool(
-                &call.function.name,
-                &args,
-                Some(project_root),
-                &folder_entries,
-                &state.background_jobs,
-                &state.mcp_clients,
-                &state.app_data_dir,
-                execution_mode,
-                session_id,
-            )
-            .await;
+            // Ferramentas de chat/skills precisam de AppHandle; o sub-agente as
+            // executa aqui, com a mesma logica que o agente principal usa.
+            let result = if super::chat_tools::CHAT_TOOL_NAMES.contains(&call.function.name.as_str()) {
+                super::chat_tools::run(
+                    &call.function.name,
+                    app,
+                    session_id,
+                    Some(project_root),
+                    &state.app_data_dir,
+                    &args,
+                )
+            } else {
+                tools::execute_tool(
+                    &call.function.name,
+                    &args,
+                    Some(project_root),
+                    &folder_entries,
+                    &state.background_jobs,
+                    &state.mcp_clients,
+                    &state.app_data_dir,
+                    execution_mode,
+                    session_id,
+                )
+                .await
+            };
             let observation = match &result {
                 Ok(outcome) => outcome.observation.clone(),
                 Err(e) => format!("erro executando ferramenta: {e}"),
@@ -394,5 +457,152 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// Sub-agentes em segundo plano (task com background=true).
+//
+// O agente pai nao espera: recebe um id, consulta com check_subagent e manda
+// instrucoes extras com send_subagent_message. Cada um roda numa tarefa do
+// Tokio com a sua caixa de entrada; o loop le a caixa entre os passos.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackgroundStatus {
+    Running,
+    Done(String),
+    Failed(String),
+}
+
+struct BackgroundEntry {
+    id: String,
+    parent_session_id: String,
+    description: String,
+    inbox: UnboundedSender<String>,
+    status: BackgroundStatus,
+}
+
+static BACKGROUND: Mutex<Vec<BackgroundEntry>> = Mutex::new(Vec::new());
+
+/// Tudo que o sub-agente precisa, com dono (vai pra outra tarefa).
+pub struct BackgroundSpec {
+    pub parent_session_id: String,
+    pub execution_id: String,
+    pub cfg: ProviderConfig,
+    pub api_key: Option<String>,
+    pub model: String,
+    pub project_root: PathBuf,
+    pub extra_read_paths: Vec<String>,
+    pub description: String,
+    pub prompt: String,
+    pub enabled_mcp_servers: Option<Vec<String>>,
+    pub execution_mode: crate::models::ExecutionMode,
+}
+
+/// Inicia o sub-agente em segundo plano e devolve o id dele.
+pub fn spawn_background(app: AppHandle, spec: BackgroundSpec) -> String {
+    let id = format!("sub-{}", &uuid::Uuid::new_v4().simple().to_string()[..8]);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    if let Ok(mut list) = BACKGROUND.lock() {
+        list.push(BackgroundEntry {
+            id: id.clone(),
+            parent_session_id: spec.parent_session_id.clone(),
+            description: spec.description.clone(),
+            inbox: tx,
+            status: BackgroundStatus::Running,
+        });
+    }
+    let task_id = id.clone();
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>();
+        let result = run_with_inbox(
+            &app,
+            &state,
+            &spec.parent_session_id,
+            &spec.execution_id,
+            &spec.cfg,
+            spec.api_key.clone(),
+            &spec.model,
+            &spec.project_root,
+            &spec.extra_read_paths,
+            &spec.description,
+            &spec.prompt,
+            spec.enabled_mcp_servers.as_deref(),
+            &spec.execution_mode,
+            Some(&mut rx),
+        )
+        .await;
+        super::finish_agent_execution(&state, &spec.execution_id, result.is_ok());
+        let status = match result {
+            Ok(report) => BackgroundStatus::Done(report),
+            Err(e) => BackgroundStatus::Failed(e.to_string()),
+        };
+        set_status(&task_id, status);
+    });
+    id
+}
+
+fn set_status(id: &str, status: BackgroundStatus) {
+    if let Ok(mut list) = BACKGROUND.lock() {
+        if let Some(entry) = list.iter_mut().find(|e| e.id == id) {
+            entry.status = status;
+        }
+    }
+}
+
+/// Manda uma mensagem pra um sub-agente que ainda esta rodando desta sessao.
+pub fn send_to_background(id: &str, parent_session_id: &str, message: &str) -> Result<String> {
+    let list = BACKGROUND.lock().map_err(|_| anyhow!("registro de sub-agentes indisponivel"))?;
+    let entry = list
+        .iter()
+        .find(|e| e.id == id && e.parent_session_id == parent_session_id)
+        .ok_or_else(|| anyhow!("sub-agente {id} nao encontrado nesta sessao"))?;
+    if entry.status != BackgroundStatus::Running {
+        return Err(anyhow!("sub-agente {id} ja terminou; inicie outro com task"));
+    }
+    entry
+        .inbox
+        .send(message.to_string())
+        .map_err(|_| anyhow!("sub-agente {id} nao esta mais aceitando mensagens"))?;
+    Ok(format!("Mensagem enviada ao sub-agente {id} ({}). Use check_subagent depois.", entry.description))
+}
+
+/// Situacao atual de um sub-agente desta sessao, em texto pro modelo.
+pub fn check_background(id: &str, parent_session_id: &str) -> Result<String> {
+    let list = BACKGROUND.lock().map_err(|_| anyhow!("registro de sub-agentes indisponivel"))?;
+    let entry = list
+        .iter()
+        .find(|e| e.id == id && e.parent_session_id == parent_session_id)
+        .ok_or_else(|| anyhow!("sub-agente {id} nao encontrado nesta sessao"))?;
+    Ok(match &entry.status {
+        BackgroundStatus::Running => format!("Sub-agente {id} ({}) ainda esta rodando.", entry.description),
+        BackgroundStatus::Done(report) => report.clone(),
+        BackgroundStatus::Failed(error) => format!("Sub-agente {id} falhou: {error}"),
+    })
+}
+
+#[cfg(test)]
+mod background_tests {
+    use super::*;
+
+    #[test]
+    fn drain_inbox_moves_pending_messages_once() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        tx.send("primeira".to_string()).unwrap();
+        tx.send("segunda".to_string()).unwrap();
+        let mut inbox = Some(&mut rx);
+        let mut messages: Vec<ChatMessage> = Vec::new();
+        assert!(drain_inbox(&mut inbox, &mut messages));
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1].content, "segunda");
+        assert!(!drain_inbox(&mut inbox, &mut messages));
+    }
+
+    #[test]
+    fn unknown_background_id_is_an_error() {
+        assert!(check_background("sub-inexistente", "sessao-x").is_err());
+        assert!(send_to_background("sub-inexistente", "sessao-x", "oi").is_err());
     }
 }

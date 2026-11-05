@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
-import { api, type AgentExecution, type BackgroundJobInfo, type GitFileChange, type McpServerConfig } from "../api";
+import {
+  api,
+  type AgentExecution,
+  type BackgroundJobInfo,
+  type BrowserProfile,
+  type GitFileChange,
+  type McpServerConfig,
+} from "../api";
 import { useSessionStore } from "../stores/session";
 import ContextGauge from "./ContextGauge.vue";
 
@@ -40,6 +47,37 @@ const parent = computed(() => {
 
 const runningJobs = computed(() => jobs.value.filter((j) => j.status.kind === "running").length);
 const runningAgents = computed(() => executions.value.filter((e) => e.status === "running").length);
+
+const browserProfiles = ref<BrowserProfile[]>([]);
+const newProfileLabel = ref("");
+const newProfileBrowser = ref<"chrome" | "msedge">("chrome");
+
+async function loadBrowserProfiles() {
+  try {
+    browserProfiles.value = await api.listBrowserProfiles();
+  } catch {
+    browserProfiles.value = [];
+  }
+}
+
+async function chooseBrowserProfile(value: string) {
+  try {
+    await sessionStore.setBrowserProfile(value || null);
+  } catch (e) {
+    sessionStore.error = String(e);
+  }
+}
+
+async function createBrowserProfile() {
+  try {
+    const profile = await api.createBrowserProfile(newProfileLabel.value, newProfileBrowser.value);
+    browserProfiles.value.push(profile);
+    newProfileLabel.value = "";
+    await chooseBrowserProfile(profile.id);
+  } catch (e) {
+    sessionStore.error = String(e);
+  }
+}
 
 async function loadMcp() {
   try {
@@ -92,6 +130,7 @@ function refreshAll() {
 
 onMounted(() => {
   loadMcp();
+  loadBrowserProfiles();
   refreshAll();
   poll = setInterval(refreshAll, 5000);
 });
@@ -172,6 +211,36 @@ function statusLabel(status: string): string {
           <span class="row-text">{{ name }}</span>
         </div>
         <p v-if="!mcpNames.length" class="sp-empty">{{ $t("sidePanel.mcp.none") }}</p>
+      </div>
+    </section>
+
+    <!-- Navegador -->
+    <section class="sp-section">
+      <button class="sp-head" @click="toggle('browser')">
+        <span class="msi chevron">{{ collapsed.browser ? "chevron_right" : "expand_more" }}</span>
+        <span class="sp-title">{{ $t("sidePanel.sec.browser") }}</span>
+      </button>
+      <div v-if="!collapsed.browser" class="sp-body">
+        <select
+          class="sp-select"
+          :value="session?.browser_profile ?? ''"
+          :aria-label="$t('sidePanel.sec.browser')"
+          @change="chooseBrowserProfile(($event.target as HTMLSelectElement).value)"
+        >
+          <option value="">{{ $t("sidePanel.browser.default") }}</option>
+          <option v-for="p in browserProfiles" :key="p.id" :value="p.id">{{ p.label }} ({{ p.browser === "msedge" ? "Edge" : "Chrome" }})</option>
+        </select>
+        <p class="sp-empty">{{ $t("sidePanel.browser.hint") }}</p>
+        <div class="sp-create">
+          <input v-model="newProfileLabel" class="sp-input" :placeholder="$t('sidePanel.browser.newPlaceholder')" />
+          <select v-model="newProfileBrowser" class="sp-select">
+            <option value="chrome">Chrome</option>
+            <option value="msedge">Edge</option>
+          </select>
+          <button class="sp-btn" :disabled="!newProfileLabel.trim()" @click="createBrowserProfile">
+            {{ $t("sidePanel.browser.create") }}
+          </button>
+        </div>
       </div>
     </section>
 
@@ -307,6 +376,41 @@ function statusLabel(status: string): string {
   margin: 0;
   opacity: 0.6;
   font-size: 12px;
+}
+
+.sp-select,
+.sp-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 13px;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+}
+
+.sp-create {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.sp-btn {
+  padding: 4px 8px;
+  font: inherit;
+  font-size: 13px;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.sp-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .sp-row {
