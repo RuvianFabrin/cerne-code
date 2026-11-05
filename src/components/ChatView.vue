@@ -14,7 +14,7 @@ import TaskStepGroup from "./TaskStepGroup.vue";
 import TodoCard from "./TodoCard.vue";
 import SessionSidePanel from "./SessionSidePanel.vue";
 import { formatElapsed, formatTokens } from "../taskLabels";
-import { api, type ChatMessage, type TaskItem, type TurnStats } from "../api";
+import { api, type ChatCard, type ChatMessage, type TaskItem, type TurnStats } from "../api";
 
 defineEmits<{ "open-settings": [] }>();
 
@@ -48,6 +48,45 @@ function toggleSidePanel() {
 // pra cima. Assim que ele rolar, para de forçar o scroll (pra poder ler
 // mensagens antigas em paz); volta a grudar quando ele manda a próxima
 // mensagem ou clica no botão "ir pro final".
+const currentChatCards = computed<ChatCard[]>(() =>
+  sessionStore.currentId ? (sessionStore.chatCardsBySession[sessionStore.currentId] ?? []) : [],
+);
+
+// Widget roda num iframe sem same-origin e sem rede: o CSP bloqueia qualquer
+// recurso externo. O script so informa a altura pro pai, que ajusta o iframe.
+const WIDGET_CSP =
+  "default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data:";
+const WIDGET_HEIGHT_SCRIPT =
+  '<script>(function(){function h(){parent.postMessage({cerneWidgetHeight:document.documentElement.scrollHeight},"*")}window.addEventListener("load",h);if(window.ResizeObserver){new ResizeObserver(h).observe(document.documentElement)}})();<\/script>';
+
+function widgetSrcdoc(code: string): string {
+  const trimmed = code.trim();
+  let doc = /^<(!doctype|html)/i.test(trimmed)
+    ? trimmed
+    : `<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0;font-family:system-ui,sans-serif;color:#222;background:transparent}</style></head><body>${trimmed}</body></html>`;
+  // O CSP precisa vir no <head> (ou logo apos o doctype), senao o modo quirks entra.
+  const csp = `<meta http-equiv="Content-Security-Policy" content="${WIDGET_CSP}">`;
+  doc = /<head[^>]*>/i.test(doc)
+    ? doc.replace(/<head[^>]*>/i, (m) => m + csp)
+    : doc.replace(/^(<!doctype[^>]*>)?/i, (m) => m + csp);
+  return /<\/body>/i.test(doc)
+    ? doc.replace(/<\/body>/i, WIDGET_HEIGHT_SCRIPT + "</body>")
+    : doc + WIDGET_HEIGHT_SCRIPT;
+}
+
+function onWidgetMessage(e: MessageEvent) {
+  const h = e.data?.cerneWidgetHeight;
+  if (typeof h !== "number") return;
+  document.querySelectorAll<HTMLIFrameElement>("iframe.widget-frame").forEach((frame) => {
+    if (frame.contentWindow === e.source) {
+      frame.style.height = `${Math.min(Math.max(h, 120), 900)}px`;
+    }
+  });
+}
+
+onMounted(() => window.addEventListener("message", onWidgetMessage));
+onUnmounted(() => window.removeEventListener("message", onWidgetMessage));
+
 const currentUserFiles = computed(() =>
   sessionStore.currentId ? (sessionStore.userFilesBySession[sessionStore.currentId] ?? []) : [],
 );
@@ -443,6 +482,31 @@ watch(
           <div v-if="sessionStore.pendingEdits.length > 0" class="pending-edits-anchor">
             <DiffReview v-for="edit in sessionStore.pendingEdits" :key="edit.id" :edit="edit" />
           </div>
+          <div v-if="currentChatCards.length > 0" class="chat-cards">
+            <template v-for="(card, idx) in currentChatCards" :key="idx">
+              <div v-if="card.kind === 'findings'" class="findings-card">
+                <div class="findings-title">{{ $t("chatCards.findings", { count: card.findings.length }) }}</div>
+                <div v-for="(f, i) in card.findings" :key="i" class="finding-item">
+                  <div class="finding-head">
+                    <span v-if="f.severity" class="finding-sev" :data-sev="f.severity">{{ f.severity }}</span>
+                    <code>{{ f.file }}<span v-if="f.line">:{{ f.line }}</span></code>
+                    <span v-if="f.category" class="finding-cat">{{ f.category }}</span>
+                  </div>
+                  <div class="finding-summary">{{ f.summary }}</div>
+                  <div v-if="f.failure_scenario" class="finding-scenario">{{ f.failure_scenario }}</div>
+                </div>
+              </div>
+              <div v-else class="widget-card">
+                <div class="widget-title">{{ card.title || $t("chatCards.widgetFallback") }}</div>
+                <iframe
+                  class="widget-frame"
+                  sandbox="allow-scripts"
+                  :srcdoc="widgetSrcdoc(card.code)"
+                  :title="card.title || $t('chatCards.widgetFallback')"
+                ></iframe>
+              </div>
+            </template>
+          </div>
           <div v-if="currentUserFiles.length > 0" class="user-file-cards">
             <div v-for="(file, idx) in currentUserFiles" :key="idx" class="user-file-card">
               <span class="material-symbols-rounded user-file-icon">description</span>
@@ -645,6 +709,81 @@ watch(
 .pending-edits-anchor {
   max-height: 40vh;
   overflow-y: auto;
+}
+
+.chat-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 8px 0;
+}
+
+.findings-card,
+.widget-card {
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--surface, #fff);
+}
+
+.findings-title,
+.widget-title {
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.finding-item + .finding-item {
+  border-top: 1px solid var(--border, #d0d7de);
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.finding-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.finding-sev {
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  background: #e5e7eb;
+}
+
+.finding-sev[data-sev="critical"],
+.finding-sev[data-sev="high"] {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.finding-sev[data-sev="medium"] {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.finding-cat {
+  opacity: 0.7;
+}
+
+.finding-summary {
+  margin-top: 4px;
+}
+
+.finding-scenario {
+  margin-top: 2px;
+  font-size: 13px;
+  opacity: 0.8;
+}
+
+.widget-frame {
+  width: 100%;
+  height: 240px;
+  border: 0;
+  background: transparent;
 }
 
 .user-file-cards {

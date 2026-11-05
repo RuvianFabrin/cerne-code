@@ -3,6 +3,10 @@
     "open": "Abrir",
     "reveal": "Mostrar en la carpeta"
   },
+  "chatCards": {
+    "findings": "Hallazgos de revisión ({count})",
+    "widgetFallback": "Widget"
+  },
   "sidePanel": {
     "show": "Mostrar panel",
     "hide": "Ocultar panel",

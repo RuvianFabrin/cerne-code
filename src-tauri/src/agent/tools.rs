@@ -56,6 +56,44 @@ pub fn always_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         spec(
+            "report_findings",
+            "Mostra achados de revisao (bugs, riscos, problemas) como cartoes no chat, em vez de listar em texto corrido. Use numa revisao de codigo ou seguranca, passando um item por achado. Cada achado precisa de file e summary; failure_scenario descreve a entrada/estado que quebra e o resultado errado.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "findings": {
+                        "type": "array",
+                        "maxItems": 32,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "file": { "type": "string" },
+                                "line": { "type": "integer" },
+                                "severity": { "type": "string", "enum": ["critical", "high", "medium", "low"] },
+                                "category": { "type": "string", "description": "Ex: correctness, security, performance" },
+                                "summary": { "type": "string", "description": "Uma frase: o defeito" },
+                                "failure_scenario": { "type": "string", "description": "Entrada ou estado -> resultado errado" }
+                            },
+                            "required": ["file", "summary"]
+                        }
+                    }
+                },
+                "required": ["findings"]
+            }),
+        ),
+        spec(
+            "show_widget",
+            "Mostra uma pagina HTML ou SVG inline no chat (grafico, diagrama, visual interativo) numa area isolada: sem rede e sem acesso a sessao do Cerne. Use para visualizar algo que ficaria ruim em texto. widget_code e um documento HTML completo ou um <svg>. Scripts sao permitidos; nao carregue recursos externos (sem CDN, sem fetch).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "Titulo curto do widget" },
+                    "widget_code": { "type": "string", "description": "HTML completo ou SVG" }
+                },
+                "required": ["title", "widget_code"]
+            }),
+        ),
+        spec(
             "send_user_file",
             "Anexa um arquivo gerado ou encontrado nesta sessao ao chat, como um cartao clicavel para o usuario abrir ou revelar na pasta. Use depois de criar um documento, planilha, imagem ou relatorio que o usuario vai querer baixar. Caminho relativo resolve dentro do projeto; caminho absoluto funciona para qualquer pasta. O arquivo precisa existir.",
             json!({
@@ -261,6 +299,37 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
                     "path": { "type": "string", "description": "Caminho ABSOLUTO (preferido) ou subpasta relativa ao projeto (opcional)" }
                 },
                 "required": ["pattern"]
+            }),
+        ),
+        spec(
+            "html_to_pdf",
+            "Gera um PDF a partir de HTML, usando o Edge ou o Chrome instalados na maquina (sem baixar navegador). Passe html (texto) ou path (arquivo .html do projeto). Rede bloqueada: imagens e fontes externas nao carregam, use dados embutidos (data:) ou recursos locais. Depois use send_user_file para anexar o PDF ao chat.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "html": { "type": "string", "description": "HTML completo ou fragmento" },
+                    "path": { "type": "string", "description": "Arquivo .html de origem (alternativa a html)" },
+                    "output": { "type": "string", "description": "Caminho do PDF de saida (terminar em .pdf)" },
+                    "format": { "type": "string", "description": "Formato da pagina: A4 (padrao), Letter, A3..." },
+                    "landscape": { "type": "boolean", "description": "Paisagem (padrao false)" }
+                },
+                "required": ["output"]
+            }),
+        ),
+        spec(
+            "notebook_edit",
+            "Edita uma celula de um notebook Jupyter (.ipynb): substitui (replace), insere (insert) ou remove (delete). Mexe so na celula alvo; o resto do notebook fica igual. Celula de codigo editada perde as saidas antigas. Use cell_index (posicao) ou cell_id (id da celula); no insert, cell_index e a posicao onde a nova celula entra (ausente = no fim).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Caminho do arquivo .ipynb" },
+                    "edit_mode": { "type": "string", "enum": ["replace", "insert", "delete"] },
+                    "cell_index": { "type": "integer", "description": "Posicao da celula (0-based)" },
+                    "cell_id": { "type": "string", "description": "Id da celula (replace/delete)" },
+                    "cell_type": { "type": "string", "enum": ["code", "markdown"], "description": "Tipo da celula (replace/insert)" },
+                    "new_source": { "type": "string", "description": "Novo conteudo da celula (replace/insert)" }
+                },
+                "required": ["path", "edit_mode"]
             }),
         ),
         spec(
@@ -1354,6 +1423,123 @@ async fn execute_project_tool(
                 Ok(ok("nenhuma ocorrencia encontrada"))
             } else {
                 Ok(ok(matches.join("\n")))
+            }
+        }
+        "html_to_pdf" => {
+            let output_rel = args["output"]
+                .as_str()
+                .ok_or_else(|| anyhow!("output obrigatorio (caminho do .pdf)"))?;
+            if !output_rel.to_lowercase().ends_with(".pdf") {
+                return Ok(ok("output deve terminar em .pdf"));
+            }
+            let html = if let Some(inline) = args["html"].as_str() {
+                inline.to_string()
+            } else if let Some(rel) = args["path"].as_str() {
+                let source = resolve_read_path(project_root, extra_read_paths, rel)?;
+                read_project_file(&source, rel)?
+            } else {
+                return Err(anyhow!("informe html (texto) ou path (arquivo .html)"));
+            };
+            if html.trim().is_empty() {
+                return Ok(ok("HTML vazio: nada para converter."));
+            }
+            let runtime = crate::node_runtime::runtime_dir()
+                .ok_or_else(|| anyhow!("runtime Node embutido nao encontrado nesta instalacao"))?;
+            let page_format = args["format"].as_str().unwrap_or("A4");
+            let landscape = args["landscape"].as_bool().unwrap_or(false);
+            let pdf_path = resolve_path(project_root, output_rel, execution_mode, writable_extra_roots)?;
+            if let Some(parent) = pdf_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            // HTML temporario fora do projeto: o script le de um arquivo, e o
+            // conteudo nao precisa virar arquivo do usuario.
+            let tmp_dir = app_data_dir.join("pdf-tmp");
+            std::fs::create_dir_all(&tmp_dir)?;
+            let tmp_html = tmp_dir.join(format!("{}.html", uuid::Uuid::new_v4()));
+            std::fs::write(&tmp_html, &html)?;
+
+            let mut cmd = tokio::process::Command::new(crate::node_runtime::node_binary(&runtime));
+            cmd.arg(runtime.join("html_to_pdf.js"))
+                .arg(&tmp_html)
+                .arg(&pdf_path)
+                .arg(page_format)
+                .arg(if landscape { "true" } else { "false" })
+                .env("NODE_PATH", crate::node_runtime::node_path(&runtime))
+                .current_dir(project_root)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .kill_on_drop(true);
+            super::shell::apply_creation_flags(&mut cmd);
+            let run = tokio::time::timeout(std::time::Duration::from_secs(120), cmd.output()).await;
+            let _ = std::fs::remove_file(&tmp_html);
+            match run {
+                Err(_) => Ok(ok("Tempo limite de 120s ao gerar o PDF; o processo foi encerrado.")),
+                Ok(result) => {
+                    let result = result?;
+                    let size = std::fs::metadata(&pdf_path).map(|m| m.len()).unwrap_or(0);
+                    if result.status.success() && size > 0 {
+                        Ok(ok(format!(
+                            "PDF gerado em {} ({size} bytes). Use send_user_file para anexar ao chat.",
+                            pdf_path.display()
+                        )))
+                    } else {
+                        Ok(ok(format!(
+                            "falha ao gerar o PDF: {}",
+                            truncate(String::from_utf8_lossy(&result.stderr).trim(), 2000)
+                        )))
+                    }
+                }
+            }
+        }
+        "notebook_edit" => {
+            let rel = args["path"]
+                .as_str()
+                .ok_or_else(|| anyhow!("path obrigatorio"))?;
+            let mode = super::notebook::EditMode::parse(args["edit_mode"].as_str().unwrap_or("replace"))?;
+            let source = args["new_source"].as_str().unwrap_or("");
+            let cell_type = args["cell_type"].as_str().unwrap_or("code");
+            let cell_index = args["cell_index"].as_u64().map(|n| n as usize);
+            let cell_id = args["cell_id"].as_str();
+            let target = resolve_path(project_root, rel, execution_mode, writable_extra_roots)?;
+            if !target.is_file() {
+                return Ok(ok(format!("notebook nao encontrado: {rel}")));
+            }
+            let raw = read_project_file(&target, rel)?;
+            let edit = super::notebook::NotebookEdit {
+                mode,
+                cell_index,
+                cell_id,
+                cell_type,
+                source,
+            };
+            let (new_content, summary) = super::notebook::apply(&raw, &edit)?;
+            if *execution_mode == crate::models::ExecutionMode::Yolo {
+                let (diff, is_new_file) = sandbox::write_direct(&target, &new_content)?;
+                Ok(ToolOutcome {
+                    observation: format!("Notebook editado diretamente ({summary}). Diff:\n{diff}"),
+                    pending_edit: Some((
+                        target.to_string_lossy().to_string(),
+                        String::new(),
+                        diff,
+                        is_new_file,
+                        true,
+                    )),
+                })
+            } else {
+                let (diff, is_new_file) = sandbox::write_sandboxed(project_root, &target, &new_content)?;
+                let sandbox_path = sandbox::to_sandbox_path(project_root, &target)?;
+                Ok(ToolOutcome {
+                    observation: format!(
+                        "Edicao do notebook ({summary}) escrita na sandbox (ainda NAO aplicada ao arquivo real). Diff:\n{diff}"
+                    ),
+                    pending_edit: Some((
+                        target.to_string_lossy().to_string(),
+                        sandbox_path.to_string_lossy().to_string(),
+                        diff,
+                        is_new_file,
+                        false,
+                    )),
+                })
             }
         }
         "glob" => {

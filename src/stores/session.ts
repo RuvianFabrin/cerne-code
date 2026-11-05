@@ -17,6 +17,8 @@ import {
   onContextUsage,
   onPendingEdit,
   onUserFile,
+  onChatCard,
+  type ChatCard,
   type UserFileEvent,
   onPermissionRequest,
   onTaskQueueStatus,
@@ -105,6 +107,8 @@ export const useSessionStore = defineStore("session", {
     // Cartoes de arquivos anexados pela tool send_user_file, por sessao.
     // Ficam so na memoria desta execucao (nao reaparecem depois de reabrir o app).
     userFilesBySession: {} as Record<string, UserFileEvent[]>,
+    // Achados e widgets que o agente mostrou no chat, por sessao (so em memoria).
+    chatCardsBySession: {} as Record<string, ChatCard[]>,
     currentSession: null as Session | null,
     currentFork: "turboquant",
     currentCustomProviderId: "",
@@ -342,6 +346,11 @@ export const useSessionStore = defineStore("session", {
           const liveTask = block.tasks.find((t: TaskItem) => t.id === id);
           if (liveTask) applyResult(liveTask);
         }
+      });
+
+      await onChatCard((sessionId, card) => {
+        const list = this.chatCardsBySession[sessionId] ?? [];
+        this.chatCardsBySession = { ...this.chatCardsBySession, [sessionId]: [...list, card] };
       });
 
       await onUserFile((file) => {

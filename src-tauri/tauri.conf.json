@@ -35,6 +35,7 @@
       "resources/context-mode/CERNE-PROVENANCE.md": "context-mode/CERNE-PROVENANCE.md",
       "resources/context-economy-notices/": "context-economy-notices/",
       "resources/node-runtime/package.json": "node-runtime/package.json",
+      "resources/node-runtime/html_to_pdf.js": "node-runtime/html_to_pdf.js",
       "resources/node-runtime/node_modules/": "node-runtime/node_modules/",
       "resources/node-runtime/LICENSE": "node-runtime/LICENSE"
     },

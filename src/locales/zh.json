@@ -3,6 +3,10 @@
     "open": "打开",
     "reveal": "在文件夹中显示"
   },
+  "chatCards": {
+    "findings": "审查发现（{count}）",
+    "widgetFallback": "组件"
+  },
   "sidePanel": {
     "show": "显示面板",
     "hide": "隐藏面板",

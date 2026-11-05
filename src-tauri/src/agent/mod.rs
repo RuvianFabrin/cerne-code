@@ -1,5 +1,6 @@
 mod analyst;
 mod ast_tools;
+pub mod notebook;
 pub mod external_cli;
 pub mod fixed_context;
 pub mod cli_inference;
@@ -1787,6 +1788,51 @@ pub async fn run_turn(
                         }
                     }),
                     None => Err(anyhow::anyhow!("query obrigatorio")),
+                }
+            } else if call.function.name == "report_findings" {
+                let items = args["findings"].as_array().cloned().unwrap_or_default();
+                if items.is_empty() {
+                    Err(anyhow::anyhow!("findings obrigatorio (array com pelo menos 1 achado)"))
+                } else {
+                    let findings: Vec<serde_json::Value> = items
+                        .iter()
+                        .take(32)
+                        .map(|f| {
+                            serde_json::json!({
+                                "file": f["file"].clone(),
+                                "line": f["line"].clone(),
+                                "severity": f["severity"].clone(),
+                                "category": f["category"].clone(),
+                                "summary": f["summary"].clone(),
+                                "failure_scenario": f["failure_scenario"].clone(),
+                            })
+                        })
+                        .collect();
+                    let n = findings.len();
+                    let _ = app.emit(
+                        "agent:chat_card",
+                        serde_json::json!({ "session_id": session_id, "kind": "findings", "findings": findings }),
+                    );
+                    Ok(tools::ToolOutcome {
+                        observation: format!("{n} achado(s) exibido(s) no chat como cartoes."),
+                        pending_edit: None,
+                    })
+                }
+            } else if call.function.name == "show_widget" {
+                let title = args["title"].as_str().unwrap_or("Widget").to_string();
+                match args["widget_code"].as_str() {
+                    Some(code) if !code.trim().is_empty() && code.len() <= 200_000 => {
+                        let _ = app.emit(
+                            "agent:chat_card",
+                            serde_json::json!({ "session_id": session_id, "kind": "widget", "title": title, "code": code }),
+                        );
+                        Ok(tools::ToolOutcome {
+                            observation: "Widget exibido no chat.".to_string(),
+                            pending_edit: None,
+                        })
+                    }
+                    Some(_) => Err(anyhow::anyhow!("widget_code vazio ou maior que 200 KB")),
+                    None => Err(anyhow::anyhow!("widget_code obrigatorio")),
                 }
             } else if call.function.name == "send_user_file" {
                 match args["path"].as_str().map(str::trim).filter(|p| !p.is_empty()) {

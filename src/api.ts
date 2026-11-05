@@ -843,6 +843,27 @@ export function onUserFile(cb: (file: UserFileEvent) => void): Promise<UnlistenF
   return listen<UserFileEvent>("agent:user_file", (e) => cb(e.payload));
 }
 
+export interface ReviewFinding {
+  file: string;
+  line?: number | null;
+  severity?: string | null;
+  category?: string | null;
+  summary: string;
+  failure_scenario?: string | null;
+}
+
+/** Cartao que o agente manda pro chat (report_findings, show_widget). */
+export type ChatCard =
+  | { kind: "findings"; findings: ReviewFinding[] }
+  | { kind: "widget"; title: string; code: string };
+
+export function onChatCard(cb: (sessionId: string, card: ChatCard) => void): Promise<UnlistenFn> {
+  return listen<ChatCard & { session_id: string }>("agent:chat_card", (e) => {
+    const { session_id, ...card } = e.payload;
+    cb(session_id, card as ChatCard);
+  });
+}
+
 export function onAskQuestion(cb: (question: AskQuestion) => void): Promise<UnlistenFn> {
   return listen<AskQuestion>("agent:ask", (e) => cb(e.payload));
 }
