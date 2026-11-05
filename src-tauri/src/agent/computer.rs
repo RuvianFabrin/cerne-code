@@ -49,6 +49,24 @@ pub fn tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         spec(
+            "computer_use_mouse_move",
+            "Move o mouse para (x,y) SEM clicar, para calibrar antes de um clique. Devolve a posicao que o sistema reporta para o cursor e uma screenshot com uma cruz vermelha nessa posicao. Se a cruz nao estiver sobre o alvo desejado, corrija (x,y) e repita (no maximo 3 vezes). REQUER modelo com visao.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "x": { "type": "integer", "description": "Coordenada X em pixels de tela" },
+                    "y": { "type": "integer", "description": "Coordenada Y em pixels de tela" },
+                    "window_title": { "type": "string", "description": "Titulo parcial da janela alvo (opcional, traz pro primeiro plano antes)" }
+                },
+                "required": ["x", "y"]
+            }),
+        ),
+        spec(
+            "computer_use_cursor_position",
+            "Le a posicao atual do cursor do mouse em coordenadas de tela. Nao precisa de visao.",
+            json!({ "type": "object", "properties": {}, "required": [] }),
+        ),
+        spec(
             "computer_use_type_text",
             "Digita texto via teclado no elemento focado. Foque o campo desejado ANTES, com computer_use_click (precisa de visao) ou computer_use_click_element (via AX-tree, nao precisa de visao). Max 500 chars por chamada. Nao requer visao (desde que o foco tenha sido feito por outra via).",
             json!({
@@ -166,7 +184,11 @@ pub fn tool_specs() -> Vec<ToolSpec> {
 /// por exemplo) e nao precisam saber onde nada esta na tela - um modelo sem
 /// visao consegue automatizar 100% via arvore de acessibilidade: list_windows
 /// -> focus_window -> get_window_state -> click_element -> type_text/press_key.
-pub const VISION_REQUIRED_TOOLS: &[&str] = &["computer_use_screenshot", "computer_use_click"];
+pub const VISION_REQUIRED_TOOLS: &[&str] = &[
+    "computer_use_screenshot",
+    "computer_use_click",
+    "computer_use_mouse_move",
+];
 
 pub fn requires_vision(tool_name: &str) -> bool {
     VISION_REQUIRED_TOOLS.contains(&tool_name)

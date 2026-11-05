@@ -423,6 +423,15 @@ pub async fn execute(name: &str, args: &Value, app_data_dir: &Path) -> Result<Co
             check_authorization(app_data_dir)?;
             exec_click(args)
         }
+        "computer_use_mouse_move" => {
+            if should_use_wayland_backend() {
+                return Err(anyhow!("computer_use_mouse_move ainda nao funciona no Wayland"));
+            }
+            maybe_focus_from_args(args)?;
+            check_authorization(app_data_dir)?;
+            exec_mouse_move(args)
+        }
+        "computer_use_cursor_position" => exec_cursor_position(),
         "computer_use_type_text" => {
             if should_use_wayland_backend() {
                 #[cfg(target_os = "linux")]
@@ -628,10 +637,17 @@ fn capture_screen_base64(window_title: Option<&str>) -> Result<(String, u32, u32
             .map_err(|e| anyhow!("falha ao capturar tela: {e}"))?
     };
 
-    let (w, h) = (img.width(), img.height());
+    let (raw_w, raw_h) = (img.width(), img.height());
+    // O modelo recebe a imagem reduzida (ver rgba_to_base64). A resolucao
+    // informada tem que ser a dela, e o texto diz como converter a posicao na
+    // imagem em coordenada de clique; senao o modelo calcula em escala errada.
+    let (w, h) = crate::image_util::encoded_dims(raw_w, raw_h, crate::image_util::MAX_IMAGE_EDGE);
     let b64 = rgba_to_base64(img)?;
     let meta = format!(
-        "monitor_primario=\"{mon_name}\" res={mon_w}x{mon_h} offset_virtual=({mon_x},{mon_y}) total_monitores={total} screenshot={w}x{h}px"
+        "monitor_primario=\"{mon_name}\" res={mon_w}x{mon_h} offset_virtual=({mon_x},{mon_y}) total_monitores={total} imagem_enviada={w}x{h}px. \
+         Coordenadas de clique vao de (0,0) a ({}, {}) no monitor primario. Pra converter um ponto da imagem enviada em coordenada de clique: x = x_imagem * {mon_w} / {w}, y = y_imagem * {mon_h} / {h}",
+        mon_w - 1,
+        mon_h - 1
     );
     Ok((b64, w, h, meta))
 }
@@ -689,6 +705,120 @@ fn exec_click(args: &Value) -> Result<ComputerOutcome> {
     Ok(ComputerOutcome {
         text: format!("Clique {button_str} em ({x},{y}) executado no monitor primario. {meta}. Screenshot pos-clique ({w}x{h}px) anexado — verifique se o efeito foi o esperado."),
         screenshot_base64: Some(b64),
+    })
+}
+
+/// Desenha uma cruz vermelha com contorno branco em (cx, cy), pra mostrar onde
+/// o sistema diz que o cursor esta. O contorno deixa a marca visivel em fundo
+/// claro e escuro.
+fn draw_cursor_marker(img: &mut image::RgbaImage, cx: i32, cy: i32) {
+    let (w, h) = (img.width() as i32, img.height() as i32);
+    let mut paint = |x: i32, y: i32, c: image::Rgba<u8>| {
+        if x >= 0 && y >= 0 && x < w && y < h {
+            img.put_pixel(x as u32, y as u32, c);
+        }
+    };
+    let white = image::Rgba([255, 255, 255, 255]);
+    let red = image::Rgba([255, 0, 0, 255]);
+    for (color, len, thick) in [(white, 28, 5), (red, 24, 3)] {
+        let half = thick / 2;
+        for d in -len..=len {
+            for t in -half..=half {
+                paint(cx + d, cy + t, color);
+                paint(cx + t, cy + d, color);
+            }
+        }
+    }
+    for dy in -3..=3 {
+        for dx in -3..=3 {
+            paint(cx + dx, cy + dy, red);
+        }
+    }
+}
+
+/// Screenshot do monitor primario com a marca do cursor na posicao reportada.
+/// Retorna o base64 e uma linha de metadados.
+fn capture_screen_with_cursor_marker(cursor: (i32, i32)) -> Result<(String, String)> {
+    use xcap::Monitor;
+
+    let monitors = Monitor::all().map_err(|e| anyhow!("falha ao listar monitores: {e}"))?;
+    let monitor = monitors
+        .first()
+        .ok_or_else(|| anyhow!("nenhum monitor encontrado"))?;
+    let mon_x = monitor.x().unwrap_or(0);
+    let mon_y = monitor.y().unwrap_or(0);
+    let mon_w = monitor.width().unwrap_or(0).max(1);
+    let mon_h = monitor.height().unwrap_or(0).max(1);
+    let mut img = monitor
+        .capture_image()
+        .map_err(|e| anyhow!("falha ao capturar tela: {e}"))?;
+    let (raw_w, raw_h) = (img.width(), img.height());
+    // Screenshot em pixels fisicos; coordenadas de tela podem ser logicas (DPI).
+    // Converte a posicao do cursor pra imagem pelo fator real (antes de reduzir).
+    let sx = raw_w as f64 / mon_w as f64;
+    let sy = raw_h as f64 / mon_h as f64;
+    let cx = (((cursor.0 - mon_x) as f64) * sx).round() as i32;
+    let cy = (((cursor.1 - mon_y) as f64) * sy).round() as i32;
+    draw_cursor_marker(&mut img, cx, cy);
+    let (w, h) = crate::image_util::encoded_dims(raw_w, raw_h, crate::image_util::MAX_IMAGE_EDGE);
+    let b64 = rgba_to_base64(img)?;
+    Ok((
+        b64,
+        format!(
+            "cruz em ({}, {}) na coordenada de tela ({cursor_x},{cursor_y}); imagem_enviada={w}x{h}px; monitor {mon_w}x{mon_h} em ({mon_x},{mon_y}); converter imagem em tela: x = x_imagem * {mon_w} / {w}, y = y_imagem * {mon_h} / {h}",
+            (cx as f64 * w as f64 / raw_w as f64).round() as i32,
+            (cy as f64 * h as f64 / raw_h as f64).round() as i32,
+            cursor_x = cursor.0,
+            cursor_y = cursor.1,
+        ),
+    ))
+}
+
+fn exec_mouse_move(args: &Value) -> Result<ComputerOutcome> {
+    rate_limit()?;
+    let x = args["x"]
+        .as_i64()
+        .ok_or_else(|| anyhow!("x obrigatorio (integer)"))? as i32;
+    let y = args["y"]
+        .as_i64()
+        .ok_or_else(|| anyhow!("y obrigatorio (integer)"))? as i32;
+
+    let mut enigo = Enigo::new(&Settings::default())
+        .map_err(|e| anyhow!("falha ao inicializar enigo: {e}"))?;
+    enigo
+        .move_mouse(x, y, enigo::Coordinate::Abs)
+        .map_err(|e| anyhow!("falha ao mover mouse: {e}"))?;
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let (rx, ry) = enigo
+        .location()
+        .map_err(|e| anyhow!("falha ao ler posicao do mouse: {e}"))?;
+
+    let (b64, meta) = capture_screen_with_cursor_marker((rx, ry))?;
+    let (dx, dy) = (rx - x, ry - y);
+    let verdict = if dx == 0 && dy == 0 {
+        "posicao exata do pedido".to_string()
+    } else {
+        format!("DIFERENTE do pedido (diferenca {dx},{dy})")
+    };
+    Ok(ComputerOutcome {
+        text: format!(
+            "Mouse movido para ({x},{y}) SEM clicar. Posicao reportada pelo sistema: ({rx},{ry}) - {verdict}. \
+             Na screenshot anexada, a cruz vermelha marca a posicao reportada ({meta}). \
+             Confira se a cruz esta sobre o alvo; se nao estiver, corrija as coordenadas pela diferenca visual."
+        ),
+        screenshot_base64: Some(b64),
+    })
+}
+
+fn exec_cursor_position() -> Result<ComputerOutcome> {
+    let enigo = Enigo::new(&Settings::default())
+        .map_err(|e| anyhow!("falha ao inicializar enigo: {e}"))?;
+    let (x, y) = enigo
+        .location()
+        .map_err(|e| anyhow!("falha ao ler posicao do mouse: {e}"))?;
+    Ok(ComputerOutcome {
+        text: format!("Cursor em ({x},{y}), nas mesmas coordenadas de computer_use_click."),
+        screenshot_base64: None,
     })
 }
 
@@ -1158,19 +1288,39 @@ async fn exec_browser(args: &Value) -> Result<ComputerOutcome> {
 // ── AX Tree (UI Automation) ─────────────────────────────────────────
 
 #[cfg(windows)]
-fn exec_ax_tree(args: &Value) -> Result<ComputerOutcome> {
-    use uiautomation::UIAutomation;
+fn ui_actionable(el: &uiautomation::UIElement) -> bool {
+    use uiautomation::types::ControlType as C;
+    matches!(
+        el.get_control_type(),
+        Ok(C::Button
+            | C::Edit
+            | C::CheckBox
+            | C::ComboBox
+            | C::Hyperlink
+            | C::ListItem
+            | C::MenuItem
+            | C::TabItem
+            | C::TreeItem
+            | C::RadioButton
+            | C::SplitButton
+            | C::DataItem
+            | C::Spinner
+            | C::Slider)
+    )
+}
 
-    let pid = args["pid"]
-        .as_u64()
-        .ok_or_else(|| anyhow!("pid obrigatorio"))? as u32;
+/// Todos os elementos UI do processo, na ordem em que o UI Automation devolve.
+/// `ax_tree` e `click_element` usam esta mesma lista, senao o indice mostrado
+/// no AX tree apontava pra outro elemento na hora do clique.
+#[cfg(windows)]
+fn ui_find_elements(pid: u32) -> Result<Vec<uiautomation::UIElement>> {
+    use uiautomation::UIAutomation;
 
     let automation =
         UIAutomation::new().map_err(|e| anyhow!("falha ao inicializar UI Automation: {e}"))?;
     let root = automation
         .get_root_element()
         .map_err(|e| anyhow!("falha ao obter root element: {e}"))?;
-
     let condition = automation
         .create_property_condition(
             uiautomation::types::UIProperty::ProcessId,
@@ -1178,43 +1328,45 @@ fn exec_ax_tree(args: &Value) -> Result<ComputerOutcome> {
             None,
         )
         .map_err(|e| anyhow!("falha ao criar condicao: {e}"))?;
-
-    let elements = root
+    Ok(root
         .find_all(uiautomation::types::TreeScope::Descendants, &condition)
-        .unwrap_or_default();
+        .unwrap_or_default())
+}
 
+#[cfg(windows)]
+fn exec_ax_tree(args: &Value) -> Result<ComputerOutcome> {
+    let pid = args["pid"]
+        .as_u64()
+        .ok_or_else(|| anyhow!("pid obrigatorio"))? as u32;
+
+    let elements = ui_find_elements(pid)?;
+
+    // O indice conta so os acionaveis (mesma regra de click_element); os nomeados
+    // nao acionaveis aparecem so como contexto, sem indice.
     let mut lines: Vec<String> = Vec::new();
-    let mut idx = 0;
-    for el in elements.iter().take(200) {
+    let mut idx = 0usize;
+    for el in elements.iter() {
+        if lines.len() >= 200 {
+            break;
+        }
         let name = el.get_name().unwrap_or_default();
         let ctrl = el
             .get_control_type()
             .map(|c| format!("{:?}", c))
             .unwrap_or_default();
-        let is_actionable = matches!(
-            el.get_control_type(),
-            Ok(uiautomation::types::ControlType::Button)
-                | Ok(uiautomation::types::ControlType::Edit)
-                | Ok(uiautomation::types::ControlType::CheckBox)
-                | Ok(uiautomation::types::ControlType::ComboBox)
-                | Ok(uiautomation::types::ControlType::Hyperlink)
-                | Ok(uiautomation::types::ControlType::ListItem)
-                | Ok(uiautomation::types::ControlType::MenuItem)
-                | Ok(uiautomation::types::ControlType::TabItem)
-                | Ok(uiautomation::types::ControlType::TreeItem)
-        );
-        if is_actionable || !name.is_empty() {
+        let actionable = ui_actionable(el);
+        if actionable || !name.is_empty() {
             let label = if name.is_empty() {
                 ctrl.clone()
             } else {
                 format!("{ctrl} \"{name}\"")
             };
-            if is_actionable {
+            if actionable {
                 lines.push(format!("[{idx}] {label}"));
+                idx += 1;
             } else {
                 lines.push(format!("    {label}"));
             }
-            idx += 1;
         }
     }
 
@@ -1256,10 +1408,74 @@ async fn exec_ax_tree_linux(args: &Value) -> Result<ComputerOutcome> {
     })
 }
 
+/// Aciona um elemento sem mexer no mouse real quando possivel: tenta os padroes
+/// do UI Automation (Invoke, Toggle, SelectionItem, ExpandCollapse) e so cai no
+/// clique fisico se nenhum funcionar. Campos de texto recebem foco; o texto e
+/// digitado depois por type_text.
+#[cfg(windows)]
+fn ui_click(el: &uiautomation::UIElement) -> Result<String> {
+    use uiautomation::patterns::{
+        UIExpandCollapsePattern, UIInvokePattern, UISelectionItemPattern, UITogglePattern,
+    };
+    use uiautomation::types::ControlType as C;
+
+    if !el.is_enabled().unwrap_or(true) {
+        return Err(anyhow!("elemento desabilitado"));
+    }
+    let kind = el.get_control_type().ok();
+    if matches!(kind, Some(C::Edit)) {
+        el.set_focus()
+            .map_err(|e| anyhow!("falha ao focar o campo: {e}"))?;
+        return Ok("campo focado (use type_text para digitar)".to_string());
+    }
+    if let Ok(p) = el.get_pattern::<UIInvokePattern>() {
+        if p.invoke().is_ok() {
+            return Ok("via UI Automation (Invoke)".to_string());
+        }
+    }
+    if let Ok(p) = el.get_pattern::<UITogglePattern>() {
+        if p.toggle().is_ok() {
+            return Ok("via UI Automation (Toggle)".to_string());
+        }
+    }
+    if let Ok(p) = el.get_pattern::<UISelectionItemPattern>() {
+        if p.select().is_ok() {
+            return Ok("via UI Automation (SelectionItem)".to_string());
+        }
+    }
+    if let Ok(p) = el.get_pattern::<UIExpandCollapsePattern>() {
+        if p.expand().is_ok() {
+            return Ok("via UI Automation (ExpandCollapse)".to_string());
+        }
+    }
+
+    // Fallback: clique fisico no ponto clicavel, ou no centro da area visivel.
+    let _ = el.set_focus();
+    let (cx, cy) = match el.get_clickable_point() {
+        Ok(Some(point)) => (point.get_x(), point.get_y()),
+        _ => {
+            let r = el
+                .get_bounding_rectangle()
+                .map_err(|e| anyhow!("elemento sem posicao na tela: {e}"))?;
+            if r.get_width() <= 0 || r.get_height() <= 0 {
+                return Err(anyhow!("elemento sem area visivel (oculto ou fora da tela)"));
+            }
+            ((r.get_left() + r.get_right()) / 2, (r.get_top() + r.get_bottom()) / 2)
+        }
+    };
+    let mut enigo = Enigo::new(&Settings::default())
+        .map_err(|e| anyhow!("falha ao inicializar enigo: {e}"))?;
+    enigo
+        .move_mouse(cx, cy, enigo::Coordinate::Abs)
+        .map_err(|e| anyhow!("falha ao mover mouse: {e}"))?;
+    enigo
+        .button(enigo::Button::Left, enigo::Direction::Click)
+        .map_err(|e| anyhow!("falha ao clicar: {e}"))?;
+    Ok(format!("clique fisico em ({cx},{cy}); nenhum padrao do UI Automation funcionou"))
+}
+
 #[cfg(windows)]
 fn exec_click_element(args: &Value) -> Result<ComputerOutcome> {
-    use uiautomation::UIAutomation;
-
     let pid = args["pid"]
         .as_u64()
         .ok_or_else(|| anyhow!("pid obrigatorio"))? as u32;
@@ -1267,71 +1483,20 @@ fn exec_click_element(args: &Value) -> Result<ComputerOutcome> {
         .as_u64()
         .ok_or_else(|| anyhow!("element_index obrigatorio"))? as usize;
 
-    let automation =
-        UIAutomation::new().map_err(|e| anyhow!("falha ao inicializar UI Automation: {e}"))?;
-    let root = automation
-        .get_root_element()
-        .map_err(|e| anyhow!("falha ao obter root element: {e}"))?;
-
-    let condition = automation
-        .create_property_condition(
-            uiautomation::types::UIProperty::ProcessId,
-            uiautomation::variants::Variant::from(pid as i32),
-            None,
+    let elements = ui_find_elements(pid)?;
+    let actionable: Vec<&uiautomation::UIElement> =
+        elements.iter().filter(|el| ui_actionable(el)).collect();
+    let target = actionable.get(element_index).ok_or_else(|| {
+        anyhow!(
+            "element_index {element_index} nao encontrado (total de elementos acionaveis: {})",
+            actionable.len()
         )
-        .map_err(|e| anyhow!("falha ao criar condicao: {e}"))?;
-
-    let elements = root
-        .find_all(uiautomation::types::TreeScope::Descendants, &condition)
-        .unwrap_or_default();
-
-    let mut actionable_idx = 0;
-    for el in elements.iter() {
-        let name = el.get_name().unwrap_or_default();
-        let is_actionable = matches!(
-            el.get_control_type(),
-            Ok(uiautomation::types::ControlType::Button)
-                | Ok(uiautomation::types::ControlType::Edit)
-                | Ok(uiautomation::types::ControlType::CheckBox)
-                | Ok(uiautomation::types::ControlType::ComboBox)
-                | Ok(uiautomation::types::ControlType::Hyperlink)
-                | Ok(uiautomation::types::ControlType::ListItem)
-                | Ok(uiautomation::types::ControlType::MenuItem)
-                | Ok(uiautomation::types::ControlType::TabItem)
-                | Ok(uiautomation::types::ControlType::TreeItem)
-        );
-        if is_actionable || !name.is_empty() {
-            if is_actionable && actionable_idx == element_index {
-                if let Ok(Some(point)) = el.get_clickable_point() {
-                    let cx = point.get_x();
-                    let cy = point.get_y();
-                    let mut enigo = Enigo::new(&Settings::default())
-                        .map_err(|e| anyhow!("falha ao inicializar enigo: {e}"))?;
-                    enigo
-                        .move_mouse(cx, cy, enigo::Coordinate::Abs)
-                        .map_err(|e| anyhow!("falha ao mover mouse: {e}"))?;
-                    enigo
-                        .button(enigo::Button::Left, enigo::Direction::Click)
-                        .map_err(|e| anyhow!("falha ao clicar: {e}"))?;
-                    return Ok(ComputerOutcome {
-                        text: format!("Elemento [{element_index}] clicado em ({cx},{cy}) via AX clickable point."),
-                        screenshot_base64: None,
-                    });
-                }
-                return Err(anyhow!(
-                    "elemento [{element_index}] nao tem clickable point"
-                ));
-            }
-            if is_actionable {
-                actionable_idx += 1;
-            }
-            actionable_idx += if !is_actionable { 0 } else { 0 };
-        }
-    }
-
-    Err(anyhow!(
-        "element_index {element_index} nao encontrado (total de elementos actionaveis: {actionable_idx})"
-    ))
+    })?;
+    let how = ui_click(target)?;
+    Ok(ComputerOutcome {
+        text: format!("Elemento [{element_index}] acionado: {how}."),
+        screenshot_base64: None,
+    })
 }
 
 #[cfg(not(any(windows, target_os = "linux")))]

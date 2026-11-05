@@ -38,6 +38,19 @@ pub const JPEG_QUALITY: u8 = 80;
 /// screenshot do agente mantém o `Triangle` que já usava (não mexer no que
 /// funciona), e o caminho do usuário usa `Lanczos3`, que preserva melhor texto
 /// pequeno — que é justamente o caso crítico lá.
+/// Tamanho que `encode_jpeg` entrega ao modelo, com a mesma regra de
+/// redimensionamento. Usado pra informar a resolucao real da imagem enviada.
+pub fn encoded_dims(w: u32, h: u32, max_edge: u32) -> (u32, u32) {
+    if w.max(h) <= max_edge {
+        return (w, h);
+    }
+    let ratio = max_edge as f32 / w.max(h) as f32;
+    (
+        ((w as f32 * ratio).round() as u32).max(1),
+        ((h as f32 * ratio).round() as u32).max(1),
+    )
+}
+
 pub fn encode_jpeg(
     img: DynamicImage,
     max_edge: u32,
@@ -257,5 +270,17 @@ mod tests {
         let saida = optimize_data_url(&uri).unwrap();
         assert!(saida.starts_with("data:image/jpeg;base64,"));
         assert!(saida.len() < uri.len());
+    }
+}
+
+#[cfg(test)]
+mod encoded_dims_tests {
+    use super::*;
+
+    #[test]
+    fn encoded_dims_matches_encode_rule() {
+        assert_eq!(encoded_dims(2560, 1440, 1280), (1280, 720));
+        assert_eq!(encoded_dims(1280, 720, 1280), (1280, 720));
+        assert_eq!(encoded_dims(720, 1280, 1280), (720, 1280));
     }
 }

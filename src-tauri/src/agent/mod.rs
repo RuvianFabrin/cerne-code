@@ -608,6 +608,23 @@ de computer_use_click/type_text/press_key/scroll (foca a janela automaticamente 
 numa chamada so); use computer_use_focus_window(titulo) separadamente so quando quiser focar sem \
 agir ainda (ex: antes de um screenshot). Use computer_use_list_windows pra descobrir o titulo \
 exato antes. \
+Ordem para clicar num elemento da tela, do metodo mais confiavel pro menos. Passe pro proximo passo \
+so se o anterior falhar, e diga ao usuario qual metodo deu certo: \
+(1) computer_use_get_window_state + computer_use_click_element pelo indice: aciona pelo UI Automation, \
+sem mexer no mouse real. \
+(2) Se o elemento nao aparecer na arvore, ou o clique nao tiver efeito: tire computer_use_screenshot e \
+estime (x,y) do alvo. O resultado do screenshot traz a resolucao do monitor e a formula pra converter \
+um ponto da imagem enviada em coordenada de clique; use essa formula, nao suponha a escala. \
+(3) Calibre antes de clicar: chame computer_use_mouse_move(x,y), que move SEM clicar. A resposta traz a \
+posicao que o sistema reporta e uma screenshot com uma cruz vermelha nessa posicao. Se a cruz nao cair \
+sobre o alvo, corrija (x,y) pela diferenca visual e repita, no maximo 3 vezes. \
+(4) Calibracao de escala, uma vez por sessao ou quando os cliques caem sempre deslocados: mova o mouse \
+pro centro da tela (metade da largura e da altura do screenshot). Se a cruz aparecer no centro da imagem, \
+o mapeamento esta certo. Se aparecer deslocada, a escala de tela esta diferente (DPI); ajuste as \
+coordenadas antes de clicar e avise o usuario. \
+(5) Clique com computer_use_click(x,y) e confira o screenshot pos-clique. \
+(6) Nao use Tab e Espaco como substituto de clique sem antes tentar os passos 1 a 5; se precisar usar, \
+explique ao usuario por que. \
 Quando mostrar comandos de shell pro usuario rodar (fora de run_command, direto no texto da \
 resposta), prefira UM bloco de codigo por comando — facilita copiar/colar cada um isoladamente. \
 So agrupe varios comandos num unico bloco quando eles precisarem rodar juntos, em sequencia, de um \

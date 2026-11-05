@@ -309,7 +309,13 @@ async fn connect_server(server: &McpServerConfig) -> Result<McpClient> {
             crate::agent::shell::apply_creation_flags(&mut command);
             if let Some(project) = env.get("CONTEXT_MODE_PROJECT_DIR") { command.current_dir(project); }
             command
-        } else { build_command(&server.command) };
+        } else {
+            let mut command = build_command(&server.command);
+            // O Playwright grava `.playwright-mcp` no diretório atual. Sem isso ele herda
+            // a pasta de instalação (Program Files), onde não há permissão de escrita.
+            if server.name == "playwright" { command.current_dir(std::env::temp_dir()); }
+            command
+        };
         let transport = TokioChildProcess::new(process.configure(|cmd| {
             cmd.args(&args);
             for (key, value) in &env {

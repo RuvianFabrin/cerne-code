@@ -308,10 +308,24 @@ pub fn fixed_window(
     while tail.first().map_or(false, |m| m.role == "tool") {
         tail.remove(0);
     }
+    keep_latest_user(&mut tail, rest);
 
     let mut out = head;
     out.extend(tail);
     out
+}
+
+/// Os templates de chat dos modelos locais exigem uma mensagem do usuário no
+/// histórico ("No user query found in messages"). Quando os resultados de
+/// ferramenta do turno atual ocupam o orçamento, a mensagem do usuário sai da
+/// janela: ela volta aqui, antes do que sobrou.
+fn keep_latest_user(tail: &mut Vec<ChatMessage>, source: &[ChatMessage]) {
+    if tail.iter().any(|m| m.role == "user") {
+        return;
+    }
+    if let Some(user) = source.iter().rev().find(|m| m.role == "user") {
+        tail.insert(0, user.clone());
+    }
 }
 
 /// Pega os parágrafos do fim de `text` que cabem em `budget` tokens, sem
@@ -419,6 +433,7 @@ pub fn rolling_window(
     while tail.first().map_or(false, |m| m.role == "tool") {
         tail.remove(0);
     }
+    keep_latest_user(&mut tail, messages);
     out.extend(tail);
     out
 }
@@ -502,6 +517,36 @@ mod tests {
         assert!(tail.contains("TERCEIRO"));
         assert!(!tail.contains("PRIMEIRO"));
         assert!(tail.split("\n\n").any(|p| p.starts_with("TERCEIRO ")), "parágrafo inteiro preservado");
+    }
+
+    #[test]
+    fn fixed_window_keeps_the_user_turn_when_tool_results_fill_the_budget() {
+        let model = "gpt-4o";
+        let big = "resultado de snapshot ".repeat(400);
+        let mut call = msg("assistant", "");
+        call.tool_calls = Some(vec![ToolCall {
+            id: "c1".into(),
+            kind: "function".into(),
+            function: ToolCallFunction { name: "browser_snapshot".into(), arguments: "{}".into() },
+        }]);
+        let mut tool_a = msg("tool", &big);
+        tool_a.tool_call_id = Some("c1".into());
+        let mut tool_b = msg("tool", &big);
+        tool_b.tool_call_id = Some("c2".into());
+        let messages = vec![
+            msg("system", "sistema"),
+            msg("user", "entra na noticia 1"),
+            call,
+            tool_a,
+            tool_b,
+        ];
+        let head = estimate_messages_tokens(&messages[..1], &[], model);
+        let budget = head + estimate_tokens_for(model, &big) / 2;
+        let out = fixed_window(&messages, budget, &[], model);
+        assert!(out.iter().any(|m| m.role == "user" && m.content == "entra na noticia 1"),
+            "a mensagem do usuário do turno atual precisa sobreviver: {:?}",
+            out.iter().map(|m| m.role.as_str()).collect::<Vec<_>>());
+        assert_ne!(out.get(1).map(|m| m.role.as_str()), Some("tool"));
     }
 
     #[test]
