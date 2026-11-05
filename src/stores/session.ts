@@ -16,6 +16,8 @@ import {
   onContextCompacted,
   onContextUsage,
   onPendingEdit,
+  onUserFile,
+  type UserFileEvent,
   onPermissionRequest,
   onTaskQueueStatus,
   onPlainQueueStatus,
@@ -100,6 +102,9 @@ export const useSessionStore = defineStore("session", {
     personas: [] as Persona[],
     skills: [] as SkillMeta[],
     currentId: null as string | null,
+    // Cartoes de arquivos anexados pela tool send_user_file, por sessao.
+    // Ficam so na memoria desta execucao (nao reaparecem depois de reabrir o app).
+    userFilesBySession: {} as Record<string, UserFileEvent[]>,
     currentSession: null as Session | null,
     currentFork: "turboquant",
     currentCustomProviderId: "",
@@ -337,6 +342,11 @@ export const useSessionStore = defineStore("session", {
           const liveTask = block.tasks.find((t: TaskItem) => t.id === id);
           if (liveTask) applyResult(liveTask);
         }
+      });
+
+      await onUserFile((file) => {
+        const list = this.userFilesBySession[file.session_id] ?? [];
+        this.userFilesBySession = { ...this.userFilesBySession, [file.session_id]: [...list, file] };
       });
 
       await onPendingEdit((edit) => {

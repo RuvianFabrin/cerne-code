@@ -1,0 +1,439 @@
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { useI18n } from "vue-i18n";
+import { api, type AgentExecution, type BackgroundJobInfo, type GitFileChange, type McpServerConfig } from "../api";
+import { useSessionStore } from "../stores/session";
+import ContextGauge from "./ContextGauge.vue";
+
+// Painel lateral da sessão atual (espelha o painel direito do Claude Desktop):
+// ambiente (pastas e permissão), contexto, MCPs ativos, alterações do git,
+// processos em segundo plano, agentes e sub-sessões. Só lê dados que já
+// existem no app — não cria nada novo no backend.
+
+const { t } = useI18n();
+const sessionStore = useSessionStore();
+
+const mcpServers = ref<McpServerConfig[]>([]);
+const gitChanges = ref<GitFileChange[]>([]);
+const gitError = ref<string | null>(null);
+const jobs = ref<BackgroundJobInfo[]>([]);
+const executions = ref<AgentExecution[]>([]);
+const collapsed = ref<Record<string, boolean>>({});
+
+const session = computed(() => sessionStore.currentSession);
+
+const mcpNames = computed(() => {
+  const s = session.value;
+  if (!s) return [];
+  // Mesma regra do ComposerBar: `null` significa "todos os MCPs configurados".
+  if (!s.enabled_mcp_servers) return mcpServers.value.map((m) => m.name);
+  return s.enabled_mcp_servers;
+});
+
+const children = computed(() =>
+  sessionStore.sessions.filter((s) => s.parent_session_id === sessionStore.currentId),
+);
+const parent = computed(() => {
+  const pid = session.value?.parent_session_id;
+  return pid ? sessionStore.sessions.find((s) => s.id === pid) ?? null : null;
+});
+
+const runningJobs = computed(() => jobs.value.filter((j) => j.status.kind === "running").length);
+const runningAgents = computed(() => executions.value.filter((e) => e.status === "running").length);
+
+async function loadMcp() {
+  try {
+    mcpServers.value = await api.listMcpServers();
+  } catch {
+    mcpServers.value = [];
+  }
+}
+
+async function refreshGit() {
+  const root = session.value?.project_root;
+  if (!root) {
+    gitChanges.value = [];
+    gitError.value = null;
+    return;
+  }
+  try {
+    gitChanges.value = await api.gitRepoStatus(root);
+    gitError.value = null;
+  } catch {
+    gitChanges.value = [];
+    gitError.value = "not-repo";
+  }
+}
+
+async function refreshJobsAndAgents() {
+  const id = sessionStore.currentId;
+  if (!id) return;
+  try {
+    jobs.value = (await api.listBackgroundJobs()).filter((j) => j.session_id === id);
+  } catch {
+    jobs.value = [];
+  }
+  try {
+    executions.value = (await api.listAgentExecutions()).filter((e) => e.session_id === id);
+  } catch {
+    executions.value = [];
+  }
+}
+
+// Atualiza jobs/agentes a cada 5s e o git a cada 15s (git status pode ser
+// caro em repositórios grandes, então não roda no mesmo ritmo).
+let tick = 0;
+let poll: ReturnType<typeof setInterval> | null = null;
+function refreshAll() {
+  refreshJobsAndAgents();
+  if (tick % 3 === 0) refreshGit();
+  tick++;
+}
+
+onMounted(() => {
+  loadMcp();
+  refreshAll();
+  poll = setInterval(refreshAll, 5000);
+});
+onUnmounted(() => {
+  if (poll) clearInterval(poll);
+});
+watch(
+  () => sessionStore.currentId,
+  () => {
+    tick = 0;
+    refreshAll();
+  },
+);
+
+function toggle(key: string) {
+  collapsed.value[key] = !collapsed.value[key];
+}
+
+function openSession(id: string) {
+  sessionStore.selectSession(id);
+}
+
+function statusLabel(status: string): string {
+  return t(`sidePanel.status.${status}`, status);
+}
+</script>
+
+<template>
+  <aside class="side-panel">
+    <!-- Ambiente -->
+    <section class="sp-section">
+      <button class="sp-head" @click="toggle('env')">
+        <span class="msi chevron">{{ collapsed.env ? "chevron_right" : "expand_more" }}</span>
+        <span class="sp-title">{{ $t("sidePanel.sec.env") }}</span>
+      </button>
+      <div v-if="!collapsed.env" class="sp-body">
+        <div v-if="session?.project_root" class="sp-row">
+          <span class="msi row-icon">folder</span>
+          <div class="row-main">
+            <span class="row-text" :title="session.project_root">{{ session.project_root }}</span>
+            <span class="row-badge write">{{ $t("sidePanel.env.readWrite") }}</span>
+          </div>
+        </div>
+        <p v-else class="sp-empty">{{ $t("sidePanel.env.none") }}</p>
+        <div v-for="p in session?.extra_read_paths ?? []" :key="p.path" class="sp-row">
+          <span class="msi row-icon">folder_open</span>
+          <div class="row-main">
+            <span class="row-text" :title="p.path">{{ p.path }}</span>
+            <span class="row-badge" :class="p.mode === 'read_write' ? 'write' : 'read'">
+              {{ p.mode === "read_write" ? $t("sidePanel.env.readWrite") : $t("sidePanel.env.readOnly") }}
+            </span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Contexto -->
+    <section class="sp-section">
+      <button class="sp-head" @click="toggle('context')">
+        <span class="msi chevron">{{ collapsed.context ? "chevron_right" : "expand_more" }}</span>
+        <span class="sp-title">{{ $t("sidePanel.sec.context") }}</span>
+      </button>
+      <div v-if="!collapsed.context" class="sp-body">
+        <ContextGauge />
+      </div>
+    </section>
+
+    <!-- MCPs -->
+    <section class="sp-section">
+      <button class="sp-head" @click="toggle('mcp')">
+        <span class="msi chevron">{{ collapsed.mcp ? "chevron_right" : "expand_more" }}</span>
+        <span class="sp-title">{{ $t("sidePanel.sec.mcp") }}</span>
+        <span class="sp-count">{{ mcpNames.length }}</span>
+      </button>
+      <div v-if="!collapsed.mcp" class="sp-body">
+        <div v-for="name in mcpNames" :key="name" class="sp-row">
+          <span class="status-dot ok"></span>
+          <span class="row-text">{{ name }}</span>
+        </div>
+        <p v-if="!mcpNames.length" class="sp-empty">{{ $t("sidePanel.mcp.none") }}</p>
+      </div>
+    </section>
+
+    <!-- Git -->
+    <section class="sp-section">
+      <button class="sp-head" @click="toggle('git')">
+        <span class="msi chevron">{{ collapsed.git ? "chevron_right" : "expand_more" }}</span>
+        <span class="sp-title">{{ $t("sidePanel.sec.git") }}</span>
+        <span v-if="gitChanges.length" class="sp-count">{{ gitChanges.length }}</span>
+      </button>
+      <div v-if="!collapsed.git" class="sp-body">
+        <p v-if="!session?.project_root" class="sp-empty">{{ $t("sidePanel.git.noProject") }}</p>
+        <p v-else-if="gitError === 'not-repo'" class="sp-empty">{{ $t("sidePanel.git.notRepo") }}</p>
+        <p v-else-if="!gitChanges.length" class="sp-empty">{{ $t("sidePanel.git.none") }}</p>
+        <div v-for="f in gitChanges" :key="f.path" class="sp-row" :title="f.path">
+          <span class="git-status" :class="f.status">{{ f.status[0].toUpperCase() }}</span>
+          <span class="row-text">{{ f.path }}</span>
+          <span class="git-stat"><span class="add">+{{ f.additions }}</span> <span class="del">-{{ f.deletions }}</span></span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Processos em segundo plano -->
+    <section class="sp-section">
+      <button class="sp-head" @click="toggle('jobs')">
+        <span class="msi chevron">{{ collapsed.jobs ? "chevron_right" : "expand_more" }}</span>
+        <span class="sp-title">{{ $t("sidePanel.sec.jobs") }}</span>
+        <span class="sp-count">{{ runningJobs ? `${runningJobs}/${jobs.length}` : jobs.length }}</span>
+      </button>
+      <div v-if="!collapsed.jobs" class="sp-body">
+        <div v-for="j in jobs" :key="j.id" class="sp-row" :title="j.command">
+          <span class="status-dot" :class="j.status.kind === 'running' ? 'running' : 'idle'"></span>
+          <span class="row-text mono">{{ j.command }}</span>
+          <span class="row-status">{{ statusLabel(j.status.kind) }}</span>
+        </div>
+        <p v-if="!jobs.length" class="sp-empty">{{ $t("sidePanel.jobs.none") }}</p>
+      </div>
+    </section>
+
+    <!-- Agentes -->
+    <section class="sp-section">
+      <button class="sp-head" @click="toggle('agents')">
+        <span class="msi chevron">{{ collapsed.agents ? "chevron_right" : "expand_more" }}</span>
+        <span class="sp-title">{{ $t("sidePanel.sec.agents") }}</span>
+        <span class="sp-count">{{ runningAgents ? `${runningAgents}/${executions.length}` : executions.length }}</span>
+      </button>
+      <div v-if="!collapsed.agents" class="sp-body">
+        <div v-for="e in executions" :key="e.id" class="sp-row" :title="e.name">
+          <span class="status-dot" :class="e.status === 'running' ? 'running' : e.status === 'failed' ? 'failed' : 'ok'"></span>
+          <span class="row-text">{{ e.name }}</span>
+          <span class="row-status">{{ statusLabel(e.status) }}</span>
+        </div>
+        <p v-if="!executions.length" class="sp-empty">{{ $t("sidePanel.agents.none") }}</p>
+      </div>
+    </section>
+
+    <!-- Sub-sessões -->
+    <section class="sp-section">
+      <button class="sp-head" @click="toggle('sub')">
+        <span class="msi chevron">{{ collapsed.sub ? "chevron_right" : "expand_more" }}</span>
+        <span class="sp-title">{{ $t("sidePanel.sec.sub") }}</span>
+        <span class="sp-count">{{ children.length }}</span>
+      </button>
+      <div v-if="!collapsed.sub" class="sp-body">
+        <div v-if="parent" class="sp-row clickable" @click="openSession(parent.id)">
+          <span class="msi row-icon">arrow_upward</span>
+          <span class="row-text">{{ $t("sidePanel.sub.parent") }}: {{ parent.title }}</span>
+        </div>
+        <div v-for="c in children" :key="c.id" class="sp-row clickable" @click="openSession(c.id)">
+          <span class="msi row-icon">subdirectory_arrow_right</span>
+          <span class="row-text">{{ c.title }}</span>
+          <span class="row-status">{{ $t("sidePanel.sub.open") }}</span>
+        </div>
+        <p v-if="!children.length && !parent" class="sp-empty">{{ $t("sidePanel.sub.none") }}</p>
+      </div>
+    </section>
+  </aside>
+</template>
+
+<style scoped>
+.side-panel {
+  width: 280px;
+  flex-shrink: 0;
+  height: 100%;
+  overflow-y: auto;
+  border-left: var(--cerne-border);
+  background: var(--cerne-surface, transparent);
+  font-size: 13px;
+}
+
+.sp-section {
+  border-bottom: var(--cerne-border);
+}
+
+.sp-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 12px;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+}
+
+.sp-head .chevron {
+  font-size: 18px;
+  opacity: 0.6;
+}
+
+.sp-title {
+  flex: 1;
+}
+
+.sp-count {
+  font-size: 11px;
+  opacity: 0.6;
+  font-weight: 500;
+}
+
+.sp-body {
+  padding: 0 12px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sp-empty {
+  margin: 0;
+  opacity: 0.6;
+  font-size: 12px;
+}
+
+.sp-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sp-row.clickable {
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 4px 6px;
+  margin: 0 -6px;
+}
+
+.sp-row.clickable:hover {
+  background: rgba(127, 127, 127, 0.12);
+}
+
+.row-icon {
+  font-size: 16px;
+  opacity: 0.7;
+}
+
+.row-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+
+.row-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  flex: 1;
+}
+
+.row-text.mono {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+}
+
+.row-status {
+  font-size: 11px;
+  opacity: 0.6;
+  white-space: nowrap;
+}
+
+.row-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  width: fit-content;
+  opacity: 0.85;
+}
+
+.row-badge.write {
+  background: rgba(34, 197, 94, 0.15);
+  color: #16a34a;
+}
+
+.row-badge.read {
+  background: rgba(127, 127, 127, 0.18);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #a1a1aa;
+}
+
+.status-dot.ok {
+  background: #22c55e;
+}
+
+.status-dot.running {
+  background: #3b82f6;
+  animation: sp-pulse 1.2s ease-in-out infinite;
+}
+
+.status-dot.failed {
+  background: #ef4444;
+}
+
+@keyframes sp-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.git-status {
+  width: 16px;
+  text-align: center;
+  font-weight: 700;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.git-status.added,
+.git-status.untracked {
+  color: #16a34a;
+}
+
+.git-status.deleted {
+  color: #ef4444;
+}
+
+.git-status.modified,
+.git-status.renamed {
+  color: #d97706;
+}
+
+.git-stat {
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.git-stat .add {
+  color: #16a34a;
+}
+
+.git-stat .del {
+  color: #ef4444;
+}
+</style>

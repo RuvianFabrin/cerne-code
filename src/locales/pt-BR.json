@@ -1,4 +1,20 @@
 {
+  "userFile": {
+    "open": "Abrir",
+    "reveal": "Mostrar na pasta"
+  },
+  "sidePanel": {
+    "show": "Mostrar painel",
+    "hide": "Ocultar painel",
+    "sec": { "env": "Ambiente", "context": "Contexto", "mcp": "MCPs ativos", "git": "Alterações (git)", "jobs": "Processos em segundo plano", "agents": "Agentes", "sub": "Sub-sessões" },
+    "env": { "readWrite": "Pode editar", "readOnly": "Somente leitura", "none": "Nenhuma pasta de projeto" },
+    "mcp": { "none": "Nenhum MCP ativo" },
+    "git": { "none": "Nada alterado", "notRepo": "Esta pasta não é um repositório git", "noProject": "Sem pasta de projeto" },
+    "jobs": { "none": "Nenhum processo em segundo plano" },
+    "agents": { "none": "Nenhum agente nesta sessão" },
+    "sub": { "none": "Nenhuma sub-sessão", "parent": "Sessão pai", "open": "Abrir" },
+    "status": { "running": "rodando", "done": "concluído", "failed": "falhou", "exited": "encerrado", "unknown": "desconhecido" }
+  },
   "sidebar": {
     "collapse": "Recolher",
     "newSession": "Nova sessão",

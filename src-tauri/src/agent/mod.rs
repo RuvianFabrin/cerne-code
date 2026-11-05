@@ -33,6 +33,11 @@ use serde::Serialize;
 use std::path::Path;
 use tauri::{AppHandle, Emitter, Manager};
 
+/// Caminhos de arquivo anexados ao chat pela tool `send_user_file` nesta
+/// execucao do app. O comando `open_user_file` so abre/revela o que esta
+/// aqui, pra que o front nunca consiga abrir um caminho arbitrario.
+pub static SENT_USER_FILES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 // Mantem o teto historico apenas no Long Horizon; turnos comuns nao tem teto fixo.
 const MAX_LONG_HORIZON_TOOL_STEPS: usize = 50;
 
@@ -118,7 +123,7 @@ fn extract_file_path(tool_name: &str, args: &serde_json::Value) -> Option<String
         "read_file" | "write_file" | "edit_file" | "edit_docx" | "ast_edit" | "ast_grep" => {
             args["path"].as_str().map(|s| s.to_string())
         }
-        "list_dir" | "grep" => args["path"].as_str().map(|s| s.to_string()),
+        "list_dir" | "grep" | "glob" => args["path"].as_str().map(|s| s.to_string()),
         _ => None,
     }
 }
@@ -178,19 +183,30 @@ fn spawn_orchestrated_turn(
     prompt: String,
 ) -> tauri::async_runtime::JoinHandle<()> {
     tauri::async_runtime::spawn(async move {
-        let turn_started = std::time::Instant::now();
         let state = app.state::<AppState>();
-        let result = run_turn(app.clone(), &state, child_id.clone(), prompt, Vec::new(), None).await;
-        if let Some(info) = state.orchestrated_sessions.lock().unwrap().get_mut(&child_id) {
-            info.first_response_ms = Some(turn_started.elapsed().as_millis() as u64);
+        let mut next_prompt = Some(prompt);
+        while let Some(current) = next_prompt.take() {
+            let turn_started = std::time::Instant::now();
+            let result = run_turn(app.clone(), &state, child_id.clone(), current, Vec::new(), None).await;
+            if let Some(info) = state.orchestrated_sessions.lock().unwrap().get_mut(&child_id) {
+                info.first_response_ms = Some(turn_started.elapsed().as_millis() as u64);
+            }
+            if let Err(e) = result {
+                let _ = app.emit(
+                    "agent:error",
+                    serde_json::json!({ "session_id": child_id, "message": e.to_string() }),
+                );
+            }
+            // Mensagens de send_agent_message que chegaram durante este turno
+            // entram agora. Checar a fila e tirar a sessao de running_turns
+            // acontecem sob o MESMO lock que send_agent_message usa, entao
+            // nenhuma mensagem fica presa na fila sem turno pra consumi-la.
+            let mut running = state.running_turns.lock().unwrap();
+            next_prompt = pending_agent_message_pop(&child_id);
+            if next_prompt.is_none() {
+                running.remove(&child_id);
+            }
         }
-        if let Err(e) = result {
-            let _ = app.emit(
-                "agent:error",
-                serde_json::json!({ "session_id": child_id, "message": e.to_string() }),
-            );
-        }
-        state.running_turns.lock().unwrap().remove(&child_id);
 
         // A sessao filha terminou o turno dela — se o pai parou de pollar
         // via check_agent_session ANTES disso (seu proprio turno ja tinha
@@ -214,6 +230,18 @@ fn spawn_orchestrated_turn(
             }
         }
     })
+}
+
+/// Mensagens enviadas com `send_agent_message` pra uma sessao filha que ainda
+/// estava rodando: ficam aqui ate o turno atual dela terminar (FIFO, por
+/// sessao). Acesso sempre depois de travar `running_turns`.
+static PENDING_AGENT_MESSAGES: std::sync::Mutex<Vec<(String, String)>> =
+    std::sync::Mutex::new(Vec::new());
+
+fn pending_agent_message_pop(child_id: &str) -> Option<String> {
+    let mut queue = PENDING_AGENT_MESSAGES.lock().ok()?;
+    let idx = queue.iter().position(|(id, _)| id == child_id)?;
+    Some(queue.remove(idx).1)
 }
 
 /// Trava anti-loop do auto-continue: quantas vezes seguidas uma sessao pode
@@ -1723,6 +1751,68 @@ pub async fn run_turn(
                     }
                     None => Err(anyhow::anyhow!("name obrigatorio")),
                 }
+            } else if call.function.name == "search_skills" {
+                match args["query"].as_str() {
+                    Some(query) => skills::search_skills(&app_data_dir, project_path, query).map(|found| {
+                        let observation = if found.is_empty() {
+                            "nenhuma skill encontrada para essa busca".to_string()
+                        } else {
+                            found
+                                .iter()
+                                .take(10)
+                                .map(|s| format!("- {} ({}): {}", s.name, s.scope, s.description))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        };
+                        tools::ToolOutcome {
+                            observation,
+                            pending_edit: None,
+                        }
+                    }),
+                    None => Err(anyhow::anyhow!("query obrigatorio")),
+                }
+            } else if call.function.name == "send_user_file" {
+                match args["path"].as_str().map(str::trim).filter(|p| !p.is_empty()) {
+                    Some(raw) => {
+                        let candidate = if Path::new(raw).is_absolute() {
+                            std::path::PathBuf::from(raw)
+                        } else {
+                            project_path.map(|root| root.join(raw)).unwrap_or_else(|| std::path::PathBuf::from(raw))
+                        };
+                        match std::fs::metadata(&candidate) {
+                            Ok(meta) if meta.is_file() => {
+                                let name = candidate
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_default();
+                                let caption = args["caption"].as_str().unwrap_or("").to_string();
+                                let shown_path = candidate.display().to_string();
+                                if let Ok(mut sent) = SENT_USER_FILES.lock() {
+                                    sent.push(shown_path.clone());
+                                }
+                                let _ = app.emit(
+                                    "agent:user_file",
+                                    serde_json::json!({
+                                        "session_id": session_id,
+                                        "name": name,
+                                        "path": candidate.display().to_string(),
+                                        "size": meta.len(),
+                                        "caption": caption,
+                                    }),
+                                );
+                                Ok(tools::ToolOutcome {
+                                    observation: format!(
+                                        "Arquivo anexado ao chat: {name} ({} bytes). O usuario ve um cartao para abrir ou revelar o arquivo.",
+                                        meta.len()
+                                    ),
+                                    pending_edit: None,
+                                })
+                            }
+                            _ => Err(anyhow::anyhow!("arquivo nao encontrado: {raw}")),
+                        }
+                    }
+                    None => Err(anyhow::anyhow!("path obrigatorio")),
+                }
             } else if call.function.name == "read_skill_details" {
                 // Fase A6 do roteiro de Agentes/Skills: descricao no catalogo
                 // do system prompt vem cortada em SKILL_CATALOG_DESC_MAX_CHARS
@@ -2170,6 +2260,58 @@ pub async fn run_turn(
                         }
                     }
                     _ => Err(anyhow::anyhow!("description e prompt sao obrigatorios")),
+                }
+            } else if call.function.name == "send_agent_message" {
+                let child_id = args["session_id"].as_str().unwrap_or("").trim().to_string();
+                let message = args["message"].as_str().unwrap_or("").trim().to_string();
+                if child_id.is_empty() || message.is_empty() {
+                    Err(anyhow::anyhow!("session_id e message sao obrigatorios"))
+                } else {
+                    // So fala com sessoes que este turno criou com start_agent_session.
+                    let owned = sessions::get_session(&app_data_dir, &child_id)
+                        .map(|s| s.parent_session_id.as_deref() == Some(session_id.as_str()))
+                        .unwrap_or(false);
+                    if !owned {
+                        Err(anyhow::anyhow!(
+                            "sessao {child_id} nao e uma sessao orquestrada criada nesta conversa"
+                        ))
+                    } else {
+                        // Mesma ordem de locks que o fim do turno filho (running_turns antes da fila).
+                        let mut running = state.running_turns.lock().unwrap();
+                        if running.contains_key(&child_id) {
+                            PENDING_AGENT_MESSAGES
+                                .lock()
+                                .unwrap()
+                                .push((child_id.clone(), message));
+                            Ok(tools::ToolOutcome {
+                                observation: format!(
+                                    "Mensagem enfileirada: a sessao \"{child_id}\" ainda esta rodando \
+                                     e vai receber a mensagem quando terminar o turno atual. Use \
+                                     check_agent_session depois pra ver a resposta."
+                                ),
+                                pending_edit: None,
+                            })
+                        } else {
+                            state.orchestrated_sessions.lock().unwrap().insert(
+                                child_id.clone(),
+                                OrchestratedSessionInfo {
+                                    started_at_ms: chrono::Utc::now().timestamp_millis() as u64,
+                                    first_response_ms: None,
+                                    last_checked_ms: None,
+                                    poll_count: 0,
+                                },
+                            );
+                            let handle = spawn_orchestrated_turn(app.clone(), child_id.clone(), message);
+                            running.insert(child_id.clone(), handle);
+                            Ok(tools::ToolOutcome {
+                                observation: format!(
+                                    "Sessao \"{child_id}\" estava parada e foi retomada com a mensagem. \
+                                     Use check_agent_session depois pra acompanhar."
+                                ),
+                                pending_edit: None,
+                            })
+                        }
+                    }
                 }
             } else if call.function.name == "check_agent_session" {
                 match args["session_id"].as_str() {

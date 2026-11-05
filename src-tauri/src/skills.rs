@@ -156,6 +156,31 @@ pub fn list_skills(app_data_dir: &Path, project_root: Option<&Path>) -> Result<V
     Ok(skills)
 }
 
+/// Busca skills por palavras-chave no nome e na descricao (sem diferenciar
+/// maiusculas). Basta uma palavra casar; quem casa mais palavras vem primeiro.
+/// Query vazia devolve o catalogo inteiro.
+pub fn search_skills(
+    app_data_dir: &Path,
+    project_root: Option<&Path>,
+    query: &str,
+) -> Result<Vec<SkillMeta>> {
+    let all = list_skills(app_data_dir, project_root)?;
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    if words.is_empty() {
+        return Ok(all);
+    }
+    let mut scored: Vec<(usize, SkillMeta)> = all
+        .into_iter()
+        .filter_map(|skill| {
+            let haystack = format!("{} {}", skill.name, skill.description).to_lowercase();
+            let hits = words.iter().filter(|w| haystack.contains(w.as_str())).count();
+            (hits > 0).then_some((hits, skill))
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
+    Ok(scored.into_iter().map(|(_, skill)| skill).collect())
+}
+
 fn scan_dir(dir: &Path, scope: &str) -> Result<Vec<SkillMeta>> {
     if !dir.exists() {
         return Ok(Vec::new());
@@ -522,6 +547,37 @@ mod tests {
 
         std::fs::remove_dir_all(&app_data_dir).ok();
         std::fs::remove_dir_all(&project_root).ok();
+    }
+
+    #[test]
+    fn search_skills_matches_name_and_description_ranked_by_hits() {
+        let app_data_dir = scratch_dir();
+        let global = global_skills_dir(&app_data_dir);
+        for (slug, desc) in [
+            ("revisar-pr", "Revisa pull requests e diffs"),
+            ("gerar-planilha", "Cria planilhas Excel com formulas"),
+            ("resumir-pr-diff", "Resume PR e diff grande"),
+        ] {
+            let dir = global.join(slug);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("SKILL.md"),
+                format!("---\nname: {slug}\ndescription: {desc}\n---\n\nCorpo.\n"),
+            )
+            .unwrap();
+        }
+
+        let found = search_skills(&app_data_dir, None, "PR diff").unwrap();
+        let names: Vec<&str> = found.iter().map(|s| s.name.as_str()).collect();
+        // resumir-pr-diff casa as duas palavras; revisar-pr so uma.
+        assert_eq!(names.first(), Some(&"resumir-pr-diff"));
+        assert!(names.contains(&"revisar-pr"));
+        assert!(!names.contains(&"gerar-planilha"));
+
+        let empty = search_skills(&app_data_dir, None, "   ").unwrap();
+        assert!(empty.len() >= 3);
+
+        std::fs::remove_dir_all(&app_data_dir).ok();
     }
 
     #[test]

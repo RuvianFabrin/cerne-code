@@ -451,6 +451,7 @@ export const api = {
   hasVideoGenKey: () => invoke<boolean>("has_video_gen_key"),
   clearVideoGenKey: () => invoke<void>("clear_video_gen_key"),
   openGeneratedMedia: (sessionId: string, path: string) => invoke<void>("open_generated_media", { sessionId, path }),
+  openUserFile: (path: string, reveal: boolean) => invoke<void>("open_user_file", { path, reveal }),
   listSessionMedia: (sessionId: string) => invoke<MediaRecord[]>("list_session_media", { sessionId }),
   sendMediaMessage: (sessionId: string, kind: "image" | "video", prompt: string, images: string[]) =>
     invoke<MediaRecord>("send_media_message", { sessionId, kind, prompt, images }),
@@ -828,6 +829,18 @@ export function onToolResult(cb: (payload: ToolResultPayload) => void): Promise<
 
 export function onPendingEdit(cb: (edit: PendingEdit) => void): Promise<UnlistenFn> {
   return listen<PendingEdit>("agent:pending_edit", (e) => cb(e.payload));
+}
+
+export interface UserFileEvent {
+  session_id: string;
+  name: string;
+  path: string;
+  size: number;
+  caption: string;
+}
+
+export function onUserFile(cb: (file: UserFileEvent) => void): Promise<UnlistenFn> {
+  return listen<UserFileEvent>("agent:user_file", (e) => cb(e.payload));
 }
 
 export function onAskQuestion(cb: (question: AskQuestion) => void): Promise<UnlistenFn> {

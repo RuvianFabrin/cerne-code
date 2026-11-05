@@ -1,4 +1,20 @@
 {
+  "userFile": {
+    "open": "Open",
+    "reveal": "Show in folder"
+  },
+  "sidePanel": {
+    "show": "Show panel",
+    "hide": "Hide panel",
+    "sec": { "env": "Environment", "context": "Context", "mcp": "Active MCPs", "git": "Changes (git)", "jobs": "Background processes", "agents": "Agents", "sub": "Sub-sessions" },
+    "env": { "readWrite": "Can edit", "readOnly": "Read only", "none": "No project folder" },
+    "mcp": { "none": "No active MCP" },
+    "git": { "none": "Nothing changed", "notRepo": "This folder is not a git repository", "noProject": "No project folder" },
+    "jobs": { "none": "No background process" },
+    "agents": { "none": "No agent in this session" },
+    "sub": { "none": "No sub-session", "parent": "Parent session", "open": "Open" },
+    "status": { "running": "running", "done": "done", "failed": "failed", "exited": "exited", "unknown": "unknown" }
+  },
   "sidebar": {
     "collapse": "Collapse",
     "newSession": "New session",

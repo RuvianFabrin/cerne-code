@@ -47,6 +47,27 @@ pub fn always_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         spec(
+            "search_skills",
+            "Procura skills do catalogo por palavras-chave no nome e na descricao. Use quando a skill certa nao estiver no catalogo do system prompt ou quando houver muitas. Retorna nome, escopo e descricao completa de cada uma; depois chame load_skill com o nome exato.",
+            json!({
+                "type": "object",
+                "properties": { "query": { "type": "string", "description": "Palavras-chave separadas por espaco; basta uma casar" } },
+                "required": ["query"]
+            }),
+        ),
+        spec(
+            "send_user_file",
+            "Anexa um arquivo gerado ou encontrado nesta sessao ao chat, como um cartao clicavel para o usuario abrir ou revelar na pasta. Use depois de criar um documento, planilha, imagem ou relatorio que o usuario vai querer baixar. Caminho relativo resolve dentro do projeto; caminho absoluto funciona para qualquer pasta. O arquivo precisa existir.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Caminho do arquivo (absoluto preferido)" },
+                    "caption": { "type": "string", "description": "Frase curta explicando o arquivo (opcional)" }
+                },
+                "required": ["path"]
+            }),
+        ),
+        spec(
             "read_skill_details",
             "Le a descricao COMPLETA (sem corte) de uma skill do catalogo pelo nome exato - use quando a descricao curta listada no catalogo terminar cortada ('...') e nao for suficiente pra decidir se a skill e relevante. Diferente de load_skill: isso NAO carrega as instrucoes da skill pra voce seguir, so mostra a descricao inteira pra ajudar a decidir SE vale chamar load_skill.",
             json!({
@@ -238,6 +259,18 @@ pub fn project_tool_specs() -> Vec<ToolSpec> {
                 "properties": {
                     "pattern": { "type": "string" },
                     "path": { "type": "string", "description": "Caminho ABSOLUTO (preferido) ou subpasta relativa ao projeto (opcional)" }
+                },
+                "required": ["pattern"]
+            }),
+        ),
+        spec(
+            "glob",
+            "Lista arquivos cujo caminho casa um padrao glob (ex: **/*.rs, src/**/*.ts, *.md). Use para achar arquivos por nome ou extensao; para buscar conteudo dentro dos arquivos use grep. Caminho relativo busca dentro do projeto; caminho absoluto busca em qualquer pasta. Respeita .gitignore. Retorna ate 200 arquivos, mais recentes primeiro.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Padrao relativo a pasta de busca: * (qualquer coisa exceto /), ** (qualquer pasta, inclusive nenhuma), ? (um caractere)" },
+                    "path": { "type": "string", "description": "Pasta onde buscar (opcional; vazio = raiz do projeto)" }
                 },
                 "required": ["pattern"]
             }),
@@ -561,6 +594,18 @@ pub fn orchestration_tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         spec(
+            "send_agent_message",
+            "Envia uma mensagem para uma sessao orquestrada criada com start_agent_session. Se ela ainda estiver rodando, a mensagem entra na fila e e entregue ao terminar o turno atual; se ja tiver parado, ela e retomada com a mensagem. So funciona para sessoes criadas nesta conversa.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "session_id": { "type": "string" },
+                    "message": { "type": "string", "description": "O que voce quer que a sessao faca ou saiba, autocontido" }
+                },
+                "required": ["session_id", "message"]
+            }),
+        ),
+        spec(
             "list_agent_sessions",
             "Lista as sessoes orquestradas que voce criou nesta conversa (via start_agent_session), com status de cada uma - use pra nao perder o fio de quais ja disparou.",
             json!({
@@ -730,6 +775,64 @@ fn resolve_within(
 fn read_project_file(path: &Path, rel: &str) -> Result<String> {
     let bytes = std::fs::read(path).map_err(|e| anyhow!("nao foi possivel ler {rel}: {e}"))?;
     Ok(crate::encoding::decode(&bytes).0)
+}
+
+/// Converte um padrao glob (`**`, `*`, `?`) numa regex ancorada. O caminho
+/// casado usa `/` como separador, entao o padrao tambem usa `/`.
+fn glob_to_regex(glob: &str) -> Result<regex::Regex> {
+    let chars: Vec<char> = glob.replace('\\', "/").chars().collect();
+    let mut re = String::from("^");
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '*' if chars.get(i + 1) == Some(&'*') => {
+                // `**/` casa zero ou mais pastas; `**` sozinho casa qualquer coisa.
+                if chars.get(i + 2) == Some(&'/') {
+                    re.push_str("(?:.*/)?");
+                    i += 3;
+                } else {
+                    re.push_str(".*");
+                    i += 2;
+                }
+                continue;
+            }
+            '*' => re.push_str("[^/]*"),
+            '?' => re.push_str("[^/]"),
+            c => re.push_str(&regex::escape(&c.to_string())),
+        }
+        i += 1;
+    }
+    re.push('$');
+    regex::Regex::new(&re).map_err(|e| anyhow!("padrao glob invalido: {e}"))
+}
+
+/// Arquivos sob `search_root` cujo caminho relativo casa `pattern`, mais
+/// recentes primeiro, limitado a 200. Caminhos saem relativos ao projeto
+/// quando possivel (mesmo formato do grep).
+fn glob_search(pattern: &str, search_root: &Path, project_root: &Path) -> Result<Vec<String>> {
+    let re = glob_to_regex(pattern)?;
+    let mut found: Vec<(std::time::SystemTime, String)> = Vec::new();
+    for path in super::walk_cache::files_under(search_root) {
+        let rel = path
+            .strip_prefix(search_root)
+            .unwrap_or(&path)
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !re.is_match(&rel) {
+            continue;
+        }
+        let mtime = std::fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        let shown = path
+            .strip_prefix(project_root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        found.push((mtime, shown));
+    }
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(found.into_iter().take(200).map(|(_, p)| p).collect())
 }
 
 /// Grep real sobre as crates do ripgrep (grep-regex/grep-searcher), nao regex
@@ -1251,6 +1354,23 @@ async fn execute_project_tool(
                 Ok(ok("nenhuma ocorrencia encontrada"))
             } else {
                 Ok(ok(matches.join("\n")))
+            }
+        }
+        "glob" => {
+            let pattern = args["pattern"]
+                .as_str()
+                .ok_or_else(|| anyhow!("pattern obrigatorio"))?;
+            let rel = args["path"].as_str().unwrap_or("");
+            let search_root = resolve_read_path(project_root, extra_read_paths, rel)?;
+            let found = glob_search(pattern, &search_root, project_root)?;
+            if found.is_empty() {
+                Ok(ok("nenhum arquivo encontrado"))
+            } else {
+                Ok(ok(format!(
+                    "{} arquivo(s), mais recentes primeiro:\n{}",
+                    found.len(),
+                    found.join("\n")
+                )))
             }
         }
         "run_node_script" => {
@@ -2322,6 +2442,26 @@ fn write_pptx(target: &Path, slides: &[Value], project_root: &Path) -> Result<()
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn glob_to_regex_matches_common_patterns() {
+        let rs = super::glob_to_regex("**/*.rs").unwrap();
+        assert!(rs.is_match("main.rs"));
+        assert!(rs.is_match("src/agent/tools.rs"));
+        assert!(!rs.is_match("src/agent/tools.ts"));
+
+        let direct = super::glob_to_regex("src/*.ts").unwrap();
+        assert!(direct.is_match("src/app.ts"));
+        assert!(!direct.is_match("src/nested/app.ts"));
+
+        let single = super::glob_to_regex("a?.md").unwrap();
+        assert!(single.is_match("ab.md"));
+        assert!(!single.is_match("abc.md"));
+
+        let dotted = super::glob_to_regex("*.json").unwrap();
+        assert!(dotted.is_match("package.json"));
+        assert!(!dotted.is_match("package.json.bak"));
+    }
+
     use super::*;
     use std::fs;
 
@@ -2344,6 +2484,7 @@ mod tests {
             vec![
                 "start_agent_session",
                 "check_agent_session",
+                "send_agent_message",
                 "list_agent_sessions",
                 "stop_agent_session",
             ]

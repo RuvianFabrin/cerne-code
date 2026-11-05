@@ -10,12 +10,11 @@ import DiffReview from "./DiffReview.vue";
 import AskCard from "./AskCard.vue";
 import PermissionCard from "./PermissionCard.vue";
 import AgentsSkillsPlanCard from "./AgentsSkillsPlanCard.vue";
-import BackgroundJobsPanel from "./BackgroundJobsPanel.vue";
-import AgentExecutionsPanel from "./AgentExecutionsPanel.vue";
 import TaskStepGroup from "./TaskStepGroup.vue";
 import TodoCard from "./TodoCard.vue";
+import SessionSidePanel from "./SessionSidePanel.vue";
 import { formatElapsed, formatTokens } from "../taskLabels";
-import type { ChatMessage, TaskItem, TurnStats } from "../api";
+import { api, type ChatMessage, type TaskItem, type TurnStats } from "../api";
 
 defineEmits<{ "open-settings": [] }>();
 
@@ -23,10 +22,50 @@ const { t } = useI18n();
 const sessionStore = useSessionStore();
 const scrollRef = ref<HTMLDivElement | null>(null);
 
+// Painel lateral da sessão (ambiente, MCPs, git, processos, agentes,
+// sub-sessões). Lembra se ficou aberto ou fechado; falha em silêncio se o
+// localStorage não estiver disponível.
+const SIDE_PANEL_KEY = "cerne.sidePanelOpen";
+const sidePanelOpen = ref(
+  (() => {
+    try {
+      return localStorage.getItem(SIDE_PANEL_KEY) !== "0";
+    } catch {
+      return true;
+    }
+  })(),
+);
+function toggleSidePanel() {
+  sidePanelOpen.value = !sidePanelOpen.value;
+  try {
+    localStorage.setItem(SIDE_PANEL_KEY, sidePanelOpen.value ? "1" : "0");
+  } catch {
+    /* sem localStorage: só não lembra a escolha */
+  }
+}
+
 // Auto-stick no fundo do chat: gruda no final enquanto o usuário não rolar
 // pra cima. Assim que ele rolar, para de forçar o scroll (pra poder ler
 // mensagens antigas em paz); volta a grudar quando ele manda a próxima
 // mensagem ou clica no botão "ir pro final".
+const currentUserFiles = computed(() =>
+  sessionStore.currentId ? (sessionStore.userFilesBySession[sessionStore.currentId] ?? []) : [],
+);
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function openUserFileCard(path: string, reveal: boolean) {
+  try {
+    await api.openUserFile(path, reveal);
+  } catch (e) {
+    sessionStore.error = String(e);
+  }
+}
+
 const NEAR_BOTTOM_PX = 80;
 const autoStick = ref(true);
 const showJumpToBottom = ref(false);
@@ -287,6 +326,13 @@ watch(
         <div class="chat-topbar">
           <div id="chat-topbar-left" class="topbar-left"></div>
           <div id="chat-topbar-right" class="topbar-right"></div>
+          <button
+            class="side-panel-toggle"
+            :title="sidePanelOpen ? $t('sidePanel.hide') : $t('sidePanel.show')"
+            @click="toggleSidePanel"
+          >
+            <span class="msi">{{ sidePanelOpen ? "right_panel_close" : "right_panel_open" }}</span>
+          </button>
         </div>
         <div class="chat-scroll-wrap">
           <!-- Marcador por mensagem sua, na borda esquerda — clique rola até
@@ -397,20 +443,28 @@ watch(
           <div v-if="sessionStore.pendingEdits.length > 0" class="pending-edits-anchor">
             <DiffReview v-for="edit in sessionStore.pendingEdits" :key="edit.id" :edit="edit" />
           </div>
+          <div v-if="currentUserFiles.length > 0" class="user-file-cards">
+            <div v-for="(file, idx) in currentUserFiles" :key="idx" class="user-file-card">
+              <span class="material-symbols-rounded user-file-icon">description</span>
+              <div class="user-file-info">
+                <strong>{{ file.name }}</strong>
+                <small>{{ formatFileSize(file.size) }}<span v-if="file.caption"> · {{ file.caption }}</span></small>
+              </div>
+              <button type="button" class="user-file-btn" @click="openUserFileCard(file.path, false)">
+                {{ $t("userFile.open") }}
+              </button>
+              <button type="button" class="user-file-btn" @click="openUserFileCard(file.path, true)">
+                {{ $t("userFile.reveal") }}
+              </button>
+            </div>
+          </div>
           <AgentsSkillsPlanCard />
           <PermissionCard />
           <AskCard />
           <ComposerBar />
         </div>
-        <!-- T40: painéis de status (jobs em segundo plano, execuções de
-             agente/skill) ficam FORA do fluxo do composer, numa área
-             flutuante — dentro do composer-wrap eles empilhavam e cobriam
-             o chat quando havia vários de uma vez. -->
-        <div class="floating-status">
-          <BackgroundJobsPanel />
-          <AgentExecutionsPanel />
-        </div>
       </div>
+      <SessionSidePanel v-if="sidePanelOpen" />
     </div>
   </template>
 </template>
@@ -461,22 +515,6 @@ watch(
 .message-marker:hover {
   background: #6366f1;
   width: 16px;
-}
-
-/* T40: painéis de status flutuantes (background jobs, execuções de
-   agente/skill) — canto superior direito, fora do fluxo do composer. */
-.floating-status {
-  position: absolute;
-  top: 12px;
-  right: 16px;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-width: min(320px, calc(100vw - 32px));
-  max-height: calc(100% - 24px);
-  overflow-y: auto;
-  align-items: flex-end;
 }
 
 .chat-column {
@@ -557,6 +595,26 @@ watch(
   min-width: 0;
 }
 
+.side-panel-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+.side-panel-toggle:hover {
+  opacity: 1;
+  background: rgba(127, 127, 127, 0.14);
+}
+
 .jump-to-bottom {
   position: absolute;
   top: -44px;
@@ -587,6 +645,55 @@ watch(
 .pending-edits-anchor {
   max-height: 40vh;
   overflow-y: auto;
+}
+
+.user-file-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.user-file-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+}
+
+.user-file-icon {
+  font-size: 22px;
+  opacity: 0.75;
+}
+
+.user-file-info {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.user-file-info strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-file-info small {
+  opacity: 0.7;
+}
+
+.user-file-btn {
+  padding: 4px 10px;
+  border: 1px solid var(--border, #d0d7de);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
 }
 
 .row {

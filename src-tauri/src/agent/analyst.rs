@@ -29,7 +29,7 @@ const MAX_ANALYST_STEPS: usize = 8;
 /// Mesmo allowlist do QA — só observar, nunca consertar (isso cabe ao DEV,
 /// numa próxima rodada do pipeline se o Analista refutar).
 const ANALYST_ALLOWED_TOOLS: &[&str] =
-    &["read_file", "list_dir", "grep", "ast_grep", "run_command"];
+    &["read_file", "list_dir", "glob", "grep", "ast_grep", "run_command"];
 
 const ANALYST_SYSTEM_PROMPT: &str = "Voce e um ANALISTA DE REQUISITOS independente, parte de um \
 pipeline Dev -> QA -> Analista. O QA ja confirmou que a implementacao FUNCIONA tecnicamente (testes/ \

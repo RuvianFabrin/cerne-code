@@ -2575,6 +2575,25 @@ fn save_skill(dir: String, content: String) -> Result<(), String> {
     skills::write_skill_file(&dir, &content).map_err(|e| e.to_string())
 }
 
+/// Abre ou revela um arquivo anexado ao chat por `send_user_file`. So aceita
+/// caminhos que a tool registrou nesta execucao (`SENT_USER_FILES`).
+#[tauri::command]
+fn open_user_file(app: tauri::AppHandle, path: String, reveal: bool) -> Result<(), String> {
+    let known = agent::SENT_USER_FILES
+        .lock()
+        .map(|sent| sent.iter().any(|p| p == &path))
+        .unwrap_or(false);
+    if !known {
+        return Err("Arquivo nao foi anexado ao chat nesta sessao".into());
+    }
+    let opener = tauri_plugin_opener::OpenerExt::opener(&app);
+    if reveal {
+        opener.reveal_item_in_dir(path).map_err(|e| e.to_string())
+    } else {
+        opener.open_path(path, None::<String>).map_err(|e| e.to_string())
+    }
+}
+
 #[tauri::command]
 fn open_skills_folder(app: tauri::AppHandle, state: State<AppState>) -> Result<(), String> {
     let dir = skills::ensure_global_skills_dir(&state.app_data_dir).map_err(|e| e.to_string())?;
@@ -2874,6 +2893,7 @@ pub fn run() {
             clear_video_gen_key,
             list_session_media,
             open_generated_media,
+            open_user_file,
             send_media_message,
             set_image_gen_key,
             has_image_gen_key,

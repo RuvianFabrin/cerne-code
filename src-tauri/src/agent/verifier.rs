@@ -41,7 +41,7 @@ const MAX_VERIFIER_STEPS: usize = 8;
 /// veredito precisa estar condicionado a pelo menos uma execucao real de
 /// teste/build/lint, nao so leitura de codigo).
 const VERIFIER_ALLOWED_TOOLS: &[&str] =
-    &["read_file", "list_dir", "grep", "ast_grep", "run_command"];
+    &["read_file", "list_dir", "glob", "grep", "ast_grep", "run_command"];
 
 const VERIFIER_SYSTEM_PROMPT: &str = "Voce e um VERIFICADOR independente e cetico - NAO a mesma \
 entidade que alega ter concluido a tarefa, e seu unico trabalho e confirmar com evidencia real se \
