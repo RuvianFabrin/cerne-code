@@ -185,8 +185,11 @@ pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
 
         // Depois de salvar a memória: compacta o contexto do histórico antes da
         // próxima tarefa. A memória da sessão não entra aqui (vai no prompt).
-        emit_status(&app, &session_id, "compacting", Some(item_id), None);
-        {
+        // Com "Ctx fixo" ligado a compactação não é necessária: o que vai ao
+        // modelo já é limitado por envio, então vai direto para o próximo item.
+        let ctx_fixo = sessions::get_session(&app_data_dir, &session_id)?.fixed_context.enabled;
+        if !ctx_fixo {
+            emit_status(&app, &session_id, "compacting", Some(item_id), None);
             let state = app.state::<crate::AppState>();
             super::compact_now(app.clone(), &state, session_id.clone()).await?;
         }
