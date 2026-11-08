@@ -2365,8 +2365,9 @@ fn update_session_fixed_context(
     enabled: bool,
     tokens: u32,
     rolling: bool,
+    blocks: Option<bool>,
 ) -> Result<Session, String> {
-    sessions::update_fixed_context(&state.app_data_dir, &id, enabled, tokens, rolling)
+    sessions::update_fixed_context(&state.app_data_dir, &id, enabled, tokens, rolling, blocks)
         .map_err(|e| e.to_string())
 }
 

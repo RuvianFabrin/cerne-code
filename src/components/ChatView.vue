@@ -151,10 +151,16 @@ type TimelineItem =
 
 const timeline = computed<TimelineItem[]>(() => {
   const items: TimelineItem[] = [];
-  let userTurn = 0;
+  // Numeracao dos turnos da sessao inteira: a janela carregada pode comecar
+  // no meio do historico, entao parte de quantos turnos vieram antes dela.
+  let userTurn = sessionStore.userTurnsBefore;
   let todoIdx = 0;
-  let taskOffset = 0;
   const allTasks = sessionStore.tasks;
+  let taskOffset = 0;
+  if (userTurn > 0) {
+    taskOffset = allTasks.findIndex((t) => t.turn >= userTurn);
+    if (taskOffset < 0) taskOffset = allTasks.length;
+  }
   const stats = sessionStore.turnStats;
   const start = sessionStore.messagesOldestIndex ?? 0;
   const end = start + sessionStore.messages.length;

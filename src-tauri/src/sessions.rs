@@ -292,12 +292,16 @@ pub fn update_fixed_context(
     enabled: bool,
     tokens: u32,
     rolling: bool,
+    blocks: Option<bool>,
 ) -> Result<Session> {
     let mut session = get_session(app_data_dir, id)?;
+    // `blocks` ausente mantém o valor salvo; o modo em blocos e o rolante não valem juntos.
+    let blocks = blocks.unwrap_or(session.fixed_context.blocks) && !rolling;
     session.fixed_context = FixedContextState {
         enabled,
         tokens: tokens.clamp(1_000, 1_000_000),
         rolling,
+        blocks,
     };
     let dir = session_dir(app_data_dir, id);
     std::fs::write(
@@ -330,6 +334,36 @@ pub fn read_rolling_summary(app_data_dir: &PathBuf, id: &str) -> RollingSummary 
 
 pub fn write_rolling_summary(app_data_dir: &PathBuf, id: &str, summary: &RollingSummary) -> Result<()> {
     write_atomic(&rolling_summary_path(app_data_dir, id), &serde_json::to_string_pretty(summary)?)
+}
+
+/// "Janela do modelo" da sessão: o que o Ctx fixo (qualquer modo) já cortou do que é
+/// mandado ao modelo. `start` é o índice, em `chat_log.json`, da primeira mensagem que o
+/// modelo ainda vê (o prompt de sistema, índice 0, sempre entra); `log_len` é o tamanho do
+/// histórico quando foi gravada. Só o que o MODELO recebe muda: `chat_log.json` (o chat que
+/// o usuário vê) continua inteiro. Fica em `model_window.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ModelWindow {
+    pub start: usize,
+    pub log_len: usize,
+}
+
+fn model_window_path(app_data_dir: &PathBuf, id: &str) -> PathBuf {
+    session_dir(app_data_dir, id).join("model_window.json")
+}
+
+/// `None` quando a sessão nunca usou o Ctx fixo (ou o arquivo está ilegível).
+pub fn read_model_window(app_data_dir: &PathBuf, id: &str) -> Option<ModelWindow> {
+    std::fs::read_to_string(model_window_path(app_data_dir, id))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+}
+
+pub fn write_model_window(app_data_dir: &PathBuf, id: &str, window: &ModelWindow) -> Result<()> {
+    let path = model_window_path(app_data_dir, id);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    write_atomic(&path, &serde_json::to_string(window)?)
 }
 
 pub fn update_long_horizon_enabled(
@@ -720,10 +754,12 @@ pub fn load_messages_page(
     let all = load_messages(app_data_dir, id)?;
     let end = before.unwrap_or(all.len()).min(all.len());
     let start = end.saturating_sub(limit);
+    let user_turns_before = all[..start].iter().filter(|m| m.role == "user").count();
     Ok(MessagesPage {
         messages: all[start..end].to_vec(),
         has_more: start > 0,
         next_before: start,
+        user_turns_before,
     })
 }
 
@@ -1365,6 +1401,20 @@ mod tests {
         assert!(pagina.has_more);
         assert_eq!(pagina.next_before, 6);
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_messages_page_conta_turnos_do_usuario_antes_da_pagina() {
+        let dir = scratch_dir();
+        let session = sessao_long_horizon(&dir);
+        // Helper: todas as 10 mensagens sao do usuario. A pagina (before=6, limit=4)
+        // comeca no indice 2, entao 2 turnos vieram antes dela.
+        save_messages(&dir, &session.id, &mensagens_numeradas(10)).unwrap();
+
+        let pagina = load_messages_page(&dir, &session.id, Some(6), 4).unwrap();
+
+        assert_eq!(pagina.user_turns_before, 2);
         std::fs::remove_dir_all(&dir).ok();
     }
 

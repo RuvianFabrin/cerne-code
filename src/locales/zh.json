@@ -7,6 +7,18 @@
     "findings": "审查发现（{count}）",
     "widgetFallback": "组件"
   },
+  "processModal": {
+    "title": "进程历史",
+    "status": "状态",
+    "started": "开始时间",
+    "command": "命令",
+    "output": "输出",
+    "noOutput": "无输出",
+    "running": "运行中",
+    "exited": "已退出",
+    "unknown": "未知",
+    "close": "关闭"
+  },
   "sidePanel": {
     "browser": {
       "default": "默认浏览器",
@@ -191,11 +203,13 @@
       "upgrade": "通过更新 Cerne 来更新引擎"
     },
     "fixedContextLabel": "固定上下文",
-    "fixedContextTooltip": "每次发送时限制发给模型的内容，截去最早的历史。完整历史仍会保存。",
+    "fixedContextTooltip": "每次发送时限制发给模型的内容，截去最早的历史。聊天界面仍显示完整内容。即使关闭，已截去的部分也不会再发给模型。",
     "fixedContextTokens": "每次发送的 token 数",
     "fixedContextTokensHint": "指令和记忆始终包含；之后加入最近的消息直到达到总数。",
     "fixedContextRolling": "滑动固定上下文",
     "fixedContextRollingHint": "滚动摘要：每轮结束后由模型在后台总结移出窗口的内容。同时开启固定上下文。",
+    "fixedContextBlocks": "分块固定上下文",
+    "fixedContextBlocksHint": "仅在超出上限时按块截去历史，使提示开头保持稳定，服务器即可复用缓存。同时开启固定上下文并关闭滑动模式。",
     "queueSend": "加入队列",
     "queued": "队列中 {count} 条",
     "clearQueue": "清空队列"

@@ -7,6 +7,18 @@
     "findings": "Achados da revisão ({count})",
     "widgetFallback": "Widget"
   },
+  "processModal": {
+    "title": "Histórico do processo",
+    "status": "Status",
+    "started": "Iniciado",
+    "command": "Comando",
+    "output": "Saída",
+    "noOutput": "Sem saída",
+    "running": "rodando",
+    "exited": "encerrado",
+    "unknown": "desconhecido",
+    "close": "Fechar"
+  },
   "sidePanel": {
     "browser": {
       "default": "Navegador padrão",
@@ -191,11 +203,13 @@
       "upgrade": "Como atualizar o mecanismo junto com o Cerne"
     },
     "fixedContextLabel": "Ctx fixo",
-    "fixedContextTooltip": "Limita o que é enviado ao modelo a cada envio, cortando o começo do histórico. O histórico completo continua salvo.",
+    "fixedContextTooltip": "Limita o que é enviado ao modelo a cada envio, cortando o começo do histórico. O chat continua completo na tela. O corte vale mesmo se você desligar: o modelo não volta a receber o que já saiu.",
     "fixedContextTokens": "Tokens por envio",
     "fixedContextTokensHint": "Instruções e memórias entram sempre; depois as mensagens mais recentes até o total.",
     "fixedContextRolling": "Ctx fixo deslizante",
     "fixedContextRollingHint": "Resumo rolante: o modelo resume o que sai da janela em segundo plano, depois de cada turno. Liga também o Ctx fixo.",
+    "fixedContextBlocks": "Ctx fixo em blocos",
+    "fixedContextBlocksHint": "Corta o histórico em blocos, só quando o limite estoura, para o começo do prompt ficar estável e o servidor reaproveitar o cache. Liga também o Ctx fixo e desliga o deslizante.",
     "queueSend": "Enviar na fila",
     "queued": "{count} na fila",
     "clearQueue": "Limpar fila"

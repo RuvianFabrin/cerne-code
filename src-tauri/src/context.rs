@@ -438,6 +438,109 @@ pub fn rolling_window(
     out
 }
 
+/// "Ctx fixo em blocos": fração do espaço do histórico que sobra logo depois de um corte.
+pub const FIXED_BLOCKS_KEEP_RATIO: f32 = 0.70;
+
+/// Soma do custo de cada mensagem de `messages[from..]`, uma a uma (mesma conta de
+/// [`whole_tail_start`]).
+fn tail_cost(messages: &[ChatMessage], from: usize, model: &str) -> u32 {
+    messages[from.min(messages.len())..]
+        .iter()
+        .map(|m| estimate_messages_tokens(std::slice::from_ref(m), &[], model))
+        .fold(0u32, |acc, c| acc.saturating_add(c))
+}
+
+/// "Ctx fixo em blocos": igual ao Ctx fixo (`fixed_window`) no que entra no envio
+/// (sistema + ferramentas + mensagens recentes inteiras), mas o começo do trecho
+/// recente só anda quando ele estoura o orçamento. Quando estoura, o corte é em
+/// bloco: sobra só `keep_ratio` do espaço do histórico.
+///
+/// Por quê: o servidor local só reaproveita o que já processou se o começo do prompt
+/// for idêntico ao do envio anterior. Cortar uma mensagem a cada envio muda o começo
+/// toda vez e força reprocessar tudo; cortando em bloco, os envios seguintes mantêm
+/// o mesmo começo e só acrescentam no fim.
+///
+/// `start_hint` é o começo devolvido no envio anterior (índice em `messages`); ele só
+/// anda pra frente. Devolve o que vai ao modelo e o começo a guardar pro próximo envio.
+/// Não altera `messages`.
+pub fn fixed_window_blocks(
+    messages: &[ChatMessage],
+    budget: u32,
+    tool_specs: &[ToolSpec],
+    model: &str,
+    start_hint: Option<usize>,
+    keep_ratio: f32,
+) -> (Vec<ChatMessage>, usize) {
+    let (head, from): (Vec<ChatMessage>, usize) = match messages.first() {
+        Some(first) if first.role == "system" => (vec![first.clone()], 1),
+        _ => (Vec::new(), 0),
+    };
+    let fixed = estimate_messages_tokens(&[], tool_specs, model)
+        .saturating_add(estimate_messages_tokens(&head, &[], model));
+    let left = budget.saturating_sub(fixed);
+    let ratio = keep_ratio.clamp(0.1, 1.0);
+
+    let mut start = start_hint.unwrap_or(from).clamp(from, messages.len());
+    if tail_cost(messages, start, model) > left {
+        let target = (left as f32 * ratio) as u32;
+        let mut new_start = whole_tail_start(messages, start, target, model);
+        if new_start >= messages.len() {
+            // Nem a última mensagem cabe na fração: tenta o espaço inteiro.
+            new_start = whole_tail_start(messages, start, left, model);
+        }
+        if new_start >= messages.len() {
+            // Uma mensagem sozinha estoura o orçamento: usa o corte por parágrafos
+            // do Ctx fixo comum (sem tentar manter o começo estável).
+            let out = fixed_window(messages, budget, tool_specs, model);
+            return (out, messages.len().saturating_sub(1).max(from));
+        }
+        start = new_start;
+    }
+    // Resultado de ferramenta sem a chamada que o gerou: o provedor recusa.
+    while start < messages.len() && messages[start].role == "tool" {
+        start += 1;
+    }
+
+    let mut tail: Vec<ChatMessage> = messages[start..].to_vec();
+    keep_latest_user(&mut tail, messages);
+    let mut out = head;
+    out.extend(tail);
+    (out, start)
+}
+
+/// Índice em `messages` onde começam as mensagens inteiras que o Ctx fixo comum
+/// (`fixed_window`) manda no envio. Serve pra gravar a janela do modelo; a parte de uma
+/// mensagem que entra só pelos parágrafos finais não conta.
+pub fn fixed_window_start(
+    messages: &[ChatMessage],
+    budget: u32,
+    tool_specs: &[ToolSpec],
+    model: &str,
+) -> usize {
+    let (head_cost, from) = match messages.first() {
+        Some(first) if first.role == "system" => {
+            (estimate_messages_tokens(std::slice::from_ref(first), &[], model), 1)
+        }
+        _ => (0, 0),
+    };
+    let fixed = estimate_messages_tokens(&[], tool_specs, model).saturating_add(head_cost);
+    let start = whole_tail_start(messages, from, budget.saturating_sub(fixed), model);
+    if start >= messages.len() {
+        messages.len().saturating_sub(1).max(from)
+    } else {
+        start
+    }
+}
+
+/// Coloca o resumo rolante logo depois do prompt de sistema (não faz nada se for vazio).
+pub fn with_summary(mut out: Vec<ChatMessage>, summary: &str) -> Vec<ChatMessage> {
+    if let Some(message) = summary_message(summary) {
+        let at = if out.first().map_or(false, |m| m.role == "system") { 1 } else { 0 };
+        out.insert(at, message);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -769,5 +872,109 @@ mod rolling_tests {
         let out = rolling_window(&messages, 1_000_000, &[], "gpt-4o", "", 1);
         assert_eq!(out.len(), 3);
         assert!(!out.iter().any(|m| m.content.contains("Resumo da conversa")));
+    }
+}
+
+#[cfg(test)]
+mod blocks_tests {
+    use super::*;
+
+    const MODEL: &str = "gpt-4o";
+
+    fn msg(role: &str, content: &str) -> ChatMessage {
+        ChatMessage {
+            role: role.to_string(),
+            content: content.to_string(),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            images: Vec::new(),
+            display_content: None,
+        }
+    }
+
+    fn cost(m: &ChatMessage) -> u32 {
+        estimate_messages_tokens(std::slice::from_ref(m), &[], MODEL)
+    }
+
+    fn texto(i: usize) -> String {
+        format!("mensagem numero {i} com algum texto de apoio")
+    }
+
+    fn papel(i: usize) -> &'static str {
+        if i % 2 == 0 { "user" } else { "assistant" }
+    }
+
+    #[test]
+    fn historico_que_cabe_vai_inteiro_e_o_comeco_nao_anda() {
+        let mut messages = vec![msg("system", "sistema")];
+        for i in 0..6 {
+            messages.push(msg(papel(i), &texto(i)));
+        }
+        let (out, start) = fixed_window_blocks(&messages, 1_000_000, &[], MODEL, None, 0.7);
+        assert_eq!(start, 1);
+        assert_eq!(out.len(), messages.len());
+    }
+
+    #[test]
+    fn o_comeco_so_anda_quando_estoura_e_anda_em_bloco() {
+        let mut messages = vec![msg("system", "sistema")];
+        let custo_max = (0..40).map(|i| cost(&msg(papel(i), &texto(i)))).max().unwrap();
+        let budget = cost(&messages[0]) + 10 * custo_max;
+
+        let mut hint = None;
+        let mut starts = Vec::new();
+        for i in 0..40 {
+            messages.push(msg(papel(i), &texto(i)));
+            let (out, start) = fixed_window_blocks(&messages, budget, &[], MODEL, hint, 0.7);
+            let total: u32 = out.iter().map(cost).sum();
+            assert!(total <= budget, "envio {i} passou do orçamento: {total} > {budget}");
+            assert_eq!(out[0].role, "system");
+            assert_eq!(out[1].content, messages[start].content, "o envio começa no começo guardado");
+            hint = Some(start);
+            starts.push(start);
+        }
+
+        assert!(starts.windows(2).all(|w| w[0] <= w[1]), "o começo nunca recua");
+        let saltos: Vec<usize> = starts.windows(2).filter(|w| w[0] != w[1]).map(|w| w[1] - w[0]).collect();
+        assert!(!saltos.is_empty(), "estourou o orçamento, então tem que ter cortado");
+        assert!(saltos.len() <= 12, "corte em bloco: {} cortes em ~30 mensagens novas", saltos.len());
+        assert!(saltos.iter().all(|s| *s >= 2), "cada corte descarta várias mensagens: {saltos:?}");
+    }
+
+    #[test]
+    fn nunca_abre_com_ferramenta_orfa_e_mantem_a_ultima_pergunta() {
+        let messages = vec![
+            msg("system", "sistema"),
+            msg("user", "pergunta"),
+            msg("assistant", "chamando"),
+            msg("tool", "resultado um"),
+            msg("tool", "resultado dois"),
+            msg("assistant", "fim"),
+        ];
+        let (out, start) = fixed_window_blocks(&messages, 1_000_000, &[], MODEL, Some(3), 0.7);
+        assert_eq!(start, 5, "pula as ferramentas órfãs");
+        assert!(!out.iter().any(|m| m.role == "tool"));
+        assert_eq!(out[1].role, "user", "a pergunta volta pro envio");
+    }
+
+    #[test]
+    fn comeco_guardado_alem_do_fim_nao_quebra() {
+        let messages = vec![msg("system", "sistema"), msg("user", "oi"), msg("assistant", "olá")];
+        let (out, start) = fixed_window_blocks(&messages, 1_000_000, &[], MODEL, Some(100), 0.7);
+        assert_eq!(start, messages.len());
+        assert_eq!(out.len(), 2, "sistema + a última pergunta");
+        assert_eq!(out[1].role, "user");
+    }
+
+    #[test]
+    fn mensagem_sozinha_maior_que_o_orcamento_cai_no_corte_por_paragrafos() {
+        let enorme = (0..200).map(|i| format!("paragrafo {i}")).collect::<Vec<_>>().join("\n\n");
+        let messages = vec![msg("system", "sistema"), msg("user", &enorme)];
+        let budget = cost(&messages[0]) + 120;
+        let (out, start) = fixed_window_blocks(&messages, budget, &[], MODEL, None, 0.7);
+        assert_eq!(out[0].role, "system");
+        assert_eq!(out.last().unwrap().role, "user");
+        assert!(start < messages.len());
     }
 }

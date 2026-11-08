@@ -7,6 +7,18 @@
     "findings": "Review findings ({count})",
     "widgetFallback": "Widget"
   },
+  "processModal": {
+    "title": "Process history",
+    "status": "Status",
+    "started": "Started",
+    "command": "Command",
+    "output": "Output",
+    "noOutput": "No output",
+    "running": "running",
+    "exited": "exited",
+    "unknown": "unknown",
+    "close": "Close"
+  },
   "sidePanel": {
     "browser": {
       "default": "Default browser",
@@ -191,11 +203,13 @@
       "upgrade": "Update the engine with a Cerne update"
     },
     "fixedContextLabel": "Fixed ctx",
-    "fixedContextTooltip": "Limits what is sent to the model on each message by cutting the oldest history. The full history stays saved.",
+    "fixedContextTooltip": "Limits what is sent to the model on each message by cutting the oldest history. The chat stays complete on screen. The cut still applies if you turn this off: the model does not get back what already left.",
     "fixedContextTokens": "Tokens per send",
     "fixedContextTokensHint": "Instructions and memories always go in; then the most recent messages up to the total.",
     "fixedContextRolling": "Sliding fixed ctx",
     "fixedContextRollingHint": "Rolling summary: the model summarizes what leaves the window in the background after each turn. Also turns on Fixed ctx.",
+    "fixedContextBlocks": "Fixed ctx in blocks",
+    "fixedContextBlocksHint": "Cuts the history in blocks, only when the limit overflows, so the start of the prompt stays stable and the server reuses its cache. Also turns on Fixed ctx and turns off the sliding mode.",
     "queueSend": "Send to queue",
     "queued": "{count} queued",
     "clearQueue": "Clear queue"

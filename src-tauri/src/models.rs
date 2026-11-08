@@ -48,6 +48,12 @@ pub struct FixedContextState {
     /// do que saiu da janela, atualizado em segundo plano depois de cada turno.
     #[serde(default)]
     pub rolling: bool,
+    /// "Ctx fixo em blocos": o começo do trecho recente só anda quando o histórico
+    /// estoura o orçamento, e anda em bloco (sobra uma fração do espaço). Entre dois
+    /// cortes o começo do prompt não muda, então o servidor reaproveita o cache.
+    /// Não vale junto com `rolling`.
+    #[serde(default)]
+    pub blocks: bool,
 }
 
 pub const DEFAULT_FIXED_CONTEXT_TOKENS: u32 = 10_000;
@@ -58,13 +64,19 @@ fn default_fixed_context_tokens() -> u32 {
 
 impl Default for FixedContextState {
     fn default() -> Self {
-        Self { enabled: false, tokens: DEFAULT_FIXED_CONTEXT_TOKENS, rolling: false }
+        Self { enabled: false, tokens: DEFAULT_FIXED_CONTEXT_TOKENS, rolling: false, blocks: false }
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessagesPage {
     pub messages: Vec<ChatMessage>,
+    /// Quantas mensagens do usuario existem ANTES desta pagina, no historico
+    /// inteiro. Os turnos das tarefas (`TaskItem.turn`) sao numerados pelo
+    /// historico inteiro; sem isso a timeline nao acha os passos de uma pagina
+    /// que nao comeca no inicio da sessao.
+    #[serde(default)]
+    pub user_turns_before: usize,
     /// `true` quando existem mensagens mais antigas do que as retornadas
     /// nesta página — a UI mostra "carregar mensagens anteriores" enquanto
     /// isso for `true`.

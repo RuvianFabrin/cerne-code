@@ -1281,7 +1281,13 @@ pub async fn run_turn(
         lh_briefing = Some(long_horizon::build_briefing(&app_data_dir, &session_id)?);
         sessions::advance_long_horizon_iteration(&app_data_dir, &session_id)?;
         sessions::save_messages(&app_data_dir, &session_id, &messages)?;
-    } else if !session.context_economy && !session.fixed_context.enabled && maybe_compact(
+    } else if !session.context_economy
+        && !session.fixed_context.enabled
+        // Sessão que já usou o Ctx fixo: o modelo recebe só o que vem depois do corte gravado
+        // (ver `fixed_context::payload_off`). Compactar o histórico INTEIRO de uma vez poderia
+        // estourar a janela do servidor e reescreveria o chat visível.
+        && !fixed_context::has_window(&app_data_dir, &session_id, messages.len())
+        && maybe_compact(
         &app,
         &session_id,
         &cfg,
@@ -1378,6 +1384,14 @@ pub async fn run_turn(
                 &app_data_dir, &session_id, &messages, request_tools, &session.model,
                 &session.fixed_context, context_length,
             ));
+        } else if !session.long_horizon.enabled && !session.context_economy {
+            // Ctx fixo desligado numa sessão que já o usou: o corte já feito continua valendo
+            // pro modelo (o chat visível não muda). Sessão sem corte gravado: `None`, caminho normal.
+            if let Some(view) = fixed_context::payload_off(
+                &app_data_dir, &session_id, &messages, request_tools, &session.model, context_length,
+            ) {
+                lh_payload = Some(view);
+            }
         }
         if final_response {
             let payload = lh_payload.get_or_insert_with(|| messages.clone());
@@ -2714,6 +2728,12 @@ pub async fn run_turn(
                 &app_data_dir, &session_id, &messages, &tool_specs, &session.model,
                 &session.fixed_context, context_length,
             ));
+        } else if !session.long_horizon.enabled && !session.context_economy {
+            if let Some(view) = fixed_context::payload_off(
+                &app_data_dir, &session_id, &messages, &tool_specs, &session.model, context_length,
+            ) {
+                lh_payload = Some(view);
+            }
         }
         let model_messages: &[ChatMessage] = lh_payload.as_deref().unwrap_or(&messages);
         emit_context_usage(
@@ -3160,6 +3180,12 @@ pub async fn compact_now(app: AppHandle, state: &AppState, session_id: String) -
         return Ok(false);
     }
     let mut messages = sessions::load_messages(&app_data_dir, &session_id)?;
+    if !session.context_economy && fixed_context::has_window(&app_data_dir, &session_id, messages.len()) {
+        // Sessão com corte do Ctx fixo gravado: o modelo já recebe só o que vem depois dele.
+        // Resumir o histórico inteiro num pedido só pode estourar a janela do servidor e
+        // reescreveria o chat visível, então não compacta.
+        return Ok(false);
+    }
     let (cfg, api_key) = session_provider_config(state, &session)?;
     let context_length = session
         .context_length

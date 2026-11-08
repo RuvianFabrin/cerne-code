@@ -587,7 +587,15 @@ watch(() => sessionStore.currentId, () => {
 function toggleFixedRolling() {
   const fc = sessionStore.currentSession?.fixed_context;
   const next = !fc?.rolling;
-  void sessionStore.updateFixedContext(next ? true : (fc?.enabled ?? false), fc?.tokens ?? 10000, next);
+  // O deslizante e o em blocos não valem juntos: ligar um desliga o outro.
+  void sessionStore.updateFixedContext(next ? true : (fc?.enabled ?? false), fc?.tokens ?? 10000, next, next ? false : undefined);
+}
+
+/** Liga/desliga o "ctx fixo em blocos". Ligar também liga o Ctx fixo e desliga o deslizante. */
+function toggleFixedBlocks() {
+  const fc = sessionStore.currentSession?.fixed_context;
+  const next = !fc?.blocks;
+  void sessionStore.updateFixedContext(next ? true : (fc?.enabled ?? false), fc?.tokens ?? 10000, next ? false : undefined, next);
 }
 
 function openAudioPicker() {
@@ -1587,6 +1595,17 @@ watch(
             >
               <span class="msi">swap_vert</span>
               <span class="plus-menu-label">{{ $t("composer.fixedContextRolling") }}</span>
+              <span class="plus-menu-switch"><span class="plus-menu-switch-dot" /></span>
+            </button>
+            <button
+              v-if="sessionStore.currentSession"
+              class="plus-menu-item plus-menu-toggle"
+              :class="{ 'plus-menu-toggle-on': sessionStore.currentSession.fixed_context?.blocks }"
+              v-tooltip.right="$t('composer.fixedContextBlocksHint')"
+              @click="toggleFixedBlocks"
+            >
+              <span class="msi">splitscreen</span>
+              <span class="plus-menu-label">{{ $t("composer.fixedContextBlocks") }}</span>
               <span class="plus-menu-switch"><span class="plus-menu-switch-dot" /></span>
             </button>
             <button

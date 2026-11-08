@@ -162,6 +162,8 @@ export interface MessagesPage {
   messages: ChatMessage[];
   has_more: boolean;
   next_before: number;
+  /** Mensagens do usuario antes desta pagina, no historico inteiro. */
+  user_turns_before?: number;
 }
 
 export interface BrowserProfile {
@@ -195,7 +197,7 @@ export interface Session {
   parent_session_id: string | null;
   long_horizon: LongHorizonState;
   /** "Ctx fixo": limita o que é enviado ao modelo a `tokens` por envio. */
-  fixed_context?: { enabled: boolean; tokens: number; rolling: boolean };
+  fixed_context?: { enabled: boolean; tokens: number; rolling: boolean; blocks?: boolean };
   task_queue_enabled: boolean;
   /** Fila de tarefas sem Long Horizon (memória da sessão + compactação entre tarefas). */
   plain_queue_enabled?: boolean;
@@ -569,8 +571,8 @@ export const api = {
     invoke<Session>("update_session_fable_method", { id, enabled }),
   appendRealtimeTurn: (id: string, audioDataUri: string, replyText: string) =>
     invoke<ChatMessage[]>("append_realtime_turn", { id, audioDataUri, replyText }),
-  updateSessionFixedContext: (id: string, enabled: boolean, tokens: number, rolling: boolean) =>
-    invoke<Session>("update_session_fixed_context", { id, enabled, tokens, rolling }),
+  updateSessionFixedContext: (id: string, enabled: boolean, tokens: number, rolling: boolean, blocks?: boolean) =>
+    invoke<Session>("update_session_fixed_context", { id, enabled, tokens, rolling, blocks }),
   updateSessionLongHorizonEnabled: (id: string, enabled: boolean) =>
     invoke<Session>("update_session_long_horizon_enabled", { id, enabled }),
   updateSessionContextEconomy: (id: string, enabled: boolean) =>

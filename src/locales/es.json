@@ -7,6 +7,18 @@
     "findings": "Hallazgos de revisión ({count})",
     "widgetFallback": "Widget"
   },
+  "processModal": {
+    "title": "Historial del proceso",
+    "status": "Estado",
+    "started": "Iniciado",
+    "command": "Comando",
+    "output": "Salida",
+    "noOutput": "Sin salida",
+    "running": "en ejecución",
+    "exited": "finalizado",
+    "unknown": "desconocido",
+    "close": "Cerrar"
+  },
   "sidePanel": {
     "browser": {
       "default": "Navegador predeterminado",
@@ -191,11 +203,13 @@
       "upgrade": "Actualizar el motor junto con Cerne"
     },
     "fixedContextLabel": "Ctx fijo",
-    "fixedContextTooltip": "Limita lo que se envía al modelo en cada mensaje, recortando el historial más antiguo. El historial completo sigue guardado.",
+    "fixedContextTooltip": "Limita lo que se envía al modelo en cada mensaje, recortando el historial más antiguo. El chat sigue completo en pantalla. El recorte se mantiene aunque lo desactives: el modelo no recupera lo que ya salió.",
     "fixedContextTokens": "Tokens por envío",
     "fixedContextTokensHint": "Las instrucciones y memorias siempre entran; luego los mensajes más recientes hasta el total.",
     "fixedContextRolling": "Ctx fijo deslizante",
     "fixedContextRollingHint": "Resumen rodante: el modelo resume lo que sale de la ventana en segundo plano tras cada turno. También activa el Ctx fijo.",
+    "fixedContextBlocks": "Ctx fijo por bloques",
+    "fixedContextBlocksHint": "Recorta el historial por bloques, solo cuando se supera el límite, para que el inicio del prompt se mantenga estable y el servidor reutilice su caché. También activa el Ctx fijo y desactiva el deslizante.",
     "queueSend": "Enviar a la cola",
     "queued": "{count} en cola",
     "clearQueue": "Vaciar cola"

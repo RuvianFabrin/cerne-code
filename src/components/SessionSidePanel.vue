@@ -11,6 +11,7 @@ import {
 } from "../api";
 import { useSessionStore } from "../stores/session";
 import ContextGauge from "./ContextGauge.vue";
+import ProcessHistoryModal from "./ProcessHistoryModal.vue";
 
 // Painel lateral da sessão atual (espelha o painel direito do Claude Desktop):
 // ambiente (pastas e permissão), contexto, MCPs ativos, alterações do git,
@@ -26,6 +27,9 @@ const gitError = ref<string | null>(null);
 const jobs = ref<BackgroundJobInfo[]>([]);
 const executions = ref<AgentExecution[]>([]);
 const collapsed = ref<Record<string, boolean>>({});
+// Processo aberto no modal de historico (guardado por id, pra acompanhar a saida ao vivo).
+const selectedJobId = ref<string | null>(null);
+const selectedJob = computed(() => jobs.value.find((j) => j.id === selectedJobId.value) ?? null);
 
 const session = computed(() => sessionStore.currentSession);
 
@@ -271,7 +275,7 @@ function statusLabel(status: string): string {
         <span class="sp-count">{{ runningJobs ? `${runningJobs}/${jobs.length}` : jobs.length }}</span>
       </button>
       <div v-if="!collapsed.jobs" class="sp-body">
-        <div v-for="j in jobs" :key="j.id" class="sp-row" :title="j.command">
+        <div v-for="j in jobs" :key="j.id" class="sp-row clickable" :title="j.command" @click="selectedJobId = j.id">
           <span class="status-dot" :class="j.status.kind === 'running' ? 'running' : 'idle'"></span>
           <span class="row-text mono">{{ j.command }}</span>
           <span class="row-status">{{ statusLabel(j.status.kind) }}</span>
@@ -279,6 +283,8 @@ function statusLabel(status: string): string {
         <p v-if="!jobs.length" class="sp-empty">{{ $t("sidePanel.jobs.none") }}</p>
       </div>
     </section>
+
+    <ProcessHistoryModal v-if="selectedJob" :job="selectedJob" @close="selectedJobId = null" />
 
     <!-- Agentes -->
     <section class="sp-section">

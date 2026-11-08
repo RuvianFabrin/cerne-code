@@ -65,6 +65,7 @@ interface ReloadData {
   // mover a borda de onde ela começa).
   messagesOldestIndex?: number;
   hasMoreMessages?: boolean;
+  userTurnsBefore?: number;
 }
 
 // Quantas mensagens a carga inicial (ou "carregar anteriores") busca de uma
@@ -123,6 +124,9 @@ export const useSessionStore = defineStore("session", {
     // mensagens anteriores" buscar (ver `loadOlderMessages`).
     messagesOldestIndex: null as number | null,
     hasMoreMessages: false,
+    // Quantos turnos do usuario existem antes da janela carregada. Os passos
+    // (TaskItem.turn) usam numeracao da sessao inteira, entao a timeline parte daqui.
+    userTurnsBefore: 0,
     loadingOlderMessages: false,
     tasks: [] as TaskItem[],
     pendingEdits: [] as PendingEdit[],
@@ -555,6 +559,7 @@ export const useSessionStore = defineStore("session", {
       // que não tem nada a ver com o histórico dela.
       this.messagesOldestIndex = null;
       this.hasMoreMessages = false;
+      this.userTurnsBefore = 0;
       this.streamingText = "";
       this.liveBlocks = [];
       this.thinkingText = "";
@@ -620,6 +625,7 @@ export const useSessionStore = defineStore("session", {
         contextUsage,
         messagesOldestIndex: messagesResult.next_before,
         hasMoreMessages: messagesResult.has_more,
+        userTurnsBefore: messagesResult.user_turns_before,
       };
     },
 
@@ -632,6 +638,7 @@ export const useSessionStore = defineStore("session", {
       // undefined = caminho "since", a janela não mudou de borda, não mexe.
       if (data.messagesOldestIndex !== undefined) this.messagesOldestIndex = data.messagesOldestIndex;
       if (data.hasMoreMessages !== undefined) this.hasMoreMessages = data.hasMoreMessages;
+      if (data.userTurnsBefore !== undefined) this.userTurnsBefore = data.userTurnsBefore;
       this.tasks = data.tasks;
       this.pendingEdits = data.pendingEdits;
       this.contextUsage = data.contextUsage;
@@ -665,6 +672,7 @@ export const useSessionStore = defineStore("session", {
         this.messages = [...page.messages, ...this.messages];
         this.messagesOldestIndex = page.next_before;
         this.hasMoreMessages = page.has_more;
+        this.userTurnsBefore = page.user_turns_before ?? this.userTurnsBefore;
       } finally {
         this.loadingOlderMessages = false;
       }
@@ -933,11 +941,12 @@ export const useSessionStore = defineStore("session", {
       if (idx !== -1) this.sessions[idx] = updated;
     },
 
-    async updateFixedContext(enabled: boolean, tokens: number, rolling?: boolean) {
+    async updateFixedContext(enabled: boolean, tokens: number, rolling?: boolean, blocks?: boolean) {
       if (!this.currentId) return;
       const safeTokens = Number.isFinite(tokens) && tokens >= 1000 ? Math.round(tokens) : 10000;
       const keepRolling = rolling ?? this.currentSession?.fixed_context?.rolling ?? false;
-      const updated = await api.updateSessionFixedContext(this.currentId, enabled, safeTokens, keepRolling);
+      const keepBlocks = blocks ?? this.currentSession?.fixed_context?.blocks ?? false;
+      const updated = await api.updateSessionFixedContext(this.currentId, enabled, safeTokens, keepRolling, keepBlocks);
       this.currentSession = updated;
       const idx = this.sessions.findIndex((s) => s.id === updated.id);
       if (idx !== -1) this.sessions[idx] = updated;
