@@ -143,6 +143,8 @@
     "contextEconomyLabel": "Context economy",
     "contextEconomyTooltip": "Stores full outputs and sends smaller excerpts to the model. Retrieves details with search. Requires Node.js 22.13+.",
     "longHorizonLabel": "Long Horizon",
+    "exclusiveBlocked": "Turn off \"{other}\" to enable this mode: the two do not work together.",
+    "exclusiveRequires": "Turn on \"{other}\" first: this mode depends on it.",
     "mcpLabel": "MCP",
     "addFolder": "Add folder",
     "executionModeLabel": "Execution mode",

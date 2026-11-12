@@ -143,6 +143,8 @@
     "contextEconomyLabel": "Economia de contexto",
     "contextEconomyTooltip": "Guarda saídas completas e envia trechos menores ao modelo. Recupera detalhes por busca. Requer Node.js 22.13+.",
     "longHorizonLabel": "Long Horizon",
+    "exclusiveBlocked": "Desligue \"{other}\" para poder ligar este modo: os dois não funcionam juntos.",
+    "exclusiveRequires": "Ligue \"{other}\" primeiro: este modo depende dele.",
     "mcpLabel": "MCP",
     "addFolder": "Adicionar pasta",
     "executionModeLabel": "Modo de execução",

@@ -91,8 +91,17 @@ async function loadMcp() {
   }
 }
 
+// Pasta usada para o git: a pasta de projeto ou, sem ela, a primeira pasta extra com
+// permissão de edição (sessão que trabalha só numa pasta anexada também tem alterações).
+const gitRoot = computed(
+  () =>
+    session.value?.project_root ||
+    session.value?.extra_read_paths?.find((p) => p.mode === "read_write")?.path ||
+    null,
+);
+
 async function refreshGit() {
-  const root = session.value?.project_root;
+  const root = gitRoot.value;
   if (!root) {
     gitChanges.value = [];
     gitError.value = null;
@@ -256,7 +265,7 @@ function statusLabel(status: string): string {
         <span v-if="gitChanges.length" class="sp-count">{{ gitChanges.length }}</span>
       </button>
       <div v-if="!collapsed.git" class="sp-body">
-        <p v-if="!session?.project_root" class="sp-empty">{{ $t("sidePanel.git.noProject") }}</p>
+        <p v-if="!gitRoot" class="sp-empty">{{ $t("sidePanel.git.noProject") }}</p>
         <p v-else-if="gitError === 'not-repo'" class="sp-empty">{{ $t("sidePanel.git.notRepo") }}</p>
         <p v-else-if="!gitChanges.length" class="sp-empty">{{ $t("sidePanel.git.none") }}</p>
         <div v-for="f in gitChanges" :key="f.path" class="sp-row" :title="f.path">

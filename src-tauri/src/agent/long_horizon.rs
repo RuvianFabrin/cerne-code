@@ -150,9 +150,6 @@ pub fn state_directory(dir: &std::path::Path, id: &str) -> std::path::PathBuf {
 
 pub fn read_state(dir: &std::path::PathBuf, id: &str) -> Result<String> {
     Ok(serde_json::to_string_pretty(&serde_json::json!({
-        "directory": state_directory(dir, id),
-        "memoria_path": state_directory(dir, id).join("memoria.md"),
-        "projeto_path": state_directory(dir, id).join("projeto.md"),
         "memoria": bounded(&sessions::read_long_horizon_memoria(dir, id)?, MAX_STATE_CHARS),
         "projeto": bounded(&sessions::read_long_horizon_projeto(dir, id)?, MAX_STATE_CHARS)
     }))?)
@@ -162,6 +159,59 @@ pub fn is_state_file(dir: &std::path::Path, id: &str, path: &str) -> bool {
     let Ok(requested) = std::fs::canonicalize(path) else { return false; };
     ["memoria.md", "projeto.md"].iter().any(|name|
         std::fs::canonicalize(state_directory(dir, id).join(name)).map(|allowed| allowed == requested).unwrap_or(false))
+}
+
+/// Quantos arquivos e subpastas há direto dentro de `path` (olha no máximo 50 entradas).
+fn count_entries(path: &std::path::Path) -> Option<(usize, usize)> {
+    let mut files = 0;
+    let mut dirs = 0;
+    for entry in std::fs::read_dir(path).ok()?.take(50).flatten() {
+        if entry.metadata().map(|m| m.is_dir()).unwrap_or(false) {
+            dirs += 1;
+        } else {
+            files += 1;
+        }
+    }
+    Some((files, dirs))
+}
+
+/// Bloco "Pastas de trabalho" do briefing: a pasta de projeto e as pastas extras da
+/// sessão, que é onde os arquivos do trabalho ficam.
+///
+/// Antes este bloco subia três níveis a partir da pasta da sessão
+/// (`sessions/<id>/../../..`) e apresentava o resultado (`AppData\Roaming`) como
+/// "Estado do projeto". Junto com o "Diretório REAL desta sessão", isso levou um modelo
+/// a criar o projeto dentro da pasta de dados do Cerne em vez da pasta anexada.
+fn work_folders_block(app_data_dir: &std::path::PathBuf, session_id: &str) -> String {
+    let mut block = String::from("\n### Pastas de trabalho — onde ficam os arquivos do projeto\n");
+    let Ok(session) = sessions::get_session(app_data_dir, session_id) else {
+        return block;
+    };
+    let mut folders: Vec<(String, &str)> = Vec::new();
+    if let Some(root) = &session.project_root {
+        folders.push((root.clone(), "pasta do projeto, leitura e escrita"));
+    }
+    for extra in &session.extra_read_paths {
+        let acesso = match extra.mode {
+            crate::models::FolderMode::ReadWrite => "leitura e escrita",
+            crate::models::FolderMode::Read => "somente leitura",
+        };
+        folders.push((extra.path.clone(), acesso));
+    }
+    if folders.is_empty() {
+        block.push_str("Nenhuma pasta de projeto aberta nesta sessão.\n");
+        return block;
+    }
+    for (path, acesso) in folders {
+        match count_entries(std::path::Path::new(&path)) {
+            Some((files, dirs)) => {
+                block.push_str(&format!("- `{path}` ({acesso}; {files} arquivos, {dirs} subpastas)\n"))
+            }
+            None => block.push_str(&format!("- `{path}` ({acesso})\n")),
+        }
+    }
+    block.push_str("Crie e altere os arquivos do trabalho somente nessas pastas.\n");
+    block
 }
 
 /// Monta o texto do briefing a partir do estado em disco desta sessão.
@@ -179,8 +229,12 @@ pub fn build_briefing(app_data_dir: &std::path::PathBuf, session_id: &str) -> Re
          Não invente fatos que não estejam registrados ou verificados neste turno.\n\n",
     );
 
-    briefing.push_str(&format!("Diretório REAL desta sessão: `{}`.\nArquivos: `{}` e `{}`.\nPara reler, use read_long_horizon_state (sem caminho). Para salvar, use update_long_horizon_memoria/projeto; o Cerne resolve o caminho automaticamente. Não use pastas de outra sessão nem a raiz do projeto para estes registros.\n\n",
-        state_directory(app_data_dir, session_id).display(), state_directory(app_data_dir, session_id).join("memoria.md").display(), state_directory(app_data_dir, session_id).join("projeto.md").display()));
+    // O modelo não recebe o caminho destes registros: ele só precisa das ferramentas. O
+    // caminho já esteve aqui como "Diretório REAL desta sessão", e um modelo local entendeu
+    // que o trabalho devia ser feito ali: criou o projeto inteiro dentro da pasta de dados
+    // do Cerne (visto em 2026-11-11). As únicas pastas que o modelo conhece são as que o
+    // usuário abriu na sessão.
+    briefing.push_str("Os registros `memoria.md` e `projeto.md` são guardados pelo Cerne e não têm caminho de arquivo para você: para reler, use read_long_horizon_state; para salvar, use update_long_horizon_memoria/projeto. Não tente ler nem gravar esses registros com read_file/write_file, e não os crie nas pastas do projeto.\n\n");
 
     // Achado no turno anterior: se a resposta final se repetiu byte a byte
     // vezes demais (`sessions::finalize_long_horizon_turn`), avisa aqui —
@@ -244,24 +298,7 @@ pub fn build_briefing(app_data_dir: &std::path::PathBuf, session_id: &str) -> Re
         briefing.push_str(result);
         briefing.push('\n');
     }
-    // Adicionar mais contexto: resultados de ferramentas dos ultimos turnos.
-    briefing.push_str("\n### Estado do projeto — arquivos e estrutura\n");
-    if let Ok(project_root) = std::fs::canonicalize(app_data_dir.join("sessions").join(session_id).join("..").join("..").join("..")) {
-        if let Ok(entries) = std::fs::read_dir(&project_root) {
-            let mut file_count = 0;
-            let mut dir_count = 0;
-            for entry in entries.take(50) {
-                if let Ok(e) = entry {
-                    if e.metadata().map(|m| m.is_dir()).unwrap_or(false) {
-                        dir_count += 1;
-                    } else {
-                        file_count += 1;
-                    }
-                }
-            }
-            briefing.push_str(&format!("Diretorio: {} ({} arquivos, {} subpastas)\n", project_root.display(), file_count, dir_count));
-        }
-    }
+    briefing.push_str(&work_folders_block(app_data_dir, session_id));
     Ok(briefing)
 }
 
@@ -361,19 +398,22 @@ mod tests {
     use crate::sessions;
 
     #[test]
-    fn reader_returns_actual_paths_and_is_scoped_to_current_session() {
+    fn reader_never_reveals_paths_and_is_scoped_to_current_session() {
         let dir = scratch_dir(); let id = "current-session";
         sessions::write_long_horizon_memoria(&dir, id, "Preferencia: respostas compactas").unwrap();
         sessions::write_long_horizon_projeto(&dir, id, "Proximo passo: verificar servidor").unwrap();
         sessions::write_long_horizon_memoria(&dir, "other-session", "Nao divulgar").unwrap();
         let result: serde_json::Value = serde_json::from_str(&read_state(&dir, id).unwrap()).unwrap();
-        assert_eq!(result["directory"], state_directory(&dir, id).to_string_lossy().as_ref());
+        // Nem a ferramenta nem o briefing revelam onde os registros ficam no disco.
+        let pasta_interna = state_directory(&dir, id).to_string_lossy().to_string();
+        assert!(result.get("directory").is_none() && result.get("memoria_path").is_none());
+        assert!(!read_state(&dir, id).unwrap().contains(&dir.to_string_lossy().replace('\\', "\\\\")));
         assert!(result["memoria"].as_str().unwrap().contains("compactas"));
         assert!(!result.to_string().contains("Nao divulgar"));
         assert!(is_state_file(&dir, id, &state_directory(&dir, id).join("memoria.md").to_string_lossy()));
         assert!(!is_state_file(&dir, id, &state_directory(&dir, "other-session").join("memoria.md").to_string_lossy()));
         let briefing = build_briefing(&dir, id).unwrap();
-        assert!(briefing.contains(&state_directory(&dir, id).to_string_lossy().to_string()));
+        assert!(!briefing.contains(&pasta_interna), "o briefing não pode revelar a pasta interna: {briefing}");
         assert!(briefing.contains("read_long_horizon_state"));
         std::fs::remove_dir_all(dir).ok();
     }
@@ -686,5 +726,36 @@ mod tests {
             !view.iter().any(|m| m.name.as_deref() == Some(RESET_MARKER_NAME)),
             "o marcador de reset e so decoracao de UI, o modelo nao deveria ver"
         );
+    }
+
+    #[test]
+    fn briefing_aponta_as_pastas_de_trabalho_da_sessao_e_nao_a_pasta_de_dados_do_app() {
+        let dir = std::env::temp_dir().join(format!("cerne-lh-pastas-{}", uuid::Uuid::new_v4()));
+        let trabalho = dir.join("meu-projeto");
+        std::fs::create_dir_all(&trabalho).unwrap();
+        std::fs::write(trabalho.join("tarefas.json"), "{}").unwrap();
+        let session = sessions::create_session(
+            &dir, "teste".to_string(), crate::models::ProviderKind::Ollama, "m".to_string(),
+            None, None, None, None, None,
+        )
+        .unwrap();
+        let mut salvo = sessions::get_session(&dir, &session.id).unwrap();
+        salvo.extra_read_paths = vec![crate::models::FolderEntry {
+            path: trabalho.to_string_lossy().to_string(),
+            mode: crate::models::FolderMode::ReadWrite,
+        }];
+        std::fs::write(
+            dir.join("sessions").join(&session.id).join("session.json"),
+            serde_json::to_string_pretty(&salvo).unwrap(),
+        )
+        .unwrap();
+
+        let briefing = build_briefing(&dir, &session.id).unwrap();
+        let linha = format!("- `{}` (leitura e escrita; 1 arquivos, 0 subpastas)", trabalho.to_string_lossy());
+        assert!(briefing.contains(&linha), "faltou a pasta de trabalho: {briefing}");
+        assert!(!briefing.contains(&dir.join("sessions").to_string_lossy().to_string()));
+        assert!(!briefing.contains("Diretório REAL"));
+        assert!(!briefing.contains("Estado do projeto"));
+        std::fs::remove_dir_all(dir).ok();
     }
 }

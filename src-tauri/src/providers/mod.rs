@@ -28,6 +28,41 @@ pub struct StreamResult {
     pub usage: StreamUsage,
 }
 
+/// Quanto tempo um servidor que não é a NVIDIA pode ficar mudo (sem cabeçalho HTTP nem
+/// dado novo no stream) antes de o turno desistir. É folgado de propósito: um modelo local
+/// pode levar minutos carregando ou lendo um prompt enorme sem mandar nada. Sem esse teto,
+/// um llama-server cujo processo do modelo caiu deixava o turno em "Aguardando resposta"
+/// para sempre (visto em 2026-11-10: 34 minutos parado até o usuário perceber).
+const IDLE_TIMEOUT_SECS: u64 = 900;
+
+fn idle_timeout_error(model: &str) -> anyhow::Error {
+    anyhow!(
+        "O servidor do modelo ficou {} minutos sem responder (modelo {model}). Ele pode ter caído: confira se o servidor está no ar e mande de novo.",
+        IDLE_TIMEOUT_SECS / 60
+    )
+}
+
+/// `Some(motivo)` quando o stream acabou sem o servidor avisar que terminou (`finish_reason`
+/// ou `[DONE]`) e o que chegou não dá para usar: nada, ou uma chamada de ferramenta com os
+/// argumentos cortados no meio do JSON. É o que sobra quando o servidor cai durante a
+/// geração; executar essa chamada pela metade só gera um erro de ferramenta enganoso.
+/// Texto puro sem aviso de fim continua aceito: há servidor que simplesmente fecha a conexão.
+fn stream_cut_short(finished: bool, content: &str, tool_calls: &[(String, String, String)]) -> Option<&'static str> {
+    if finished {
+        return None;
+    }
+    let args_cortados = tool_calls.iter().any(|(_, _, args)| {
+        !args.trim().is_empty() && serde_json::from_str::<serde_json::Value>(args).is_err()
+    });
+    if args_cortados {
+        return Some("no meio de uma chamada de ferramenta");
+    }
+    if content.is_empty() && tool_calls.is_empty() {
+        return Some("sem mandar nada");
+    }
+    None
+}
+
 async fn response_error_body(resp: reqwest::Response, is_nvidia: bool) -> String {
     if !is_nvidia {
         return resp.text().await.unwrap_or_default();
@@ -154,6 +189,7 @@ fn to_wire_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
                 // `display_content` e so pra UI (ver campo em models.rs) — nunca
                 // deveria chegar no provider, mesmo quando presente.
                 obj.remove("display_content");
+                repair_tool_call_arguments(obj);
                 if !m.images.is_empty() {
                     obj.remove("images");
                     let mut blocks = vec![json!({ "type": "text", "text": m.content })];
@@ -164,6 +200,26 @@ fn to_wire_messages(messages: &[ChatMessage]) -> Vec<serde_json::Value> {
             value
         })
         .collect()
+}
+
+/// Troca por `{}` os argumentos de chamada de ferramenta que não são JSON válido, só no
+/// que vai para o provider (o histórico salvo não muda). Uma chamada cortada no meio
+/// (servidor caiu durante a geração) ficava gravada no histórico e o llama-server passava
+/// a recusar TODO pedido seguinte com "Failed to parse tool call arguments as JSON" (500),
+/// travando a sessão para sempre (visto em 2026-11-10).
+fn repair_tool_call_arguments(message: &mut serde_json::Map<String, serde_json::Value>) {
+    let Some(calls) = message.get_mut("tool_calls").and_then(|c| c.as_array_mut()) else {
+        return;
+    };
+    for call in calls {
+        let arguments = &mut call["function"]["arguments"];
+        let valido = arguments
+            .as_str()
+            .map_or(true, |a| serde_json::from_str::<serde_json::Value>(a).is_ok());
+        if !valido {
+            *arguments = json!("{}");
+        }
+    }
 }
 
 /// Um anexo multimodal vira um bloco do formato OpenAI. Áudio entra como
@@ -409,7 +465,9 @@ pub async fn chat_stream(
         .await
         .map_err(|_| anyhow!("NVIDIA não respondeu ao pedido HTTP em 180 segundos (modelo {model})."))??
     } else {
-        req.send().await?
+        tokio::time::timeout(std::time::Duration::from_secs(IDLE_TIMEOUT_SECS), req.send())
+            .await
+            .map_err(|_| idle_timeout_error(model))??
     };
     if !resp.status().is_success() {
         let status = resp.status();
@@ -449,7 +507,9 @@ pub async fn chat_stream(
                 .await
                 .map_err(|_| anyhow!("NVIDIA não respondeu ao repetir o pedido sem reasoning_effort (modelo {model})."))??
             } else {
-                retry_req.send().await?
+                tokio::time::timeout(std::time::Duration::from_secs(IDLE_TIMEOUT_SECS), retry_req.send())
+                    .await
+                    .map_err(|_| idle_timeout_error(model))??
             };
             if !resp.status().is_success() {
                 let status = resp.status();
@@ -479,6 +539,8 @@ pub async fn chat_stream(
     // index -> (id, name, arguments) accumulator for streamed tool calls
     let mut tool_calls: Vec<(String, String, String)> = Vec::new();
     let mut usage = StreamUsage::default();
+    // O servidor avisou que terminou (`[DONE]` ou `finish_reason`)?
+    let mut finished = false;
 
     loop {
         let next_chunk = if is_nvidia {
@@ -489,7 +551,9 @@ pub async fn chat_stream(
             .await
             .map_err(|_| anyhow!("NVIDIA parou de enviar dados por 180 segundos (modelo {model})."))?
         } else {
-            stream.next().await
+            tokio::time::timeout(std::time::Duration::from_secs(IDLE_TIMEOUT_SECS), stream.next())
+                .await
+                .map_err(|_| idle_timeout_error(model))?
         };
         let Some(chunk) = next_chunk else { break };
         let chunk = chunk?;
@@ -504,12 +568,16 @@ pub async fn chat_stream(
             }
             let payload = line["data:".len()..].trim();
             if payload == "[DONE]" {
+                finished = true;
                 continue;
             }
             let parsed: serde_json::Value = match serde_json::from_str(payload) {
                 Ok(v) => v,
                 Err(_) => continue,
             };
+            if !parsed["choices"][0]["finish_reason"].is_null() {
+                finished = true;
+            }
             let delta = &parsed["choices"][0]["delta"];
 
             if let Some(text) = delta["content"].as_str() {
@@ -567,6 +635,12 @@ pub async fn chat_stream(
                 }
             }
         }
+    }
+
+    if let Some(motivo) = stream_cut_short(finished, &content, &tool_calls) {
+        return Err(anyhow!(
+            "O servidor do modelo encerrou a resposta {motivo} (modelo {model}). Ele pode ter caído: confira se o servidor está no ar e mande de novo."
+        ));
     }
 
     let final_tool_calls: Option<Vec<ToolCall>> = if tool_calls.is_empty() {
@@ -1307,5 +1381,52 @@ mod tests {
         );
         assert_eq!(body["reasoning_effort"], json!("none"));
         assert!(body.get("chat_template_kwargs").is_none());
+    }
+
+    #[test]
+    fn stream_cortado_no_meio_da_chamada_de_ferramenta_vira_erro() {
+        let cortada = vec![(
+            "id".to_string(),
+            "run_command".to_string(),
+            r#"{"command":"git add -A","background":"#.to_string(),
+        )];
+        assert!(stream_cut_short(false, "Vou fazer o commit.", &cortada).is_some());
+        // Com o aviso de fim, quem julga os argumentos é a execução da ferramenta.
+        assert!(stream_cut_short(true, "", &cortada).is_none());
+    }
+
+    #[test]
+    fn stream_sem_aviso_de_fim_so_e_aceito_se_trouxe_algo_inteiro() {
+        let inteira = vec![("id".to_string(), "run_command".to_string(), r#"{"command":"dir"}"#.to_string())];
+        assert!(stream_cut_short(false, "", &[]).is_some());
+        assert!(stream_cut_short(false, "resposta em texto", &[]).is_none());
+        assert!(stream_cut_short(false, "", &inteira).is_none());
+        // Ferramenta sem argumentos (string vazia) não é corte.
+        let sem_args = vec![("id".to_string(), "list_dir".to_string(), String::new())];
+        assert!(stream_cut_short(false, "", &sem_args).is_none());
+    }
+
+    #[test]
+    fn tool_call_com_argumentos_cortados_vai_como_objeto_vazio_para_o_provider() {
+        let chamada = |arguments: &str| ToolCall {
+            id: "c1".to_string(),
+            kind: "function".to_string(),
+            function: ToolCallFunction { name: "run_command".to_string(), arguments: arguments.to_string() },
+        };
+        let mensagem = |arguments: &str| ChatMessage {
+            role: "assistant".to_string(),
+            content: String::new(),
+            tool_calls: Some(vec![chamada(arguments)]),
+            tool_call_id: None,
+            name: None,
+            images: Vec::new(),
+            display_content: None,
+        };
+        let wire = to_wire_messages(&[
+            mensagem(r#"{"command":"git add -A","background":"#),
+            mensagem(r#"{"command":"dir"}"#),
+        ]);
+        assert_eq!(wire[0]["tool_calls"][0]["function"]["arguments"], json!("{}"));
+        assert_eq!(wire[1]["tool_calls"][0]["function"]["arguments"], json!(r#"{"command":"dir"}"#));
     }
 }

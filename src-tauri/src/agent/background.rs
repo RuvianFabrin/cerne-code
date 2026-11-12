@@ -17,13 +17,13 @@
 //! job pertence a qual sessao.
 
 use anyhow::{anyhow, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::process::Child;
 
@@ -51,7 +51,7 @@ struct BackgroundDoneEvent {
     output: String,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum BackgroundJobStatus {
     Running,
@@ -59,7 +59,7 @@ pub enum BackgroundJobStatus {
     Unknown,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct BackgroundJobInfo {
     pub id: String,
     pub command: String,
@@ -122,17 +122,66 @@ fn prune_finished_jobs(jobs: &mut HashMap<String, JobHandle>) {
     }
 }
 
+/// Quantas linhas de output de cada job vão para o histórico em disco. O painel só
+/// precisa do fim da saída para mostrar o que aconteceu; o buffer inteiro
+/// (`MAX_OUTPUT_LINES`) continua só em memória.
+const HISTORY_OUTPUT_LINES: usize = 200;
+
+const HISTORY_FILE: &str = "background_jobs.json";
+
+fn tail_lines(text: &str, max: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(max)..].join("\n")
+}
+
+/// Lê o histórico gravado por uma execução anterior do app. Quem ainda constava como
+/// "rodando" morreu junto com o app (`kill_all_blocking`), então vira "encerrado".
+fn load_history(path: &Path) -> Vec<BackgroundJobInfo> {
+    let mut history: Vec<BackgroundJobInfo> = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    for job in &mut history {
+        if job.status == BackgroundJobStatus::Running {
+            job.status = BackgroundJobStatus::Exited { code: None };
+        }
+    }
+    history
+}
+
 #[derive(Default)]
 pub struct BackgroundJobs {
     jobs: Mutex<HashMap<String, JobHandle>>,
+    /// Jobs de execuções anteriores do app (só para o painel: o processo não existe mais).
+    /// Sem isso o painel "Processos em segundo plano" voltava vazio a cada reabertura.
+    history: Mutex<Vec<BackgroundJobInfo>>,
+    /// Onde o histórico é gravado; `None` nos testes (nada vai para o disco).
+    history_path: Option<PathBuf>,
     app: Option<AppHandle>,
 }
 
 impl BackgroundJobs {
-    pub fn new(app: AppHandle) -> Self {
+    pub fn new(app: AppHandle, app_data_dir: &Path) -> Self {
+        let history_path = app_data_dir.join(HISTORY_FILE);
         Self {
             jobs: Mutex::new(HashMap::new()),
+            history: Mutex::new(load_history(&history_path)),
+            history_path: Some(history_path),
             app: Some(app),
+        }
+    }
+
+    /// Grava em disco o que o painel mostra agora (jobs vivos + histórico), para
+    /// sobreviver ao fechamento do app. Melhor esforço: falha de disco não derruba nada.
+    pub fn persist(&self) {
+        let Some(path) = &self.history_path else { return };
+        let mut snapshot = self.list_structured();
+        snapshot.truncate(MAX_TRACKED_JOBS);
+        for job in &mut snapshot {
+            job.output = tail_lines(&job.output, HISTORY_OUTPUT_LINES);
+        }
+        if let Ok(text) = serde_json::to_string(&snapshot) {
+            let _ = std::fs::write(path, text);
         }
     }
 
@@ -207,6 +256,7 @@ impl BackgroundJobs {
                 session_id: session_id.to_string(),
             },
         );
+        self.persist();
         Ok(id)
     }
 
@@ -324,6 +374,8 @@ impl BackgroundJobs {
             let jobs = self.jobs.lock().unwrap();
             jobs.values().filter_map(|j| j.child.id()).collect()
         };
+        // Antes de limpar: é a última chance de guardar o histórico desta execução.
+        self.persist();
         for pid in pids {
             super::shell::kill_pid_tree_blocking(pid);
         }
@@ -363,6 +415,16 @@ impl BackgroundJobs {
                 }
             })
             .collect();
+        drop(jobs);
+        let antigos: Vec<BackgroundJobInfo> = self
+            .history
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|h| !result.iter().any(|j| j.id == h.id))
+            .cloned()
+            .collect();
+        result.extend(antigos);
         // Mais recente primeiro — `jobs` é um HashMap (ordem de iteração
         // arbitrária), sem isso a lista pulava de ordem a cada refresh.
         result.sort_by_key(|j| std::cmp::Reverse(j.started_at_ms));
@@ -505,6 +567,10 @@ async fn on_job_finished(completion: JobCompletionCtx, output: Arc<Mutex<VecDequ
         .join("\n");
 
     if let Some(app) = &completion.app {
+        // Guarda o status e a saída finais no histórico em disco.
+        if let Some(state) = app.try_state::<crate::AppState>() {
+            state.background_jobs.persist();
+        }
         let _ = app.emit(
             "agent:background_done",
             BackgroundDoneEvent {

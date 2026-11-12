@@ -405,6 +405,58 @@ fn prune_finished_executions(
     }
 }
 
+const AGENT_EXECUTIONS_FILE: &str = "agent_executions.json";
+
+/// Teto do `detail` de cada passo no histórico em disco (o resultado inteiro de uma
+/// ferramenta pode ter dezenas de KB; para rever o que rodou, o começo basta).
+const PERSISTED_STEP_DETAIL_CHARS: usize = 4_000;
+
+/// Grava o registro de execuções (sub-agentes, verificador, pipeline) em disco. Sem isso
+/// o painel "Agentes" voltava vazio toda vez que o app era fechado e reaberto. Chamado
+/// quando uma execução começa e quando termina. Melhor esforço.
+fn persist_agent_executions(state: &AppState) {
+    let mut executions: Vec<crate::models::AgentExecution> =
+        state.agent_executions.lock().unwrap().values().cloned().collect();
+    for execution in &mut executions {
+        for step in &mut execution.steps {
+            if let Some(detail) = &mut step.detail {
+                if detail.chars().count() > PERSISTED_STEP_DETAIL_CHARS {
+                    *detail = detail.chars().take(PERSISTED_STEP_DETAIL_CHARS).collect::<String>() + "\n[...]";
+                }
+            }
+        }
+    }
+    if let Ok(text) = serde_json::to_string(&executions) {
+        let _ = std::fs::write(state.app_data_dir.join(AGENT_EXECUTIONS_FILE), text);
+    }
+}
+
+/// Lê o registro gravado por `persist_agent_executions`. Execução que ainda constava como
+/// "running" foi interrompida pelo fechamento do app, então volta como "failed".
+pub(crate) fn load_agent_executions(
+    app_data_dir: &std::path::Path,
+) -> std::collections::HashMap<String, crate::models::AgentExecution> {
+    let executions: Vec<crate::models::AgentExecution> =
+        std::fs::read_to_string(app_data_dir.join(AGENT_EXECUTIONS_FILE))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+    executions
+        .into_iter()
+        .map(|mut execution| {
+            if execution.status == "running" {
+                execution.status = "failed".to_string();
+            }
+            for step in &mut execution.steps {
+                if step.status == "running" {
+                    step.status = "failed".to_string();
+                }
+            }
+            (execution.id.clone(), execution)
+        })
+        .collect()
+}
+
 fn start_agent_execution(
     state: &AppState,
     session_id: &str,
@@ -430,6 +482,7 @@ fn start_agent_execution(
         .lock()
         .unwrap()
         .insert(id.clone(), execution);
+    persist_agent_executions(state);
     id
 }
 
@@ -446,6 +499,7 @@ fn finish_agent_execution(state: &AppState, execution_id: &str, ok: bool) {
         execution.status = if ok { "done" } else { "failed" }.to_string();
         execution.finished_at_ms = Some(chrono::Utc::now().timestamp_millis() as u64);
     }
+    persist_agent_executions(state);
 }
 
 /// Registra um novo passo (chamada de ferramenta) dentro de uma execução —
@@ -989,9 +1043,9 @@ pub async fn run_turn(
         }
         // Memória da sessão inteira no prompt, em qualquer sessão: fica fora de
         // `messages`, então a compactação nunca a alcança.
-        prompt.push_str(&plain_queue::memory_prompt_block(&app_data_dir, &session_id)?);
+        prompt.push_str(&plain_queue::memory_prompt_block(&app_data_dir, &session_id, session.fixed_context.enabled)?);
         if session.plain_queue_enabled {
-            prompt.push_str(&plain_queue::queue_prompt_block());
+            prompt.push_str(&plain_queue::queue_prompt_block(session.fixed_context.enabled));
         }
         if session.task_queue_enabled {
             prompt.push_str("\n\n");
@@ -1184,7 +1238,7 @@ pub async fn run_turn(
     if session.long_horizon.enabled || session.task_queue_enabled {
         tool_specs.extend(tools::long_horizon_tool_specs());
     }
-    tool_specs.extend(plain_queue::tool_specs());
+    tool_specs.extend(plain_queue::tool_specs(session.fixed_context.enabled));
     if !state.config.lock().unwrap().image_gen.base_url.trim().is_empty() {
         tool_specs.extend(tools::image_gen_tool_specs());
     }
@@ -1869,7 +1923,7 @@ pub async fn run_turn(
                         .map(|_| {
                             lh_memoria_salva = true;
                             tools::ToolOutcome {
-                                observation: format!("memoria.md atualizado em {}", long_horizon::state_directory(&app_data_dir, &session_id).join("memoria.md").display()),
+                                observation: "memoria.md atualizado".to_string(),
                                 pending_edit: None,
                             }
                         }),
@@ -1883,7 +1937,7 @@ pub async fn run_turn(
                         .map(|_| {
                             lh_projeto_salvo = true;
                             tools::ToolOutcome {
-                                observation: format!("projeto.md atualizado em {}", long_horizon::state_directory(&app_data_dir, &session_id).join("projeto.md").display()),
+                                observation: "projeto.md atualizado".to_string(),
                                 pending_edit: None,
                             }
                         }),
@@ -1891,11 +1945,38 @@ pub async fn run_turn(
                 }
             } else if call.function.name == plain_queue::MEMORY_TOOL {
                 match args["conteudo"].as_str() {
-                    Some(conteudo) => sessions::write_session_memory(&app_data_dir, &session_id, conteudo)
-                        .map(|_| tools::ToolOutcome {
-                            observation: "memória da sessão atualizada; ela vai aparecer inteira no próximo turno.".to_string(),
-                            pending_edit: None,
-                        }),
+                    // Limite, seções e modos novos só com o Ctx fixo ativo. Sem ele, a ferramenta
+                    // é a de sempre: reescreve o arquivo inteiro, sem limite de tamanho.
+                    Some(conteudo) if !session.fixed_context.enabled => {
+                        sessions::write_session_memory(&app_data_dir, &session_id, conteudo)
+                            .map(|_| tools::ToolOutcome {
+                                observation: "memória da sessão atualizada; ela vai aparecer inteira no próximo turno.".to_string(),
+                                pending_edit: None,
+                            })
+                    }
+                    Some(conteudo) => {
+                        let modo = sessions::MemoryMode::parse(args["modo"].as_str());
+                        sessions::update_session_memory(&app_data_dir, &session_id, conteudo, modo, args["secao"].as_str())
+                            .map(|update| {
+                                let apagadas = if update.dropped_lines > 0 {
+                                    format!(
+                                        "; {} linha(s) antiga(s) de \"{}\" foram apagadas para caber",
+                                        update.dropped_lines,
+                                        sessions::SESSION_MEMORY_LOG_SECTION
+                                    )
+                                } else {
+                                    String::new()
+                                };
+                                tools::ToolOutcome {
+                                    observation: format!(
+                                        "memória da sessão atualizada ({} de {} bytes){apagadas}; ela vai aparecer inteira no próximo turno.",
+                                        update.bytes,
+                                        sessions::SESSION_MEMORY_MAX_BYTES
+                                    ),
+                                    pending_edit: None,
+                                }
+                            })
+                    }
                     None => Err(anyhow::anyhow!("conteudo obrigatorio")),
                 }
             } else if call.function.name == "generate_image" {

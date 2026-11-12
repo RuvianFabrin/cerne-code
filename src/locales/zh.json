@@ -143,6 +143,8 @@
     "contextEconomyLabel": "上下文节省",
     "contextEconomyTooltip": "保存完整输出，仅向模型发送较小片段，通过搜索检索详情。需要 Node.js 22.13+。",
     "longHorizonLabel": "Long Horizon",
+    "exclusiveBlocked": "请先关闭“{other}”再开启此模式：两者不能同时使用。",
+    "exclusiveRequires": "请先开启“{other}”：此模式依赖它。",
     "mcpLabel": "MCP",
     "addFolder": "添加文件夹",
     "executionModeLabel": "执行模式",

@@ -143,6 +143,8 @@
     "contextEconomyLabel": "Ahorro de contexto",
     "contextEconomyTooltip": "Guarda salidas completas y envía fragmentos al modelo. Recupera detalles mediante búsqueda. Requiere Node.js 22.13+.",
     "longHorizonLabel": "Long Horizon",
+    "exclusiveBlocked": "Desactiva \"{other}\" para poder activar este modo: los dos no funcionan juntos.",
+    "exclusiveRequires": "Activa \"{other}\" primero: este modo depende de él.",
     "mcpLabel": "MCP",
     "addFolder": "Agregar carpeta",
     "executionModeLabel": "Modo de ejecución",

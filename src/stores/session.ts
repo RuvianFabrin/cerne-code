@@ -946,7 +946,13 @@ export const useSessionStore = defineStore("session", {
       const safeTokens = Number.isFinite(tokens) && tokens >= 1000 ? Math.round(tokens) : 10000;
       const keepRolling = rolling ?? this.currentSession?.fixed_context?.rolling ?? false;
       const keepBlocks = blocks ?? this.currentSession?.fixed_context?.blocks ?? false;
-      const updated = await api.updateSessionFixedContext(this.currentId, enabled, safeTokens, keepRolling, keepBlocks);
+      let updated: Session;
+      try {
+        updated = await api.updateSessionFixedContext(this.currentId, enabled, safeTokens, keepRolling, keepBlocks);
+      } catch (e) {
+        this.error = String(e);
+        return;
+      }
       this.currentSession = updated;
       const idx = this.sessions.findIndex((s) => s.id === updated.id);
       if (idx !== -1) this.sessions[idx] = updated;
@@ -954,7 +960,13 @@ export const useSessionStore = defineStore("session", {
 
     async updateLongHorizonEnabled(enabled: boolean) {
       if (!this.currentId) return;
-      const updated = await api.updateSessionLongHorizonEnabled(this.currentId, enabled);
+      let updated: Session;
+      try {
+        updated = await api.updateSessionLongHorizonEnabled(this.currentId, enabled);
+      } catch (e) {
+        this.error = String(e);
+        return;
+      }
       this.currentSession = updated;
       const idx = this.sessions.findIndex((s) => s.id === updated.id);
       if (idx !== -1) this.sessions[idx] = updated;
@@ -962,7 +974,13 @@ export const useSessionStore = defineStore("session", {
 
     async updateTaskQueueEnabled(enabled: boolean) {
       if (!this.currentId) return;
-      const updated = await api.updateSessionTaskQueueEnabled(this.currentId, enabled);
+      let updated: Session;
+      try {
+        updated = await api.updateSessionTaskQueueEnabled(this.currentId, enabled);
+      } catch (e) {
+        this.error = String(e);
+        return;
+      }
       this.currentSession = updated;
       const idx = this.sessions.findIndex((s) => s.id === updated.id);
       if (idx !== -1) this.sessions[idx] = updated;
@@ -988,7 +1006,13 @@ export const useSessionStore = defineStore("session", {
 
     async updatePlainQueueEnabled(enabled: boolean) {
       if (!this.currentId) return;
-      const updated = await api.updateSessionPlainQueueEnabled(this.currentId, enabled);
+      let updated: Session;
+      try {
+        updated = await api.updateSessionPlainQueueEnabled(this.currentId, enabled);
+      } catch (e) {
+        this.error = String(e);
+        return;
+      }
       this.currentSession = updated;
       const idx = this.sessions.findIndex((s) => s.id === updated.id);
       if (idx !== -1) this.sessions[idx] = updated;

@@ -584,6 +584,64 @@ watch(() => sessionStore.currentId, () => {
 });
 
 /** Liga/desliga o "ctx fixo deslizante". Ligar também liga o Ctx fixo. */
+type ExclusiveMode = "longHorizon" | "fixedContext" | "taskQueue" | "plainQueue";
+
+// Modos que não valem juntos (mesma tabela de `sessions::ExclusiveMode` no backend).
+const EXCLUSIVE_CONFLICTS: Record<ExclusiveMode, ExclusiveMode[]> = {
+  longHorizon: ["plainQueue", "fixedContext"],
+  fixedContext: ["longHorizon"],
+  taskQueue: ["plainQueue"],
+  plainQueue: ["taskQueue", "longHorizon"],
+};
+
+function exclusiveModeOn(mode: ExclusiveMode): boolean {
+  const s = sessionStore.currentSession;
+  if (!s) return false;
+  if (mode === "longHorizon") return !!s.long_horizon?.enabled;
+  if (mode === "fixedContext") return !!s.fixed_context?.enabled;
+  if (mode === "taskQueue") return !!s.task_queue_enabled;
+  return !!s.plain_queue_enabled;
+}
+
+function exclusiveModeLabel(mode: ExclusiveMode): string {
+  if (mode === "longHorizon") return t("composer.longHorizonLabel");
+  if (mode === "fixedContext") return t("composer.fixedContextLabel");
+  if (mode === "taskQueue") return t("composer.taskQueueLabel");
+  return t("plainQueue.toggleLabel");
+}
+
+// Modos que só ligam com outro já ligado: a "Fila de tarefas" depende do Long Horizon
+// (desligar o Long Horizon desliga a fila junto, no backend).
+const EXCLUSIVE_REQUIRES: Partial<Record<ExclusiveMode, ExclusiveMode>> = {
+  taskQueue: "longHorizon",
+};
+
+/** Modo de que `mode` depende e que está desligado, impedindo LIGAR `mode`. */
+function exclusiveMissing(mode: ExclusiveMode): ExclusiveMode | null {
+  if (exclusiveModeOn(mode)) return null;
+  const needed = EXCLUSIVE_REQUIRES[mode];
+  return needed && !exclusiveModeOn(needed) ? needed : null;
+}
+
+/** `mode` não pode ser ligado agora (conflito com outro modo, ou falta o modo de que depende). */
+function exclusiveLocked(mode: ExclusiveMode): boolean {
+  return !!exclusiveBlocker(mode) || !!exclusiveMissing(mode);
+}
+
+/** Modo incompatível que está ligado e impede LIGAR `mode`. Desligar nunca é bloqueado. */
+function exclusiveBlocker(mode: ExclusiveMode): ExclusiveMode | null {
+  if (exclusiveModeOn(mode)) return null;
+  return EXCLUSIVE_CONFLICTS[mode].find(exclusiveModeOn) ?? null;
+}
+
+/** Texto do tooltip: o motivo do bloqueio, ou o tooltip normal do botão. */
+function exclusiveTooltip(mode: ExclusiveMode, normal: string): string {
+  const blocker = exclusiveBlocker(mode);
+  if (blocker) return t("composer.exclusiveBlocked", { other: exclusiveModeLabel(blocker) });
+  const missing = exclusiveMissing(mode);
+  return missing ? t("composer.exclusiveRequires", { other: exclusiveModeLabel(missing) }) : normal;
+}
+
 function toggleFixedRolling() {
   const fc = sessionStore.currentSession?.fixed_context;
   const next = !fc?.rolling;
@@ -1552,7 +1610,8 @@ watch(
               v-if="sessionStore.currentSession"
               class="plus-menu-item plus-menu-toggle"
               :class="{ 'plus-menu-toggle-on': sessionStore.currentSession.long_horizon.enabled }"
-              v-tooltip.right="$t('composer.longHorizonTooltip')"
+              :aria-disabled="exclusiveLocked('longHorizon')"
+              v-tooltip.right="exclusiveTooltip('longHorizon', $t('composer.longHorizonTooltip'))"
               @click="sessionStore.updateLongHorizonEnabled(!sessionStore.currentSession.long_horizon.enabled)"
             >
               <span class="msi">all_inclusive</span>
@@ -1563,7 +1622,8 @@ watch(
               v-if="sessionStore.currentSession"
               class="plus-menu-item plus-menu-toggle"
               :class="{ 'plus-menu-toggle-on': sessionStore.currentSession.fixed_context?.enabled }"
-              v-tooltip.right="$t('composer.fixedContextTooltip')"
+              :aria-disabled="exclusiveLocked('fixedContext')"
+              v-tooltip.right="exclusiveTooltip('fixedContext', $t('composer.fixedContextTooltip'))"
               @click="sessionStore.updateFixedContext(!sessionStore.currentSession.fixed_context?.enabled, sessionStore.currentSession.fixed_context?.tokens ?? 10000)"
             >
               <span class="msi">data_usage</span>
@@ -1590,7 +1650,8 @@ watch(
               v-if="sessionStore.currentSession"
               class="plus-menu-item plus-menu-toggle"
               :class="{ 'plus-menu-toggle-on': sessionStore.currentSession.fixed_context?.rolling }"
-              v-tooltip.right="$t('composer.fixedContextRollingHint')"
+              :aria-disabled="exclusiveLocked('fixedContext')"
+              v-tooltip.right="exclusiveTooltip('fixedContext', $t('composer.fixedContextRollingHint'))"
               @click="toggleFixedRolling"
             >
               <span class="msi">swap_vert</span>
@@ -1601,7 +1662,8 @@ watch(
               v-if="sessionStore.currentSession"
               class="plus-menu-item plus-menu-toggle"
               :class="{ 'plus-menu-toggle-on': sessionStore.currentSession.fixed_context?.blocks }"
-              v-tooltip.right="$t('composer.fixedContextBlocksHint')"
+              :aria-disabled="exclusiveLocked('fixedContext')"
+              v-tooltip.right="exclusiveTooltip('fixedContext', $t('composer.fixedContextBlocksHint'))"
               @click="toggleFixedBlocks"
             >
               <span class="msi">splitscreen</span>
@@ -1612,7 +1674,8 @@ watch(
               v-if="sessionStore.currentSession"
               class="plus-menu-item plus-menu-toggle"
               :class="{ 'plus-menu-toggle-on': sessionStore.currentSession.task_queue_enabled }"
-              v-tooltip.right="$t('composer.taskQueueTooltip')"
+              :aria-disabled="exclusiveLocked('taskQueue')"
+              v-tooltip.right="exclusiveTooltip('taskQueue', $t('composer.taskQueueTooltip'))"
               @click="sessionStore.updateTaskQueueEnabled(!sessionStore.currentSession.task_queue_enabled)"
             >
               <span class="msi">playlist_play</span>
@@ -1623,7 +1686,8 @@ watch(
               v-if="sessionStore.currentSession"
               class="plus-menu-item plus-menu-toggle"
               :class="{ 'plus-menu-toggle-on': sessionStore.currentSession.plain_queue_enabled }"
-              v-tooltip.right="$t('plainQueue.toggleTooltip')"
+              :aria-disabled="exclusiveLocked('plainQueue')"
+              v-tooltip.right="exclusiveTooltip('plainQueue', $t('plainQueue.toggleTooltip'))"
               @click="sessionStore.updatePlainQueueEnabled(!sessionStore.currentSession.plain_queue_enabled)"
             >
               <span class="msi">format_list_numbered</span>
@@ -2316,6 +2380,11 @@ watch(
 
 /* Ligado = trilho rosa, pra deixar óbvio que o método Fable está ativo
    (é opt-in, só faz sentido em modelos pequenos/médios). */
+.plus-menu-toggle[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .plus-menu-toggle-on .plus-menu-switch {
   background: #db2777;
 }

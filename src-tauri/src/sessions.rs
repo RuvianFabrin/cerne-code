@@ -286,6 +286,130 @@ pub fn update_fable_method(app_data_dir: &PathBuf, id: &str, enabled: bool) -> R
 
 /// Liga/desliga o "Ctx fixo" da sessão e grava o orçamento em tokens
 /// (limitado a [1000, 1_000_000] pra não virar zero nem absurdo).
+/// Modos da sessão que não valem juntos. A interface já bloqueia o botão; esta é a guarda
+/// do backend, para o estado em disco nunca ficar com uma combinação inválida.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExclusiveMode {
+    LongHorizon,
+    FixedContext,
+    TaskQueue,
+    PlainQueue,
+}
+
+impl ExclusiveMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::LongHorizon => "Long Horizon",
+            Self::FixedContext => "Ctx fixo",
+            Self::TaskQueue => "Fila de tarefas",
+            Self::PlainQueue => "Fila de tarefas (sem Long Horizon)",
+        }
+    }
+
+    fn is_on(self, session: &Session) -> bool {
+        match self {
+            Self::LongHorizon => session.long_horizon.enabled,
+            Self::FixedContext => session.fixed_context.enabled,
+            Self::TaskQueue => session.task_queue_enabled,
+            Self::PlainQueue => session.plain_queue_enabled,
+        }
+    }
+
+    /// Com quem este modo não pode estar ligado ao mesmo tempo:
+    /// - a fila sem Long Horizon não vale com a fila do Long Horizon nem com o próprio Long
+    ///   Horizon (as duas juntas mandavam ao modelo as ferramentas e os caminhos do Long
+    ///   Horizon numa fila que devia rodar sem ele; visto em 2026-11-11);
+    /// - o Ctx fixo é ignorado quando o Long Horizon está ligado (ver `run_turn`).
+    fn conflicts(self) -> &'static [ExclusiveMode] {
+        match self {
+            Self::LongHorizon => &[Self::PlainQueue, Self::FixedContext],
+            Self::FixedContext => &[Self::LongHorizon],
+            Self::TaskQueue => &[Self::PlainQueue],
+            Self::PlainQueue => &[Self::TaskQueue, Self::LongHorizon],
+        }
+    }
+}
+
+/// Erro se `mode` não pode ser LIGADO agora porque um modo incompatível está ligado.
+/// Desligar é sempre permitido.
+pub fn ensure_can_enable(session: &Session, mode: ExclusiveMode) -> Result<()> {
+    if let Some(other) = mode.conflicts().iter().find(|other| other.is_on(session)) {
+        anyhow::bail!(
+            "\"{}\" não pode ser ligado enquanto \"{}\" estiver ligado. Desligue \"{}\" primeiro.",
+            mode.label(),
+            other.label(),
+            other.label()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod exclusive_mode_tests {
+    use super::*;
+    use crate::models::ProviderKind;
+
+    fn nova_sessao() -> (PathBuf, String) {
+        let dir = std::env::temp_dir().join(format!("cerne-exclusivo-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let session = create_session(
+            &dir, "teste".to_string(), ProviderKind::Ollama, "m".to_string(), None, None, None, None, None,
+        )
+        .unwrap();
+        (dir, session.id)
+    }
+
+    #[test]
+    fn as_duas_filas_nao_ligam_juntas_em_nenhuma_ordem() {
+        let (dir, id) = nova_sessao();
+        update_plain_queue_enabled(&dir, &id, true).unwrap();
+        assert!(update_task_queue_enabled(&dir, &id, true).is_err());
+        assert!(update_long_horizon_enabled(&dir, &id, true).is_err());
+        assert!(!get_session(&dir, &id).unwrap().task_queue_enabled);
+        // Desligar libera o outro lado.
+        update_plain_queue_enabled(&dir, &id, false).unwrap();
+        update_long_horizon_enabled(&dir, &id, true).unwrap();
+        update_task_queue_enabled(&dir, &id, true).unwrap();
+        assert!(update_plain_queue_enabled(&dir, &id, true).is_err());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn fila_de_tarefas_depende_do_long_horizon() {
+        let (dir, id) = nova_sessao();
+        // Sem o Long Horizon a fila não liga.
+        assert!(update_task_queue_enabled(&dir, &id, true).is_err());
+        update_long_horizon_enabled(&dir, &id, true).unwrap();
+        assert!(update_task_queue_enabled(&dir, &id, true).unwrap().task_queue_enabled);
+        // Desligar o Long Horizon desliga a fila junto, e isso fica gravado.
+        let depois = update_long_horizon_enabled(&dir, &id, false).unwrap();
+        assert!(!depois.long_horizon.enabled && !depois.task_queue_enabled);
+        assert!(!get_session(&dir, &id).unwrap().task_queue_enabled);
+        // Com os dois desligados, a fila sem Long Horizon fica liberada.
+        update_plain_queue_enabled(&dir, &id, true).unwrap();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn ctx_fixo_e_long_horizon_nao_ligam_juntos_mas_sessao_antiga_ainda_ajusta_e_desliga() {
+        let (dir, id) = nova_sessao();
+        update_fixed_context(&dir, &id, true, 40_000, false, None).unwrap();
+        assert!(update_long_horizon_enabled(&dir, &id, true).is_err());
+        // O Ctx fixo vale com a fila sem Long Horizon.
+        update_plain_queue_enabled(&dir, &id, true).unwrap();
+        update_plain_queue_enabled(&dir, &id, false).unwrap();
+
+        // Sessão antiga, gravada com os dois ligados: mudar tokens e desligar continuam possíveis.
+        let mut antiga = get_session(&dir, &id).unwrap();
+        antiga.long_horizon.enabled = true;
+        std::fs::write(session_dir(&dir, &id).join("session.json"), serde_json::to_string_pretty(&antiga).unwrap()).unwrap();
+        assert_eq!(update_fixed_context(&dir, &id, true, 20_000, false, None).unwrap().fixed_context.tokens, 20_000);
+        update_fixed_context(&dir, &id, false, 20_000, false, None).unwrap();
+        assert!(update_fixed_context(&dir, &id, true, 20_000, false, None).is_err());
+        std::fs::remove_dir_all(dir).ok();
+    }
+}
+
 pub fn update_fixed_context(
     app_data_dir: &PathBuf,
     id: &str,
@@ -295,6 +419,11 @@ pub fn update_fixed_context(
     blocks: Option<bool>,
 ) -> Result<Session> {
     let mut session = get_session(app_data_dir, id)?;
+    // Só barra a passagem de desligado para ligado: sessão antiga que já tinha os dois
+    // ligados ainda consegue mudar os tokens ou desligar.
+    if enabled && !session.fixed_context.enabled {
+        ensure_can_enable(&session, ExclusiveMode::FixedContext)?;
+    }
     // `blocks` ausente mantém o valor salvo; o modo em blocos e o rolante não valem juntos.
     let blocks = blocks.unwrap_or(session.fixed_context.blocks) && !rolling;
     session.fixed_context = FixedContextState {
@@ -372,7 +501,15 @@ pub fn update_long_horizon_enabled(
     enabled: bool,
 ) -> Result<Session> {
     let mut session = get_session(app_data_dir, id)?;
+    if enabled && !session.long_horizon.enabled {
+        ensure_can_enable(&session, ExclusiveMode::LongHorizon)?;
+    }
     session.long_horizon.enabled = enabled;
+    if !enabled {
+        // A "Fila de tarefas" depende do Long Horizon: sem ele, ela desliga junto. Quem quer
+        // fila sem Long Horizon usa a "Fila de tarefas (sem Long Horizon)".
+        session.task_queue_enabled = false;
+    }
     let dir = session_dir(app_data_dir, id);
     if enabled {
         // Primeira vez que o modo liga nesta sessão: cria a pasta de estado
@@ -475,6 +612,13 @@ pub(crate) fn write_atomic(path: &std::path::Path, contents: &str) -> Result<()>
 
 pub fn update_task_queue_enabled(app_data_dir: &PathBuf, id: &str, enabled: bool) -> Result<Session> {
     let mut session = get_session(app_data_dir, id)?;
+    if enabled && !session.task_queue_enabled {
+        ensure_can_enable(&session, ExclusiveMode::TaskQueue)?;
+        anyhow::ensure!(
+            session.long_horizon.enabled,
+            "\"Fila de tarefas\" depende do Long Horizon: ligue o Long Horizon primeiro, ou use a \"Fila de tarefas (sem Long Horizon)\"."
+        );
+    }
     session.task_queue_enabled = enabled;
     let dir = session_dir(app_data_dir, id);
     std::fs::create_dir_all(&dir)?;
@@ -518,6 +662,9 @@ pub fn write_task_queue_tasks(app_data_dir: &PathBuf, id: &str, tasks: &[serde_j
 /// `tarefas.json`, mas numa pasta própria pra não misturar com a fila do LH.
 pub fn update_plain_queue_enabled(app_data_dir: &PathBuf, id: &str, enabled: bool) -> Result<Session> {
     let mut session = get_session(app_data_dir, id)?;
+    if enabled && !session.plain_queue_enabled {
+        ensure_can_enable(&session, ExclusiveMode::PlainQueue)?;
+    }
     session.plain_queue_enabled = enabled;
     let dir = session_dir(app_data_dir, id);
     std::fs::create_dir_all(&dir)?;
@@ -573,6 +720,221 @@ pub fn write_session_memory(app_data_dir: &PathBuf, id: &str, conteudo: &str) ->
     let dir = session_dir(app_data_dir, id);
     std::fs::create_dir_all(&dir)?;
     write_atomic(&dir.join("memoria_sessao.md"), conteudo)
+}
+
+/// Teto da memória da sessão quando é o AGENTE quem grava (`update_session_memory`).
+/// Ela vai inteira no prompt de todo turno e, a cada reescrita completa, o modelo gera o
+/// arquivo todo de novo: uma memória de 30 KB custa uns 4 minutos por gravação num modelo
+/// local. A edição manual pelo usuário (`write_session_memory`) não tem esse limite.
+pub const SESSION_MEMORY_MAX_BYTES: usize = 12_000;
+
+/// Seção onde o modo "acrescentar" grava. Quando o arquivo passa do limite, as linhas mais
+/// antigas DESTA seção são apagadas sozinhas; as demais seções (o mapa do projeto) só mudam
+/// quando o modelo manda.
+pub const SESSION_MEMORY_LOG_SECTION: &str = "Estado recente";
+
+/// Como o agente quer alterar a memória.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryMode {
+    /// Reescreve o arquivo inteiro (padrão).
+    Replace,
+    /// Acrescenta linhas na seção "Estado recente".
+    Append,
+    /// Troca só o corpo de uma seção `## título`.
+    ReplaceSection,
+}
+
+impl MemoryMode {
+    /// Aceita "acrescentar", "trocar_secao" (também "trocar seção"); qualquer outra coisa,
+    /// ou ausente, é "substituir".
+    pub fn parse(modo: Option<&str>) -> Self {
+        let normal = modo
+            .unwrap_or("")
+            .trim()
+            .to_lowercase()
+            .replace('ç', "c")
+            .replace('ã', "a")
+            .replace(' ', "_");
+        match normal.as_str() {
+            "acrescentar" => Self::Append,
+            "trocar_secao" => Self::ReplaceSection,
+            _ => Self::Replace,
+        }
+    }
+}
+
+/// Resultado de uma gravação do agente.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryUpdate {
+    pub bytes: usize,
+    /// Linhas antigas de "Estado recente" apagadas para caber no limite.
+    pub dropped_lines: usize,
+}
+
+/// Título de uma linha `## título` (só nível 2); `None` para qualquer outra linha.
+fn memory_heading(line: &str) -> Option<&str> {
+    line.trim_end().strip_prefix("## ").map(str::trim)
+}
+
+/// Título limpo, sem `#` nem espaços nas pontas.
+fn memory_title(secao: &str) -> &str {
+    secao.trim().trim_start_matches('#').trim()
+}
+
+/// Faixa `[início, fim)` de linhas da seção `titulo` (o início é a linha do título).
+fn memory_section(lines: &[&str], titulo: &str) -> Option<(usize, usize)> {
+    let start = lines
+        .iter()
+        .position(|l| memory_heading(l).map_or(false, |t| t.eq_ignore_ascii_case(titulo)))?;
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| memory_heading(l).is_some())
+        .map_or(lines.len(), |p| start + 1 + p);
+    Some((start, end))
+}
+
+/// Troca o corpo da seção `secao`; se ela não existir, cria no fim do arquivo.
+fn memory_replace_section(texto: &str, secao: &str, corpo: &str) -> String {
+    let titulo = memory_title(secao);
+    let mut corpo_linhas: Vec<&str> = corpo.trim().lines().collect();
+    // Se o modelo repetiu o título da seção na primeira linha do corpo, ignora.
+    if corpo_linhas
+        .first()
+        .and_then(|l| memory_heading(l))
+        .map_or(false, |t| t.eq_ignore_ascii_case(titulo))
+    {
+        corpo_linhas.remove(0);
+    }
+    let lines: Vec<&str> = texto.lines().collect();
+    let mut out: Vec<String> = Vec::new();
+    match memory_section(&lines, titulo) {
+        Some((start, end)) => {
+            out.extend(lines[..start].iter().map(|l| l.to_string()));
+            out.push(lines[start].to_string());
+            out.extend(corpo_linhas.iter().map(|l| l.to_string()));
+            if end < lines.len() {
+                out.push(String::new());
+                out.extend(lines[end..].iter().map(|l| l.to_string()));
+            }
+        }
+        None => {
+            out.extend(lines.iter().map(|l| l.to_string()));
+            if !texto.trim().is_empty() {
+                out.push(String::new());
+            }
+            out.push(format!("## {titulo}"));
+            out.extend(corpo_linhas.iter().map(|l| l.to_string()));
+        }
+    }
+    out.join("\n").trim_end().to_string()
+}
+
+/// Acrescenta `linhas` no fim da seção "Estado recente" (cria a seção se faltar).
+fn memory_append(texto: &str, linhas: &str) -> String {
+    let novas: Vec<&str> = linhas.trim().lines().collect();
+    let lines: Vec<&str> = texto.lines().collect();
+    let mut out: Vec<String> = Vec::new();
+    match memory_section(&lines, SESSION_MEMORY_LOG_SECTION) {
+        Some((_, end)) => {
+            // Entra antes das linhas em branco que separam esta seção da próxima.
+            let mut ponto = end;
+            while ponto > 0 && lines[ponto - 1].trim().is_empty() {
+                ponto -= 1;
+            }
+            out.extend(lines[..ponto].iter().map(|l| l.to_string()));
+            out.extend(novas.iter().map(|l| l.to_string()));
+            out.extend(lines[ponto..].iter().map(|l| l.to_string()));
+        }
+        None => {
+            out.extend(lines.iter().map(|l| l.to_string()));
+            if !texto.trim().is_empty() {
+                out.push(String::new());
+            }
+            out.push(format!("## {SESSION_MEMORY_LOG_SECTION}"));
+            out.extend(novas.iter().map(|l| l.to_string()));
+        }
+    }
+    out.join("\n").trim_end().to_string()
+}
+
+/// Apaga as linhas mais antigas de "Estado recente" até o texto caber em `max` bytes, sem
+/// tocar nas `protegidas` últimas linhas não vazias da seção (as que acabaram de ser
+/// acrescentadas). `None` se não der para caber só apagando linhas antigas. Devolve o texto
+/// e quantas linhas foram apagadas.
+fn memory_trim_log(texto: &str, max: usize, protegidas: usize) -> Option<(String, usize)> {
+    let mut lines: Vec<String> = texto.lines().map(|l| l.to_string()).collect();
+    let mut removidas = 0;
+    loop {
+        let atual = lines.join("\n");
+        if atual.len() <= max {
+            return Some((atual, removidas));
+        }
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        let (start, end) = memory_section(&refs, SESSION_MEMORY_LOG_SECTION)?;
+        let nao_vazias: Vec<usize> = (start + 1..end).filter(|&i| !lines[i].trim().is_empty()).collect();
+        if nao_vazias.len() <= protegidas {
+            return None;
+        }
+        lines.remove(nao_vazias[0]);
+        removidas += 1;
+    }
+}
+
+/// Cabe no limite? Se não, tenta apagar linhas antigas de "Estado recente".
+fn memory_fit(novo: String, protegidas: usize) -> Result<(String, usize)> {
+    if novo.len() <= SESSION_MEMORY_MAX_BYTES {
+        return Ok((novo, 0));
+    }
+    let tamanho = novo.len();
+    memory_trim_log(&novo, SESSION_MEMORY_MAX_BYTES, protegidas).ok_or_else(|| {
+        anyhow::anyhow!(
+            "a memória ficaria com {tamanho} bytes e o limite é {SESSION_MEMORY_MAX_BYTES}, mesmo apagando as linhas antigas de \"{SESSION_MEMORY_LOG_SECTION}\". Nada foi gravado. Enxugue o que está grande: use modo \"trocar_secao\" (campo `secao`) para resumir uma seção, ou \"substituir\" com a memória COMPLETA mais curta. Mantenha o mapa do projeto compacto e não registre o que o código ou o git já mostram."
+        )
+    })
+}
+
+/// Grava a memória a pedido do agente. Devolve o tamanho final e quantas linhas antigas de
+/// "Estado recente" foram apagadas para caber. Recusa (sem gravar nada) o que não couber em
+/// [`SESSION_MEMORY_MAX_BYTES`], com uma mensagem que diz ao modelo como resolver.
+///
+/// - `Replace`: `conteudo` é a memória COMPLETA.
+/// - `Append`: `conteudo` são linhas novas; entram em "Estado recente" e, se o arquivo
+///   passar do limite, as linhas mais antigas dessa seção somem sozinhas.
+/// - `ReplaceSection`: `conteudo` é o novo corpo da seção `secao`; o resto fica como está.
+pub fn update_session_memory(
+    app_data_dir: &PathBuf,
+    id: &str,
+    conteudo: &str,
+    mode: MemoryMode,
+    secao: Option<&str>,
+) -> Result<MemoryUpdate> {
+    if conteudo.trim().is_empty() {
+        return Err(anyhow::anyhow!("conteudo vazio: nada foi gravado"));
+    }
+    let atual = read_session_memory(app_data_dir, id)?;
+    let (novo, dropped_lines) = match mode {
+        MemoryMode::Replace => {
+            if conteudo.len() > SESSION_MEMORY_MAX_BYTES {
+                return Err(anyhow::anyhow!(
+                    "a memória ficaria com {} bytes e o limite é {SESSION_MEMORY_MAX_BYTES}. Nada foi gravado. Chame de novo com modo \"substituir\" e a memória COMPLETA mais curta: mantenha só o mapa do projeto, decisões, comandos que funcionaram e erros a não repetir; apague o histórico de tarefas e o que o código ou o git já mostram.",
+                    conteudo.len()
+                ));
+            }
+            (conteudo.to_string(), 0)
+        }
+        MemoryMode::ReplaceSection => {
+            let titulo = secao.map(memory_title).filter(|s| !s.is_empty()).ok_or_else(|| {
+                anyhow::anyhow!("o modo \"trocar_secao\" precisa do campo `secao` (o título, sem os ##). Nada foi gravado.")
+            })?;
+            memory_fit(memory_replace_section(&atual, titulo, conteudo), 0)?
+        }
+        MemoryMode::Append => {
+            let novas = conteudo.trim().lines().filter(|l| !l.trim().is_empty()).count();
+            memory_fit(memory_append(&atual, conteudo), novas)?
+        }
+    };
+    write_session_memory(app_data_dir, id, &novo)?;
+    Ok(MemoryUpdate { bytes: novo.len(), dropped_lines })
 }
 
 /// Incrementa `long_horizon.iteracao_atual` — chamado a cada turno em que o

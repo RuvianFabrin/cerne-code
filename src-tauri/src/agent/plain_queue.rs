@@ -36,6 +36,18 @@ Você está executando uma lista de tarefas, uma por vez. Cada tarefa chega como
 Quando perguntarem se a tarefa foi feita, responda somente 'feito' se ela foi realmente executada e verificada; \
 caso contrário, diga o que falta.";
 
+/// Versão da fila para sessões com o Ctx fixo ativo: o modelo local pode perder o fio do que
+/// já fez, então as instruções cortam as conferências repetidas.
+const QUEUE_PROMPT_CTX_FIXO: &str = "## Fila de tarefas (sem Long Horizon)\n\
+Você está executando uma lista de tarefas, uma por vez. Cada tarefa chega como uma mensagem do usuário. \
+Faça só o que a tarefa pede.\n\
+- Se o que a tarefa pede já existe e está correto, não refaça: confira o arquivo uma vez e siga.\n\
+- Não use o histórico do git (log, show) para provar que a tarefa foi feita; olhe o arquivo e o resultado da verificação.\n\
+- Rode a verificação da tarefa uma vez depois da última alteração; só repita se mudar algo.\n\
+- Não grave a memória durante a tarefa: a fila pede isso depois, e só com o que for novo.\n\
+- Quando perguntarem se a tarefa foi feita, responda somente 'feito' se ela foi realmente executada e verificada; \
+caso contrário, diga o que falta.";
+
 /// Instruções da memória da sessão. Entra em TODAS as sessões que têm memória
 /// ou a ferramenta, independente da fila.
 const MEMORY_PROMPT: &str = "## Memória da sessão\n\
@@ -44,8 +56,28 @@ Para alterá-la use `update_session_memory` com o conteúdo COMPLETO (substitui 
 mantendo o que já estava lá. Registre só o que ajuda as próximas vezes nesta sessão: decisões, \
 caminhos de arquivos, comandos que funcionaram e erros a não repetir.";
 
+/// Memória com o Ctx fixo ativo: tem limite de tamanho, seções e gravação barata.
+const MEMORY_PROMPT_CTX_FIXO: &str = "## Memória da sessão\n\
+Abaixo está a memória desta sessão, inteira. Ela vale só para esta sessão e nunca é compactada. \
+Ela é enviada em todo turno e tem limite de tamanho, então mantenha-a curta e organizada em seções `## Título`.\n\
+Para alterá-la use `update_session_memory`:\n\
+- modo \"trocar_secao\" (campo `secao`): atualiza só uma seção do mapa do projeto (arquivos, assinaturas, decisões), sem reescrever o resto. Use quando algo do mapa mudou.\n\
+- modo \"acrescentar\": adiciona 1 linha curta ao fim da seção \"Estado recente\". Quando o limite enche, as linhas mais antigas dessa seção são apagadas sozinhas.\n\
+- modo \"substituir\": reescreve o arquivo inteiro. Use só para reorganizar ou enxugar.\n\
+Registre só o que ajuda as próximas vezes nesta sessão. Não registre o que o código ou o git já mostram. \
+Se uma regra da memória contradiz as instruções da fila, siga as da fila e remova essa regra na próxima gravação.";
+
 /// Mandado depois que um item foi confirmado: pede o registro na memória.
-fn memory_save_prompt(item_id: &str) -> String {
+fn memory_save_prompt(item_id: &str, ctx_fixo: bool) -> String {
+    if ctx_fixo {
+        return format!(
+            "A tarefa {item_id} foi concluída e marcada como testar. Se você aprendeu algo NOVO e útil para as próximas \
+tarefas (decisão, comando que funcionou, erro a não repetir), registre com `{MEMORY_TOOL}` no modo \"acrescentar\", \
+em 1 linha curta. Se um arquivo ou uma assinatura do mapa do projeto mudou, atualize só a seção correspondente com \
+o modo \"trocar_secao\". Não registre o que o código ou o git já mostram, nem o que a tarefa fez. \
+Se nada for novo, não chame a ferramenta e responda 'nada a salvar'."
+        );
+    }
     format!(
         "A tarefa {item_id} foi concluída e marcada como testar. Agora registre na memória da sessão, \
 com `{MEMORY_TOOL}`, somente o que for relevante para as próximas tarefas desta sessão (decisões, \
@@ -54,37 +86,80 @@ mantendo o que já estava na memória. Se nada for relevante, não chame a ferra
     )
 }
 
+/// Pergunta de confirmação do item. Com o Ctx fixo ativo ela também proíbe verificar de novo e
+/// consultar o git, que era onde o modelo local se perdia em conferências repetidas.
+fn confirm_message(item_id: &str, prompt_text: &str, ctx_fixo: bool) -> String {
+    let regra = if ctx_fixo {
+        "Confirme somente o resultado deste item, com base no que foi realmente executado e verificado. Não refaça o trabalho, não rode a verificação de novo, não consulte o git e não regrave a memória só para confirmar: use o resultado que você já tem desta tarefa."
+    } else {
+        "Confirme somente o resultado deste item, com base no que foi realmente executado e verificado. Não refaça o trabalho nem regrave a memória só para confirmar."
+    };
+    format!("Item da fila: {item_id}\nDescrição: {prompt_text}\n\n{CONFIRM_QUESTION}\n{regra}")
+}
+
 /// Bloco do system prompt com a memória da sessão INTEIRA. Chamado a cada
 /// montagem do prompt (início de cada turno), então uma gravação feita por
-/// `update_session_memory` aparece no turno seguinte.
-pub fn memory_prompt_block(app_data_dir: &PathBuf, session_id: &str) -> Result<String> {
+/// `update_session_memory` aparece no turno seguinte. `ctx_fixo` = o Ctx fixo está ativo na
+/// sessão: só então o prompt descreve o limite, as seções e os modos novos.
+pub fn memory_prompt_block(app_data_dir: &PathBuf, session_id: &str, ctx_fixo: bool) -> Result<String> {
     let memoria = sessions::read_session_memory(app_data_dir, session_id)?;
     let conteudo = if memoria.trim().is_empty() { "(vazia)" } else { memoria.as_str() };
-    Ok(format!("\n\n{MEMORY_PROMPT}\n\n<memoria_da_sessao>\n{conteudo}\n</memoria_da_sessao>"))
+    if !ctx_fixo {
+        return Ok(format!("\n\n{MEMORY_PROMPT}\n\n<memoria_da_sessao>\n{conteudo}\n</memoria_da_sessao>"));
+    }
+    Ok(format!(
+        "\n\n{MEMORY_PROMPT_CTX_FIXO}\nTamanho atual: {} de {} bytes.\n\n<memoria_da_sessao>\n{conteudo}\n</memoria_da_sessao>",
+        memoria.len(),
+        sessions::SESSION_MEMORY_MAX_BYTES
+    ))
 }
 
 /// Instruções da fila, anexadas ao prompt só quando a fila está ligada.
-pub fn queue_prompt_block() -> String {
-    format!("\n\n{QUEUE_PROMPT}")
+pub fn queue_prompt_block(ctx_fixo: bool) -> String {
+    format!("\n\n{}", if ctx_fixo { QUEUE_PROMPT_CTX_FIXO } else { QUEUE_PROMPT })
 }
 
-/// Ferramenta que reescreve a memória da sessão (sem limite de tamanho).
-pub fn tool_specs() -> Vec<ToolSpec> {
-    vec![ToolSpec {
-        kind: "function".to_string(),
-        function: ToolFunctionSpec {
-            name: MEMORY_TOOL.to_string(),
-            description: "SUBSTITUI o conteúdo inteiro da memória desta sessão. Use só para registrar \
+/// Ferramenta que altera a memória da sessão. Sem o Ctx fixo ela é a de sempre (reescreve o
+/// arquivo inteiro, sem limite); com o Ctx fixo ativo ganha os modos "acrescentar" e
+/// "trocar_secao", e o tamanho passa a ser limitado (ver [`sessions::SESSION_MEMORY_MAX_BYTES`]).
+pub fn tool_specs(ctx_fixo: bool) -> Vec<ToolSpec> {
+    let (description, parameters) = if ctx_fixo {
+        (
+            "Altera a memória desta sessão, que tem limite de tamanho e é organizada em seções \
+`## Título`. Modo \"trocar_secao\" (com `secao`): troca só o corpo de uma seção, para atualizar o mapa do \
+projeto. Modo \"acrescentar\": adiciona 1 linha curta à seção \"Estado recente\" (as mais antigas somem \
+sozinhas quando enche). Modo \"substituir\" (padrão): reescreve o arquivo inteiro, então `conteudo` deve ser \
+a memória COMPLETA e resumida; use só para reorganizar ou enxugar.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "conteudo": { "type": "string", "description": "A linha a acrescentar, o novo corpo da seção, ou a memória COMPLETA, conforme o modo" },
+                    "modo": { "type": "string", "enum": ["acrescentar", "trocar_secao", "substituir"], "description": "acrescentar = linha em 'Estado recente'; trocar_secao = troca o corpo de uma seção; substituir = reescreve tudo (padrão)" },
+                    "secao": { "type": "string", "description": "Título da seção (sem ##). Obrigatório no modo trocar_secao" }
+                },
+                "required": ["conteudo"]
+            }),
+        )
+    } else {
+        (
+            "SUBSTITUI o conteúdo inteiro da memória desta sessão. Use só para registrar \
 fatos úteis para as próximas tarefas desta mesma sessão. Inclua o conteúdo antigo que ainda vale, \
-porque o arquivo é reescrito por completo."
-                .to_string(),
-            parameters: json!({
+porque o arquivo é reescrito por completo.",
+            json!({
                 "type": "object",
                 "properties": {
                     "conteudo": { "type": "string", "description": "Conteúdo COMPLETO da memória da sessão" }
                 },
                 "required": ["conteudo"]
             }),
+        )
+    };
+    vec![ToolSpec {
+        kind: "function".to_string(),
+        function: ToolFunctionSpec {
+            name: MEMORY_TOOL.to_string(),
+            description: description.to_string(),
+            parameters,
         },
     }]
 }
@@ -137,6 +212,8 @@ pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
             .map(|v| v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string()))
             .unwrap_or_else(|| "?".to_string());
         let prompt_text = task_queue::item_prompt_text(&tasks[idx])?;
+        // Os textos e a memória "inteligente" só valem com o Ctx fixo ativo na sessão.
+        let ctx_fixo = sessions::get_session(&app_data_dir, &session_id)?.fixed_context.enabled;
 
         emit_status(&app, &session_id, "processing", Some(item_id.clone()), None);
         run_turn(&app, &session_id, prompt_text.clone()).await?;
@@ -148,7 +225,7 @@ pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
             run_turn(
                 &app,
                 &session_id,
-                format!("Item da fila: {item_id}\nDescrição: {prompt_text}\n\n{CONFIRM_QUESTION}\nConfirme somente o resultado deste item, com base no que foi realmente executado e verificado. Não refaça o trabalho nem regrave a memória só para confirmar."),
+                confirm_message(&item_id, &prompt_text, ctx_fixo),
             )
             .await?;
             let messages = sessions::load_messages(&app_data_dir, &session_id)?;
@@ -181,14 +258,14 @@ pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
         emit_status(&app, &session_id, "confirmed", Some(item_id.clone()), None);
 
         emit_status(&app, &session_id, "saving_memory", Some(item_id.clone()), None);
-        run_turn(&app, &session_id, memory_save_prompt(&item_id)).await?;
+        run_turn(&app, &session_id, memory_save_prompt(&item_id, ctx_fixo)).await?;
 
         // Depois de salvar a memória: compacta o contexto do histórico antes da
         // próxima tarefa. A memória da sessão não entra aqui (vai no prompt).
         // Com "Ctx fixo" ligado a compactação não é necessária: o que vai ao
         // modelo já é limitado por envio, então vai direto para o próximo item.
-        let ctx_fixo = sessions::get_session(&app_data_dir, &session_id)?.fixed_context.enabled;
-        if !ctx_fixo {
+        let ctx_fixo_agora = sessions::get_session(&app_data_dir, &session_id)?.fixed_context.enabled;
+        if !ctx_fixo_agora {
             emit_status(&app, &session_id, "compacting", Some(item_id), None);
             let state = app.state::<crate::AppState>();
             super::compact_now(app.clone(), &state, session_id.clone()).await?;
@@ -203,10 +280,10 @@ mod tests {
     #[test]
     fn memoria_vazia_aparece_como_vazia_e_depois_com_conteudo() {
         let dir = std::env::temp_dir().join(format!("cerne-plain-{}", uuid::Uuid::new_v4()));
-        let block = memory_prompt_block(&dir, "s1").unwrap();
+        let block = memory_prompt_block(&dir, "s1", true).unwrap();
         assert!(block.contains("(vazia)"));
         sessions::write_session_memory(&dir, "s1", "Usar Angular 18").unwrap();
-        let block = memory_prompt_block(&dir, "s1").unwrap();
+        let block = memory_prompt_block(&dir, "s1", true).unwrap();
         assert!(block.contains("Usar Angular 18"));
         assert!(!block.contains("(vazia)"));
         std::fs::remove_dir_all(dir).ok();
@@ -214,6 +291,218 @@ mod tests {
 
     #[test]
     fn ferramenta_usa_o_nome_do_despacho() {
-        assert_eq!(tool_specs()[0].function.name, MEMORY_TOOL);
+        assert_eq!(tool_specs(true)[0].function.name, MEMORY_TOOL);
+    }
+
+    #[test]
+    fn ferramenta_tem_os_tres_modos_e_o_campo_secao() {
+        let spec = &tool_specs(true)[0].function.parameters;
+        assert_eq!(spec["properties"]["modo"]["enum"], json!(["acrescentar", "trocar_secao", "substituir"]));
+        assert!(spec["properties"]["secao"].is_object());
+        assert_eq!(spec["required"], json!(["conteudo"]));
+    }
+
+    use sessions::MemoryMode::{Append, Replace, ReplaceSection};
+
+    fn pasta_temporaria() -> PathBuf {
+        std::env::temp_dir().join(format!("cerne-mem-{}", uuid::Uuid::new_v4()))
+    }
+
+    fn grava(
+        dir: &PathBuf,
+        conteudo: &str,
+        modo: sessions::MemoryMode,
+        secao: Option<&str>,
+    ) -> anyhow::Result<sessions::MemoryUpdate> {
+        sessions::update_session_memory(dir, "s1", conteudo, modo, secao)
+    }
+
+    fn le(dir: &PathBuf) -> String {
+        sessions::read_session_memory(dir, "s1").unwrap()
+    }
+
+    #[test]
+    fn o_modo_e_lido_do_texto_do_modelo() {
+        assert_eq!(sessions::MemoryMode::parse(Some("acrescentar")), Append);
+        assert_eq!(sessions::MemoryMode::parse(Some(" Acrescentar ")), Append);
+        assert_eq!(sessions::MemoryMode::parse(Some("trocar_secao")), ReplaceSection);
+        assert_eq!(sessions::MemoryMode::parse(Some("trocar seção")), ReplaceSection);
+        assert_eq!(sessions::MemoryMode::parse(Some("substituir")), Replace);
+        assert_eq!(sessions::MemoryMode::parse(None), Replace);
+        assert_eq!(sessions::MemoryMode::parse(Some("qualquer coisa")), Replace);
+    }
+
+    #[test]
+    fn acrescentar_cria_a_secao_estado_recente_e_adiciona_no_fim() {
+        let dir = pasta_temporaria();
+        grava(&dir, "primeira linha", Append, None).unwrap();
+        grava(&dir, "  segunda linha  ", Append, None).unwrap();
+        assert_eq!(le(&dir), "## Estado recente\nprimeira linha\nsegunda linha");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn acrescentar_nao_mexe_nas_outras_secoes_e_entra_antes_da_proxima() {
+        let dir = pasta_temporaria();
+        sessions::write_session_memory(&dir, "s1", "## Mapa\nA\n\n## Estado recente\nvelha\n\n## Outra\nB").unwrap();
+        grava(&dir, "nova", Append, None).unwrap();
+        assert_eq!(le(&dir), "## Mapa\nA\n\n## Estado recente\nvelha\nnova\n\n## Outra\nB");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn trocar_secao_so_troca_o_trecho_pedido() {
+        let dir = pasta_temporaria();
+        sessions::write_session_memory(
+            &dir,
+            "s1",
+            "## Mapa\nantigo 1\nantigo 2\n\n## Estado recente\nlinha\n\n## Regras\nR",
+        )
+        .unwrap();
+        // O título casa sem diferenciar maiúsculas.
+        grava(&dir, "novo corpo", ReplaceSection, Some("mapa")).unwrap();
+        assert_eq!(le(&dir), "## Mapa\nnovo corpo\n\n## Estado recente\nlinha\n\n## Regras\nR");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn trocar_secao_ignora_o_titulo_repetido_no_corpo_e_cria_a_secao_se_nao_existir() {
+        let dir = pasta_temporaria();
+        sessions::write_session_memory(&dir, "s1", "## Mapa\nA").unwrap();
+        grava(&dir, "## Mapa\nB", ReplaceSection, Some("## Mapa")).unwrap();
+        assert_eq!(le(&dir), "## Mapa\nB");
+        grava(&dir, "conteudo novo", ReplaceSection, Some("AppEstado")).unwrap();
+        assert_eq!(le(&dir), "## Mapa\nB\n\n## AppEstado\nconteudo novo");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn trocar_secao_sem_o_campo_secao_e_recusado() {
+        let dir = pasta_temporaria();
+        assert!(grava(&dir, "x", ReplaceSection, None).is_err());
+        assert!(grava(&dir, "x", ReplaceSection, Some("  ## ")).is_err());
+        assert_eq!(le(&dir), "");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn estado_recente_apaga_as_linhas_mais_antigas_quando_enche() {
+        let dir = pasta_temporaria();
+        let max = sessions::SESSION_MEMORY_MAX_BYTES;
+        let mapa = "m".repeat(max - 900);
+        let mut inicial = format!("## Mapa\n{mapa}\n\n## Estado recente\n");
+        for i in 0..20 {
+            inicial.push_str(&format!("linha antiga {i:02} {}\n", "a".repeat(40)));
+        }
+        sessions::write_session_memory(&dir, "s1", inicial.trim_end()).unwrap();
+
+        let novas = format!("NOVA-1 {}\nNOVA-2 {}", "n".repeat(300), "n".repeat(300));
+        let resultado = grava(&dir, &novas, Append, None).unwrap();
+
+        let texto = le(&dir);
+        assert!(texto.len() <= max, "cabe no limite: {} > {max}", texto.len());
+        assert_eq!(resultado.bytes, texto.len());
+        assert!(resultado.dropped_lines > 0, "apagou linhas antigas");
+        assert!(texto.contains(&mapa), "o mapa não é tocado");
+        assert!(texto.contains("NOVA-1") && texto.contains("NOVA-2"), "as linhas novas ficam");
+        assert!(!texto.contains("linha antiga 00"), "a mais antiga saiu primeiro");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn acrescentar_recusa_se_o_mapa_sozinho_ja_estoura_o_limite() {
+        let dir = pasta_temporaria();
+        let grande = "z".repeat(sessions::SESSION_MEMORY_MAX_BYTES + 500);
+        sessions::write_session_memory(&dir, "s1", &format!("## Mapa\n{grande}")).unwrap();
+        let antes = le(&dir);
+
+        let erro = grava(&dir, "linha nova", Append, None).unwrap_err().to_string();
+        assert!(erro.contains("trocar_secao") && erro.contains("substituir"), "diz como resolver: {erro}");
+        assert_eq!(le(&dir), antes, "nada foi gravado");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn substituir_troca_tudo_e_recusa_o_que_passa_do_limite() {
+        let dir = pasta_temporaria();
+        grava(&dir, "antigo", Replace, None).unwrap();
+        grava(&dir, "novo e completo", Replace, None).unwrap();
+        assert_eq!(le(&dir), "novo e completo");
+
+        let grande = "x".repeat(sessions::SESSION_MEMORY_MAX_BYTES + 1);
+        let erro = grava(&dir, &grande, Replace, None).unwrap_err().to_string();
+        assert!(erro.contains("substituir"), "a mensagem diz como resolver: {erro}");
+        assert_eq!(le(&dir), "novo e completo");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn conteudo_vazio_nao_grava_nada() {
+        let dir = pasta_temporaria();
+        for modo in [Append, Replace, ReplaceSection] {
+            assert!(grava(&dir, "   \n ", modo, Some("Mapa")).is_err());
+        }
+        assert_eq!(le(&dir), "");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn edicao_manual_do_usuario_nao_tem_o_limite_do_agente() {
+        let dir = pasta_temporaria();
+        let grande = "z".repeat(sessions::SESSION_MEMORY_MAX_BYTES * 4);
+        sessions::write_session_memory(&dir, "s1", &grande).unwrap();
+        assert_eq!(le(&dir).len(), grande.len());
+        // O agente, em cima de uma memória já grande, não consegue acrescentar: tem que resumir.
+        assert!(grava(&dir, "linha", Append, None).is_err());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn o_prompt_mostra_o_tamanho_atual_o_limite_e_os_tres_modos() {
+        let dir = pasta_temporaria();
+        sessions::write_session_memory(&dir, "s1", "abc").unwrap();
+        let block = memory_prompt_block(&dir, "s1", true).unwrap();
+        assert!(block.contains(&format!("Tamanho atual: 3 de {} bytes", sessions::SESSION_MEMORY_MAX_BYTES)));
+        for trecho in ["trocar_secao", "acrescentar", "substituir", "Estado recente", "contradiz"] {
+            assert!(block.contains(trecho), "o prompt da memória cita {trecho}");
+        }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn memory_save_prompt_pede_so_o_que_e_novo_e_oferece_nada_a_salvar() {
+        let texto = memory_save_prompt("7", true);
+        for trecho in ["acrescentar", "trocar_secao", "nada a salvar", "NOVO"] {
+            assert!(texto.contains(trecho), "o pedido cita {trecho}");
+        }
+        assert!(!texto.contains("COMPLETO"), "não pede mais a reescrita completa");
+    }
+
+    #[test]
+    fn sem_ctx_fixo_os_textos_e_a_ferramenta_sao_os_de_sempre() {
+        let dir = pasta_temporaria();
+        sessions::write_session_memory(&dir, "s1", "abc").unwrap();
+
+        let bloco = memory_prompt_block(&dir, "s1", false).unwrap();
+        assert!(bloco.contains("conteúdo COMPLETO"));
+        assert!(!bloco.contains("trocar_secao") && !bloco.contains("Tamanho atual"));
+
+        assert!(!queue_prompt_block(false).contains("git"));
+        assert!(queue_prompt_block(true).contains("git"));
+
+        let spec = &tool_specs(false)[0].function;
+        assert!(spec.description.starts_with("SUBSTITUI"));
+        assert!(spec.parameters["properties"].get("modo").is_none());
+        assert!(spec.parameters["properties"].get("secao").is_none());
+
+        let salvar = memory_save_prompt("7", false);
+        assert!(salvar.contains("COMPLETO") && !salvar.contains("trocar_secao"));
+
+        let original = format!(
+            "Item da fila: 7\nDescrição: x\n\n{CONFIRM_QUESTION}\nConfirme somente o resultado deste item, com base no que foi realmente executado e verificado. Não refaça o trabalho nem regrave a memória só para confirmar."
+        );
+        assert_eq!(confirm_message("7", "x", false), original);
+        assert!(confirm_message("7", "x", true).contains("verificação de novo"));
+        std::fs::remove_dir_all(dir).ok();
     }
 }

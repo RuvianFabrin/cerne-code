@@ -2873,6 +2873,8 @@ pub fn run() {
             let config = config::load_config(&app_data_dir);
             skills::ensure_global_skills_dir(&app_data_dir).ok();
             if let Err(error) = mcp::ensure_playwright_default(&app_data_dir) { eprintln!("[playwright] {error}"); }
+            let background_jobs = agent::background::BackgroundJobs::new(app.handle().clone(), &app_data_dir);
+            let agent_executions = agent::load_agent_executions(&app_data_dir);
             app.manage(AppState {
                 app_data_dir,
                 config: Mutex::new(config),
@@ -2880,14 +2882,14 @@ pub fn run() {
                 llama_children: Mutex::new(HashMap::new()),
                 image_gen_children: Mutex::new(HashMap::new()),
                 running_media: Mutex::new(std::collections::HashSet::new()),
-                background_jobs: agent::background::BackgroundJobs::new(app.handle().clone()),
+                background_jobs,
                 mcp_clients: mcp::McpClients::default(),
                 pending_questions: Mutex::new(HashMap::new()),
                 pending_permissions: Mutex::new(HashMap::new()),
                 pending_agent_plans: Mutex::new(HashMap::new()),
                 running_turns: Mutex::new(HashMap::new()),
                 running_task_queues: Mutex::new(HashMap::new()),
-                agent_executions: Mutex::new(HashMap::new()),
+                agent_executions: Mutex::new(agent_executions),
                 orchestrated_sessions: Mutex::new(HashMap::new()),
                 auto_continue_counts: Mutex::new(HashMap::new()),
                 cancel_compaction: AtomicBool::new(false),

@@ -212,7 +212,7 @@ pub fn always_tool_specs() -> Vec<ToolSpec> {
 /// usuário.
 pub fn long_horizon_tool_specs() -> Vec<ToolSpec> {
     vec![
-        spec("read_long_horizon_state", "Le memoria.md e projeto.md atuais desta sessao e devolve os caminhos reais. Funciona mesmo sem projeto aberto. Nao recebe caminho nem ID: o Cerne seleciona a sessao atual. Use antes de atualizar para preservar fatos relevantes. Arquivo vazio significa nada registrado ainda.", json!({"type":"object", "properties":{}, "additionalProperties":false})),
+        spec("read_long_horizon_state", "Le memoria.md e projeto.md atuais desta sessao e devolve o conteudo dos dois. Funciona mesmo sem projeto aberto. Nao recebe caminho nem ID: o Cerne seleciona a sessao atual. Use antes de atualizar para preservar fatos relevantes. Arquivo vazio significa nada registrado ainda.", json!({"type":"object", "properties":{}, "additionalProperties":false})),
 
         spec(
             "update_long_horizon_memoria",
