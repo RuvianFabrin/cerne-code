@@ -1254,7 +1254,7 @@ pub async fn run_turn(
     .unwrap_or_default();
     // Modo Anything: o servidor desta sessão entra mesmo sem estar na lista de MCPs habilitados.
     let anything_global = state.config.lock().unwrap().anything.clone();
-    if let Some(server) = crate::anything::session::server_for(&app_data_dir, &anything_global, &session.anything, session.project_root.as_deref(), &session.id) {
+    if let Some(server) = crate::anything::session::server_for(&app_data_dir, &anything_global, &session.anything, crate::anything::session::raiz_de_trabalho(&session).as_deref(), &session.id) {
         mcp_servers.push(server);
     }
     tool_specs.extend(state.mcp_clients.tool_specs(&mcp_servers).await);

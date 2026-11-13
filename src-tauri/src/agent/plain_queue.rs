@@ -195,7 +195,7 @@ async fn run_turn(app: &AppHandle, session_id: &str, text: String) -> Result<()>
 /// Arquivo da fila de uma sessão do modo Anything: `.anything/tarefas.json` do projeto. `None` quando o
 /// modo está desligado ou a sessão não tem pasta de projeto (a fila segue o arquivo escolhido).
 pub fn anything_queue_file(session: &crate::models::Session) -> Option<PathBuf> {
-    anything_workspace_dir(session.anything.enabled, session.project_root.as_deref()).map(|d| d.join("tarefas.json"))
+    anything_workspace_dir(session.anything.enabled, crate::anything::session::raiz_de_trabalho(session).as_deref()).map(|d| d.join("tarefas.json"))
 }
 
 /// Pasta onde está o `tarefas.json` da fila: a `.anything` do projeto, se o arquivo está lá; senão a
@@ -367,8 +367,8 @@ pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
                     Err(e) => eprintln!("[anything] síntese não foi acrescentada: {e}"),
                 }
                 // Lote: este alvo terminou. Se há outro planejado, a fila segue para ele.
-                if let Some(root) = sessao.project_root.as_deref() {
-                    if crate::anything::lote::concluir_alvo(std::path::Path::new(root), ws_dir) {
+                if let Some(root) = crate::anything::session::raiz_de_trabalho(&sessao) {
+                    if crate::anything::lote::concluir_alvo(std::path::Path::new(&root), ws_dir) {
                         continue;
                     }
                 }

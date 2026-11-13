@@ -14,6 +14,25 @@ pub fn server_name(session_id: &str) -> String {
     format!("anything-{curto}")
 }
 
+/// Pasta onde o modo guarda `.anything`: a primeira pasta da sessão com permissão de escrita. Todas as
+/// pastas da sessão têm o mesmo peso (não há pasta "principal"); o modo precisa gravar fichas, então
+/// escolhe a primeira que aceita escrita. `project_root` só entra como reserva, para sessões antigas
+/// que ainda não têm pastas anexadas.
+pub fn raiz_de_trabalho(session: &crate::models::Session) -> Option<String> {
+    escolher_raiz(&session.extra_read_paths, session.project_root.as_deref())
+}
+
+fn escolher_raiz(pastas: &[crate::models::FolderEntry], project_root: Option<&str>) -> Option<String> {
+    pastas
+        .iter()
+        .find(|f| f.mode == crate::models::FolderMode::ReadWrite)
+        .map(|f| f.path.clone())
+        .or_else(|| if pastas.is_empty() { project_root.map(String::from) } else { None })
+}
+
+/// Mensagem de quando não há onde gravar.
+pub const SEM_PASTA: &str = "adicione à sessão uma pasta com permissão de escrita antes de usar o modo Anything";
+
 /// Pasta de trabalho do modo dentro do projeto (`.anything`). A fase 06 completa o layout.
 pub fn workspace_dir(project_root: &Path) -> PathBuf {
     project_root.join(".anything")
@@ -133,5 +152,33 @@ mod tests {
         let st = AnythingState { enabled: true, target: Some("app.exe".into()), goal: Some("como salva".into()), ..Default::default() };
         let b = prompt_block(&st, "sess1");
         assert!(b.contains("app.exe") && b.contains("como salva") && b.contains("mcp__anything-sess1__"));
+    }
+}
+
+#[cfg(test)]
+mod raiz_tests {
+    use super::*;
+    use crate::models::{FolderEntry, FolderMode};
+
+    fn pasta(p: &str, mode: FolderMode) -> FolderEntry {
+        FolderEntry { path: p.into(), mode }
+    }
+
+    #[test]
+    fn the_first_writable_folder_is_the_workspace_whatever_its_position() {
+        let pastas = vec![pasta("F:/so-leitura", FolderMode::Read), pasta("F:/aaaTeste", FolderMode::ReadWrite), pasta("F:/outra", FolderMode::ReadWrite)];
+        assert_eq!(escolher_raiz(&pastas, Some("C:/antigo")).as_deref(), Some("F:/aaaTeste"));
+    }
+
+    #[test]
+    fn only_read_folders_means_nowhere_to_write_and_the_old_root_is_not_a_fallback() {
+        let pastas = vec![pasta("F:/so-leitura", FolderMode::Read)];
+        assert_eq!(escolher_raiz(&pastas, Some("C:/antigo")), None);
+    }
+
+    #[test]
+    fn old_sessions_without_attached_folders_still_use_project_root() {
+        assert_eq!(escolher_raiz(&[], Some("C:/antigo")).as_deref(), Some("C:/antigo"));
+        assert_eq!(escolher_raiz(&[], None), None);
     }
 }

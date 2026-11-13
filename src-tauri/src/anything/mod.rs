@@ -34,7 +34,7 @@ pub async fn set_session_anything(
     let app_data = state.app_data_dir.clone();
     let session = sessions::get_session(&app_data, &id).map_err(|e| e.to_string())?;
     if enabled {
-        let root = session.project_root.clone().ok_or("escolha uma pasta de projeto para a sessão antes de ligar o modo Anything")?;
+        let root = session::raiz_de_trabalho(&session).ok_or(session::SEM_PASTA)?;
         let report = doctor::run(&cli::store_dir(&app_data)).await;
         if !report.pronto {
             let faltam: Vec<String> = report
@@ -101,7 +101,7 @@ pub async fn anything_plan(state: State<'_, AppState>, id: String, modo: String,
     }
     let alvo = session.anything.target.clone().ok_or("escolha o alvo (arquivo) antes de planejar")?;
     let objetivo = session.anything.goal.clone().unwrap_or_default();
-    let raiz = std::path::PathBuf::from(session.project_root.clone().ok_or("a sessão não tem pasta de projeto")?);
+    let raiz = std::path::PathBuf::from(session::raiz_de_trabalho(&session).ok_or(session::SEM_PASTA)?);
     if !std::path::Path::new(&alvo).is_file() {
         return Err(format!("o alvo '{alvo}' não é um arquivo; por enquanto só arquivos"));
     }
@@ -118,13 +118,13 @@ pub async fn anything_plan(state: State<'_, AppState>, id: String, modo: String,
 #[tauri::command]
 pub fn anything_varrer(state: State<AppState>, id: String) -> Result<varredor::Varredura, String> {
     let sessao = sessions::get_session(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
-    let raiz = std::path::PathBuf::from(sessao.project_root.ok_or("a sessão não tem pasta de projeto")?);
+    let raiz = std::path::PathBuf::from(session::raiz_de_trabalho(&sessao).ok_or(session::SEM_PASTA)?);
     varredor::varrer_fontes(&raiz).map_err(|e| e.to_string())
 }
 
 fn raiz_da_sessao(state: &State<AppState>, id: &str) -> Result<std::path::PathBuf, String> {
     let sessao = sessions::get_session(&state.app_data_dir, id).map_err(|e| e.to_string())?;
-    Ok(std::path::PathBuf::from(sessao.project_root.ok_or("a sessão não tem pasta de projeto")?))
+    Ok(std::path::PathBuf::from(session::raiz_de_trabalho(&sessao).ok_or(session::SEM_PASTA)?))
 }
 
 /// Pastas e arquivos que o usuário adicionou à varredura (`.anything/fontes.json`).
@@ -154,7 +154,7 @@ pub async fn anything_planejar_lote(state: State<'_, AppState>, id: String, modo
     if !sessao.anything.enabled {
         return Err("ligue o modo Anything nesta sessão antes de planejar".into());
     }
-    let raiz = std::path::PathBuf::from(sessao.project_root.clone().ok_or("a sessão não tem pasta de projeto")?);
+    let raiz = std::path::PathBuf::from(session::raiz_de_trabalho(&sessao).ok_or(session::SEM_PASTA)?);
     let objetivo = sessao.anything.goal.clone().unwrap_or_default();
     let (exe, _) = cli::find_cli(&cli::store_dir(&app_data)).ok_or("o motor não está instalado")?;
     let global = state.config.lock().unwrap().anything.clone();
@@ -167,7 +167,7 @@ pub async fn anything_planejar_lote(state: State<'_, AppState>, id: String, modo
 #[tauri::command]
 pub fn anything_alvos(state: State<AppState>, id: String) -> Result<Vec<varredor::Alvo>, String> {
     let sessao = sessions::get_session(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
-    let raiz = std::path::PathBuf::from(sessao.project_root.ok_or("a sessão não tem pasta de projeto")?);
+    let raiz = std::path::PathBuf::from(session::raiz_de_trabalho(&sessao).ok_or(session::SEM_PASTA)?);
     varredor::ler(&raiz).map_err(|e| e.to_string())
 }
 
