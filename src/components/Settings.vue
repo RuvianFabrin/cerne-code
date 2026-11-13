@@ -986,6 +986,7 @@ const csGrupos: { label: string; itens: CsItem[] }[] = [
     { id: 'local-endpoints', icon: 'dns', chave: 'settings.localEndpoints', requerConfig: true },
     { id: 'voice', icon: 'mic', chave: 'settings.voiceTitle', requerConfig: true },
     { id: 'long-horizon', icon: 'all_inclusive', chave: 'settings.longHorizonTitle', requerConfig: true },
+    { id: 'anything', icon: 'travel_explore', chave: 'settings.anythingTitle', requerConfig: true },
   ] },
 ];
 
@@ -1787,6 +1788,23 @@ watch(csGruposVisiveis, (grupos) => {
           </div>
         </template>
         </section>
+
+      <section v-if="providerStore.config && providerStore.config.anything" v-show="activeSection === 'anything'" class="cs-panel">
+        <p class="hint">{{ $t("settings.anythingHint") }}</p>
+
+        <div class="field">
+          <label><input type="checkbox" v-model="providerStore.config.anything.full_tools" @change="providerStore.saveConfig" /> {{ $t("settings.anythingFullLabel") }}</label>
+          <small class="hint">{{ $t("settings.anythingFullHint") }}</small>
+        </div>
+        <div class="field">
+          <label><input type="checkbox" v-model="providerStore.config.anything.deep" @change="providerStore.saveConfig" /> {{ $t("settings.anythingDeepLabel") }}</label>
+          <small class="hint">{{ $t("settings.anythingDeepHint") }}</small>
+        </div>
+        <div class="field">
+          <label><input type="checkbox" v-model="providerStore.config.anything.allow_run" @change="providerStore.saveConfig" /> {{ $t("settings.anythingAllowRunLabel") }}</label>
+          <small class="hint">{{ $t("settings.anythingAllowRunHint") }}</small>
+        </div>
+      </section>
 
       <section v-if="providerStore.config" v-show="activeSection === 'long-horizon'" class="cs-panel">
         <p class="hint">{{ $t("settings.longHorizonHint") }}</p>

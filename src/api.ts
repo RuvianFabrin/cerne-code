@@ -55,6 +55,8 @@ export interface AppConfig {
   voicebox_tts_profile: string;
   voicebox_stt_language: string;
   long_horizon: LongHorizonConfig;
+  /** Opções globais do modo Anything (padrão; cada sessão pode sobrescrever). */
+  anything?: { full_tools: boolean; deep: boolean; allow_run: boolean };
   external_cli: ExternalCliConfig;
   image_gen: ImageGenConfig;
   video_gen: VideoGenConfig;

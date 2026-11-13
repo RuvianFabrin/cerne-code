@@ -8,6 +8,7 @@ pub mod modulos;
 pub mod plan;
 pub mod prompts;
 pub mod session;
+pub mod varredor;
 pub mod workspace;
 
 /// Status de um item de função depois que a ficha passou na conferência do código.
@@ -110,6 +111,24 @@ pub async fn anything_plan(state: State<'_, AppState>, id: String, modo: String,
     let ws = workspace::Workspace::new(&raiz);
     let ctx = plan::Contexto { exe: &exe, projeto: session::project_dir(&raiz), alvo: &alvo, flags };
     plan::planejar(&ctx, &ws, &modo, teto, &objetivo).await.map_err(|e| e.to_string())
+}
+
+/// Varre a pasta do projeto da sessão, acha os executáveis e grava `.anything/alvos.json`.
+#[tauri::command]
+pub fn anything_varrer(state: State<AppState>, id: String) -> Result<Vec<varredor::Alvo>, String> {
+    let sessao = sessions::get_session(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
+    let raiz = std::path::PathBuf::from(sessao.project_root.ok_or("a sessão não tem pasta de projeto")?);
+    let alvos = varredor::varrer(&raiz).map_err(|e| e.to_string())?;
+    varredor::gravar(&raiz, &alvos).map_err(|e| e.to_string())?;
+    Ok(alvos)
+}
+
+/// Lista de alvos já salva em `.anything/alvos.json` da sessão (vazia se ainda não varreu).
+#[tauri::command]
+pub fn anything_alvos(state: State<AppState>, id: String) -> Result<Vec<varredor::Alvo>, String> {
+    let sessao = sessions::get_session(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
+    let raiz = std::path::PathBuf::from(sessao.project_root.ok_or("a sessão não tem pasta de projeto")?);
+    varredor::ler(&raiz).map_err(|e| e.to_string())
 }
 
 /// Instala Ghidra e Java pelo motor. Só roda quando o usuário confirma.

@@ -237,6 +237,9 @@ fn checar_ficha(root: &std::path::Path, saida: &str, endereco: &str) -> std::res
 /// (arquivo Markdown com as seções pedidas).
 fn checar_item(root: &std::path::Path, item: &serde_json::Value) -> std::result::Result<(), Vec<String>> {
     let saida = item.get("saida").and_then(|v| v.as_str()).unwrap_or_default();
+    if !crate::anything::workspace::saida_segura(saida) {
+        return Err(vec![format!("o caminho de saída '{saida}' não é permitido; use funcoes/, modulos/ ou relatorio.md")]);
+    }
     match item.get("tipo").and_then(|v| v.as_str()) {
         Some("funcao") => checar_ficha(root, saida, item.get("endereco").and_then(|v| v.as_str()).unwrap_or_default()),
         Some("modulo") => checar_markdown(root, saida, crate::anything::modulos::SECOES_MODULO),
@@ -260,6 +263,7 @@ fn checar_markdown(root: &std::path::Path, saida: &str, secoes: &[&str]) -> std:
 /// Lê a ficha que o modelo gravou, confere de novo e a registra no `indice.json` (a ficha é reescrita
 /// no formato do modo; o índice é o que os resumos de outras funções leem).
 fn registrar_no_indice(root: &std::path::Path, saida: &str) -> Result<()> {
+    anyhow::ensure!(crate::anything::workspace::saida_segura(saida), "saída insegura: {saida}");
     let texto = std::fs::read_to_string(root.join(".anything").join(saida))?;
     let ficha = crate::anything::workspace::parse_ficha(&texto).map_err(|e| anyhow::anyhow!(e.join("; ")))?;
     crate::anything::workspace::Workspace::new(root).gravar_ficha(&ficha)

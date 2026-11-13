@@ -295,3 +295,35 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 }
+
+/// Um caminho de saída que vem do `tarefas.json` (que pode ser editado à mão) só vale se for relativo,
+/// sem `..` nem prefixo de unidade, e ficar em `funcoes/`, `modulos/` ou ser `relatorio.md`.
+pub fn saida_segura(saida: &str) -> bool {
+    use std::path::Component;
+    let p = Path::new(saida);
+    if saida.is_empty() || p.is_absolute() {
+        return false;
+    }
+    if !p.components().all(|c| matches!(c, Component::Normal(_))) {
+        return false;
+    }
+    saida == "relatorio.md" || saida.starts_with("funcoes/") || saida.starts_with("modulos/")
+}
+
+#[cfg(test)]
+mod saida_tests {
+    use super::*;
+
+    #[test]
+    fn only_paths_inside_the_workspace_are_accepted() {
+        assert!(saida_segura("funcoes/0x401000.json"));
+        assert!(saida_segura("modulos/modulo_01.md"));
+        assert!(saida_segura("relatorio.md"));
+        assert!(!saida_segura("../fora.json"));
+        assert!(!saida_segura("funcoes/../../fora.json"));
+        assert!(!saida_segura("/etc/passwd"));
+        assert!(!saida_segura("C:/Windows/x.json"));
+        assert!(!saida_segura("alvo.json"));
+        assert!(!saida_segura(""));
+    }
+}
