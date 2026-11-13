@@ -83,6 +83,7 @@
     "accept": "Li e estou ciente"
   },
   "plainQueue": {
+    "anythingAuto": "Modo Anything: não há arquivo a escolher. A fila lê sozinha as tarefas do primeiro alvo planejado (clique antes em \"Planejar todos\" no painel lateral) e estuda alvo por alvo. Clique em Iniciar; pedir ao modelo no chat não roda a fila.",
     "title": "Fila de tarefas (sem Long Horizon)",
     "toggleLabel": "Fila de tarefas (sem Long Horizon)",
     "toggleTooltip": "Roda uma lista de tarefas sem Long Horizon: ao terminar cada item, salva o que importa na memória da sessão e compacta o contexto antes do próximo. Sem limite de etapas.",

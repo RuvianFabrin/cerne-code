@@ -83,6 +83,7 @@
     "accept": "I have read and understand"
   },
   "plainQueue": {
+    "anythingAuto": "Anything mode: there is no file to choose. The queue reads the tasks of the first planned target by itself (click \"Plan all\" in the side panel first), then studies target by target. Click Start; asking the model in the chat does not run the queue.",
     "title": "Task queue (no Long Horizon)",
     "toggleLabel": "Task queue (no Long Horizon)",
     "toggleTooltip": "Runs a task list without Long Horizon: after each item, saves what matters to session memory and compacts the context before the next one. No step limit.",

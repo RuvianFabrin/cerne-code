@@ -83,6 +83,7 @@
     "accept": "He leído y estoy de acuerdo"
   },
   "plainQueue": {
+    "anythingAuto": "Modo Anything: no hay archivo que elegir. La cola lee sola las tareas del primer objetivo planificado (antes pulsa \"Planificar todos\" en el panel lateral) y estudia objetivo por objetivo. Pulsa Iniciar; pedírselo al modelo en el chat no ejecuta la cola.",
     "title": "Cola de tareas (sin Long Horizon)",
     "toggleLabel": "Cola de tareas (sin Long Horizon)",
     "toggleTooltip": "Ejecuta una lista de tareas sin Long Horizon: al terminar cada ítem, guarda lo importante en la memoria de la sesión y compacta el contexto antes del siguiente. Sin límite de pasos.",

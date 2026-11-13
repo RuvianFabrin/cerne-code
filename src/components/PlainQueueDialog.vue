@@ -22,6 +22,8 @@ watch(visible, (isOpen) => {
   caminho.value = sessionStore.currentSession?.plain_queue_path ?? "";
 });
 
+// Modo Anything: a fila lê sozinha o tarefas.json do alvo planejado; não há arquivo a escolher.
+const anything = computed(() => !!sessionStore.currentSession?.anything?.enabled);
 const running = computed(() => !!sessionStore.currentId && sessionStore.plainQueueRunningIds.has(sessionStore.currentId));
 // Mesma exigência da fila do LH: sem YOLO a fila travaria em cada permissão de ferramenta.
 const canStart = computed(() => sessionStore.currentSession?.execution_mode === "yolo");
@@ -60,12 +62,15 @@ async function toggleQueue() {
     return;
   }
   if (!canStart.value) return;
-  if (!caminho.value.trim()) {
-    saveError.value = t("plainQueue.pathMissing");
-    return;
+  if (!anything.value) {
+    if (!caminho.value.trim()) {
+      saveError.value = t("plainQueue.pathMissing");
+      return;
+    }
+    // Grava o caminho antes de iniciar — o loop lê o arquivo a partir da sessão.
+    if (!(await savePath())) return;
   }
-  // Grava o caminho antes de iniciar — o loop lê o arquivo a partir da sessão.
-  if (!(await savePath())) return;
+  saveError.value = "";
   try {
     await sessionStore.startPlainQueue();
   } catch (e) {
@@ -83,6 +88,8 @@ async function toggleQueue() {
     class="pq-dialog"
   >
     <div class="pq">
+      <p v-if="anything" class="pq-hint">{{ t("plainQueue.anythingAuto") }}</p>
+      <template v-else>
       <label class="pq-label" for="pq-path">{{ t("plainQueue.pathLabel") }}</label>
       <div class="pq-path">
         <span class="msi pq-path-icon">description</span>
@@ -101,6 +108,7 @@ async function toggleQueue() {
       </div>
       <p class="pq-hint">{{ t("plainQueue.pathHint") }}</p>
       <code class="pq-format">{{ '{"tarefas": [{"id": 1, "descricao": "...", "status": "fazer"}]}' }}</code>
+      </template>
       <p v-if="!canStart && !running" class="pq-warn">
         <span class="msi">warning</span>
         {{ t("plainQueue.requirements") }}
@@ -109,7 +117,7 @@ async function toggleQueue() {
     </div>
 
     <footer class="pq-footer">
-      <button type="button" class="pq-btn pq-btn-ghost" @click="savePath">
+      <button v-if="!anything" type="button" class="pq-btn pq-btn-ghost" @click="savePath">
         <span class="msi">save</span>
         {{ t("sidebar.save") }}
       </button>

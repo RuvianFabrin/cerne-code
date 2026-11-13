@@ -83,6 +83,7 @@
     "accept": "我已阅读并知晓"
   },
   "plainQueue": {
+    "anythingAuto": "Anything 模式：无需选择文件。队列会自动读取第一个已规划目标的任务（请先在侧边栏点击“全部规划”），并逐个目标研究。请点击“开始”；在聊天中让模型执行不会运行队列。",
     "title": "任务队列（不使用 Long Horizon）",
     "toggleLabel": "任务队列（不使用 Long Horizon）",
     "toggleTooltip": "不使用 Long Horizon 运行任务列表：每项完成后，把重要内容保存到会话记忆，并在下一项之前压缩上下文。没有步骤限制。",
