@@ -28,9 +28,10 @@
     },
     "show": "Show panel",
     "hide": "Hide panel",
-    "sec": { "env": "Environment", "context": "Context", "mcp": "Active MCPs", "git": "Changes (git)", "jobs": "Background processes", "agents": "Agents", "sub": "Sub-sessions", "browser": "Browser" },
+    "sec": { "env": "Environment", "context": "Context", "mcp": "Active MCPs", "git": "Changes (git)", "jobs": "Background processes", "agents": "Agents", "sub": "Sub-sessions", "browser": "Browser", "anything": "Anything" },
     "env": { "readWrite": "Can edit", "readOnly": "Read only", "none": "No project folder" },
     "mcp": { "none": "No active MCP" },
+    "anything": { "scan": "Scan folder", "plan": "Plan all", "empty": "No targets yet. Scan the project folder.", "ignored": "{n} file(s) ignored (unknown format)", "planned": "{n} target(s) planned", "status": {"fazer": "to do", "planejado": "planned", "feito": "done", "erro": "error"} },
     "git": { "none": "Nothing changed", "notRepo": "This folder is not a git repository", "noProject": "No project folder" },
     "jobs": { "none": "No background process" },
     "agents": { "none": "No agent in this session" },
@@ -103,6 +104,7 @@
       "saving_memory": "Saving session memory…",
       "compacting": "Compacting context…",
       "stuck": "Queue stopped",
+      "blocked": "Item blocked, queue continues",
       "finished": "Queue finished",
       "error": "Queue error"
     }

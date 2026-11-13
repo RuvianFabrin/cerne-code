@@ -30,6 +30,24 @@ export interface CliReadiness {
   models: string[];
 }
 
+export interface AnythingTarget {
+  caminho: string;
+  formato: string;
+  /** `nativo` (já estudado pelo plano) ou a fase em que o formato entra. */
+  suporte: string;
+  /** fazer, planejado, feito ou erro. */
+  status: string;
+}
+export interface AnythingScan {
+  alvos: AnythingTarget[];
+  ignorados: number;
+}
+export interface AnythingBatchResult {
+  caminho: string;
+  status: string;
+  detalhe: string;
+}
+
 export interface AppConfig {
   active_provider: ProviderKind;
   active_model: string | null;
@@ -583,6 +601,10 @@ export const api = {
     invoke<Session>("update_session_fable_method", { id, enabled }),
   setSessionAnything: (id: string, enabled: boolean, target: string | null, goal: string | null) =>
     invoke<Session>("set_session_anything", { id, enabled, target, goal }),
+  anythingScan: (id: string) => invoke<AnythingScan>("anything_varrer", { id }),
+  anythingTargets: (id: string) => invoke<AnythingTarget[]>("anything_alvos", { id }),
+  anythingPlanBatch: (id: string, modo: string, teto: number) =>
+    invoke<AnythingBatchResult[]>("anything_planejar_lote", { id, modo, teto }),
   setSessionAnythingOptions: (
     id: string,
     opts: { fullTools?: boolean | null; deep?: boolean | null; allowRun?: boolean | null },

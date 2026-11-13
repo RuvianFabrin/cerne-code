@@ -4,6 +4,7 @@ import { useI18n } from "vue-i18n";
 import {
   api,
   type AgentExecution,
+  type AnythingTarget,
   type BackgroundJobInfo,
   type BrowserProfile,
   type GitFileChange,
@@ -27,6 +28,11 @@ const gitError = ref<string | null>(null);
 const jobs = ref<BackgroundJobInfo[]>([]);
 const executions = ref<AgentExecution[]>([]);
 const collapsed = ref<Record<string, boolean>>({});
+// Modo Anything: alvos da varredura (`.anything/alvos.json`) e o resultado da última ação.
+const anythingTargets = ref<AnythingTarget[]>([]);
+const anythingIgnored = ref(0);
+const anythingMsg = ref("");
+const anythingBusy = ref(false);
 // Processo aberto no modal de historico (guardado por id, pra acompanhar a saida ao vivo).
 const selectedJobId = ref<string | null>(null);
 const selectedJob = computed(() => jobs.value.find((j) => j.id === selectedJobId.value) ?? null);
@@ -145,7 +151,11 @@ onMounted(() => {
   loadMcp();
   loadBrowserProfiles();
   refreshAll();
-  poll = setInterval(refreshAll, 5000);
+  anythingRefresh();
+  poll = setInterval(() => {
+    refreshAll();
+    anythingRefresh();
+  }, 5000);
 });
 onUnmounted(() => {
   if (poll) clearInterval(poll);
@@ -155,8 +165,59 @@ watch(
   () => {
     tick = 0;
     refreshAll();
+    anythingRefresh();
   },
 );
+watch(() => session.value?.anything?.enabled, anythingRefresh);
+
+async function anythingRefresh() {
+  const id = sessionStore.currentId;
+  if (!id || !session.value?.anything?.enabled) {
+    anythingTargets.value = [];
+    return;
+  }
+  try {
+    anythingTargets.value = await api.anythingTargets(id);
+  } catch {
+    anythingTargets.value = [];
+  }
+}
+
+async function anythingScan() {
+  const id = sessionStore.currentId;
+  if (!id) return;
+  anythingBusy.value = true;
+  anythingMsg.value = "";
+  try {
+    const r = await api.anythingScan(id);
+    anythingTargets.value = r.alvos;
+    anythingIgnored.value = r.ignorados;
+  } catch (e) {
+    anythingMsg.value = String(e);
+  } finally {
+    anythingBusy.value = false;
+  }
+}
+
+async function anythingPlan() {
+  const id = sessionStore.currentId;
+  if (!id) return;
+  anythingBusy.value = true;
+  anythingMsg.value = "";
+  try {
+    const r = await api.anythingPlanBatch(id, "completo", 150);
+    anythingMsg.value = t("sidePanel.anything.planned", { n: r.length });
+    await anythingRefresh();
+  } catch (e) {
+    anythingMsg.value = String(e);
+  } finally {
+    anythingBusy.value = false;
+  }
+}
+
+function anythingStatusLabel(status: string) {
+  return t("sidePanel.anything.status." + status);
+}
 
 function toggle(key: string) {
   collapsed.value[key] = !collapsed.value[key];
@@ -254,6 +315,28 @@ function statusLabel(status: string): string {
             {{ $t("sidePanel.browser.create") }}
           </button>
         </div>
+      </div>
+    </section>
+
+    <!-- Anything -->
+    <section v-if="session?.anything?.enabled" class="sp-section">
+      <button class="sp-head" @click="toggle('anything')">
+        <span class="msi chevron">{{ collapsed.anything ? "chevron_right" : "expand_more" }}</span>
+        <span class="sp-title">{{ $t("sidePanel.sec.anything") }}</span>
+        <span v-if="anythingTargets.length" class="sp-count">{{ anythingTargets.length }}</span>
+      </button>
+      <div v-if="!collapsed.anything" class="sp-body">
+        <div class="sp-create">
+          <button class="sp-btn" :disabled="anythingBusy" @click="anythingScan">{{ $t("sidePanel.anything.scan") }}</button>
+          <button class="sp-btn" :disabled="anythingBusy || !anythingTargets.length" @click="anythingPlan">{{ $t("sidePanel.anything.plan") }}</button>
+        </div>
+        <p v-if="anythingMsg" class="sp-empty">{{ anythingMsg }}</p>
+        <p v-if="!anythingTargets.length" class="sp-empty">{{ $t("sidePanel.anything.empty") }}</p>
+        <div v-for="a in anythingTargets" :key="a.caminho" class="sp-row" :title="a.caminho + ' (' + a.suporte + ')'">
+          <span class="row-text">{{ a.caminho }}</span>
+          <span class="row-status">{{ a.formato }} · {{ anythingStatusLabel(a.status) }}</span>
+        </div>
+        <p v-if="anythingIgnored" class="sp-empty">{{ $t("sidePanel.anything.ignored", { n: anythingIgnored }) }}</p>
       </div>
     </section>
 

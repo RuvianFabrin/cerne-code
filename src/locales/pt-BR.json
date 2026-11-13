@@ -28,9 +28,10 @@
     },
     "show": "Mostrar painel",
     "hide": "Ocultar painel",
-    "sec": { "env": "Ambiente", "context": "Contexto", "mcp": "MCPs ativos", "git": "Alterações (git)", "jobs": "Processos em segundo plano", "agents": "Agentes", "sub": "Sub-sessões", "browser": "Navegador" },
+    "sec": { "env": "Ambiente", "context": "Contexto", "mcp": "MCPs ativos", "git": "Alterações (git)", "jobs": "Processos em segundo plano", "agents": "Agentes", "sub": "Sub-sessões", "browser": "Navegador", "anything": "Anything" },
     "env": { "readWrite": "Pode editar", "readOnly": "Somente leitura", "none": "Nenhuma pasta de projeto" },
     "mcp": { "none": "Nenhum MCP ativo" },
+    "anything": { "scan": "Varrer pasta", "plan": "Planejar todos", "empty": "Nenhum alvo ainda. Varra a pasta do projeto.", "ignored": "{n} arquivo(s) ignorado(s) (formato desconhecido)", "planned": "{n} alvo(s) planejado(s)", "status": {"fazer": "a fazer", "planejado": "planejado", "feito": "feito", "erro": "erro"} },
     "git": { "none": "Nada alterado", "notRepo": "Esta pasta não é um repositório git", "noProject": "Sem pasta de projeto" },
     "jobs": { "none": "Nenhum processo em segundo plano" },
     "agents": { "none": "Nenhum agente nesta sessão" },
@@ -103,6 +104,7 @@
       "saving_memory": "Salvando memória da sessão…",
       "compacting": "Compactando contexto…",
       "stuck": "Fila parada",
+      "blocked": "Item bloqueado, a fila continua",
       "finished": "Fila concluída",
       "error": "Erro na fila"
     }
