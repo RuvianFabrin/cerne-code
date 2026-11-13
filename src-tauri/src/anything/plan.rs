@@ -438,7 +438,7 @@ mod real {
 /// síntese à fila: um item por módulo (agrupado pelo grafo) e um de relatório no fim. Não mexe no que
 /// já existe, então pode ser chamada de novo sem duplicar. Devolve quantos itens entraram.
 pub fn acrescentar_sintese(ws: &Workspace, objetivo: &str) -> Result<usize> {
-    use super::modulos::{componentes, dividir, nome_arquivo};
+    use super::modulos::{agrupar, nome_arquivo};
     use super::prompts::{preencher, MODULO, RELATORIO};
     let objetivo = &objetivo_ou_padrao(objetivo);
     let caminho = ws.root.join("tarefas.json");
@@ -476,7 +476,7 @@ pub fn acrescentar_sintese(ws: &Workspace, objetivo: &str) -> Result<usize> {
     }
     let mut novas = Vec::new();
     let mut nomes_modulos = Vec::new();
-    for (i, grupo) in componentes(&prontas, &arestas).into_iter().flat_map(dividir).enumerate() {
+    for (i, grupo) in agrupar(&prontas, &arestas).into_iter().enumerate() {
         let arquivo = nome_arquivo(i);
         let linhas_grupo: Vec<String> = grupo.iter().filter_map(|e| linhas.get(e).cloned()).collect();
         let descricao = preencher(MODULO, &[

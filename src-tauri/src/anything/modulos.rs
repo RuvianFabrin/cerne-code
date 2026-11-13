@@ -43,6 +43,22 @@ pub fn componentes(nodos: &[String], arestas: &HashMap<String, Vec<String>>) -> 
     grupos
 }
 
+/// Componentes com menos funções que isto não viram módulo sozinhos: entram no pool de "avulsas".
+pub const COMPONENTE_PEQUENO: usize = 3;
+
+/// Agrupa as funções em módulos: cada componente do grafo com [`COMPONENTE_PEQUENO`] funções ou mais
+/// é um módulo (dividido se passar do máximo); as componentes menores (inclusive função isolada) são
+/// juntadas por endereço, porque o compilador costuma deixar perto as funções do mesmo arquivo-fonte, e
+/// assim uma função solta não vira um módulo de uma linha só.
+pub fn agrupar(nodos: &[String], arestas: &HashMap<String, Vec<String>>) -> Vec<Vec<String>> {
+    let (grandes, pequenas): (Vec<_>, Vec<_>) = componentes(nodos, arestas).into_iter().partition(|c| c.len() >= COMPONENTE_PEQUENO);
+    let mut modulos: Vec<Vec<String>> = grandes.into_iter().flat_map(dividir).collect();
+    let mut avulsas: Vec<String> = pequenas.into_iter().flatten().collect();
+    avulsas.sort();
+    modulos.extend(dividir(avulsas));
+    modulos
+}
+
 /// Divide um grupo grande em pedaços de até [`MODULO_MAXIMO`], por endereço (estável).
 pub fn dividir(grupo: Vec<String>) -> Vec<Vec<String>> {
     grupo.chunks(MODULO_MAXIMO).map(|c| c.to_vec()).collect()
@@ -117,5 +133,47 @@ mod secoes_tests {
     fn a_complete_report_has_no_missing_sections() {
         let texto = SECOES_RELATORIO.join("\ncorpo\n");
         assert!(secoes_faltando(&texto, SECOES_RELATORIO).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod agrupar_tests {
+    use super::*;
+
+    fn s(v: &[&str]) -> Vec<String> {
+        v.iter().map(|x| x.to_string()).collect()
+    }
+
+    #[test]
+    fn isolated_functions_are_pooled_instead_of_one_module_each() {
+        let g: HashMap<String, Vec<String>> = HashMap::new();
+        let m = agrupar(&s(&["0x30", "0x10", "0x20"]), &g);
+        assert_eq!(m, vec![s(&["0x10", "0x20", "0x30"])]);
+    }
+
+    #[test]
+    fn a_real_cluster_stays_its_own_module_and_the_loose_ones_share_another() {
+        let mut g = HashMap::new();
+        g.insert("0x1".to_string(), s(&["0x2", "0x3"]));
+        let m = agrupar(&s(&["0x1", "0x2", "0x3", "0x8", "0x9"]), &g);
+        assert_eq!(m.len(), 2);
+        assert!(m.contains(&s(&["0x1", "0x2", "0x3"])));
+        assert!(m.contains(&s(&["0x8", "0x9"])));
+    }
+
+    #[test]
+    fn nothing_is_lost_and_nothing_repeats() {
+        let nodos: Vec<String> = (0..50).map(|i| format!("0x{:x}", i * 16)).collect();
+        let mut g = HashMap::new();
+        for i in 0..20 {
+            g.insert(nodos[i].clone(), vec![nodos[i + 1].clone()]);
+        }
+        let m = agrupar(&nodos, &g);
+        let mut todos: Vec<String> = m.iter().flatten().cloned().collect();
+        todos.sort();
+        let mut esperado = nodos.clone();
+        esperado.sort();
+        assert_eq!(todos, esperado);
+        assert!(m.iter().all(|x| x.len() <= MODULO_MAXIMO));
     }
 }
