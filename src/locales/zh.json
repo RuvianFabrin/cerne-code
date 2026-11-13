@@ -31,7 +31,7 @@
     "sec": { "env": "环境", "context": "上下文", "mcp": "已启用的 MCP", "git": "更改 (git)", "jobs": "后台进程", "agents": "代理", "sub": "子会话", "browser": "浏览器", "anything": "Anything" },
     "env": { "readWrite": "可编辑", "readOnly": "只读", "none": "没有项目文件夹" },
     "mcp": { "none": "没有启用的 MCP" },
-    "anything": { "scan": "扫描文件夹", "plan": "全部规划", "empty": "还没有目标。请扫描项目文件夹。", "ignored": "已忽略 {n} 个文件（格式未知）", "planned": "已规划 {n} 个目标", "status": {"fazer": "待办", "planejado": "已规划", "feito": "完成", "erro": "错误"} },
+    "anything": { "addFolder": "添加文件夹", "addFile": "添加文件", "remove": "从列表中移除", "noSources": "还没有来源：将扫描项目文件夹。添加文件夹或文件来选择要研究的内容。", "scan": "扫描来源", "plan": "全部规划", "empty": "还没有目标。请扫描项目文件夹。", "ignored": "已忽略 {n} 个文件（格式未知）", "planned": "已规划 {n} 个目标", "status": {"fazer": "待办", "planejado": "已规划", "feito": "完成", "erro": "错误"} },
     "git": { "none": "没有更改", "notRepo": "此文件夹不是 git 仓库", "noProject": "没有项目文件夹" },
     "jobs": { "none": "没有后台进程" },
     "agents": { "none": "此会话没有代理" },

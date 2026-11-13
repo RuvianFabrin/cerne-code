@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import { open } from "@tauri-apps/plugin-dialog";
 import {
   api,
   type AgentExecution,
+  type AnythingSource,
   type AnythingTarget,
   type BackgroundJobInfo,
   type BrowserProfile,
@@ -30,6 +32,7 @@ const executions = ref<AgentExecution[]>([]);
 const collapsed = ref<Record<string, boolean>>({});
 // Modo Anything: alvos da varredura (`.anything/alvos.json`) e o resultado da última ação.
 const anythingTargets = ref<AnythingTarget[]>([]);
+const anythingSources = ref<AnythingSource[]>([]);
 const anythingIgnored = ref(0);
 const anythingMsg = ref("");
 const anythingBusy = ref(false);
@@ -174,12 +177,49 @@ async function anythingRefresh() {
   const id = sessionStore.currentId;
   if (!id || !session.value?.anything?.enabled) {
     anythingTargets.value = [];
+    anythingSources.value = [];
     return;
   }
   try {
     anythingTargets.value = await api.anythingTargets(id);
+    anythingSources.value = await api.anythingSources(id);
   } catch {
     anythingTargets.value = [];
+  }
+}
+
+// Adiciona pastas ou arquivos à lista de fontes e já varre, para os alvos aparecerem.
+async function anythingAdd(directory: boolean) {
+  const id = sessionStore.currentId;
+  if (!id) return;
+  const escolhido = await open({ directory, multiple: true });
+  if (!escolhido) return;
+  const caminhos = Array.isArray(escolhido) ? escolhido : [escolhido];
+  anythingBusy.value = true;
+  anythingMsg.value = "";
+  try {
+    for (const c of caminhos) {
+      anythingSources.value = await api.anythingAddSource(id, c);
+    }
+    const r = await api.anythingScan(id);
+    anythingTargets.value = r.alvos;
+    anythingIgnored.value = r.ignorados;
+  } catch (e) {
+    anythingMsg.value = String(e);
+  } finally {
+    anythingBusy.value = false;
+  }
+}
+
+async function anythingRemove(caminho: string) {
+  const id = sessionStore.currentId;
+  if (!id) return;
+  anythingMsg.value = "";
+  try {
+    anythingSources.value = await api.anythingRemoveSource(id, caminho);
+    anythingTargets.value = await api.anythingTargets(id);
+  } catch (e) {
+    anythingMsg.value = String(e);
   }
 }
 
@@ -326,6 +366,15 @@ function statusLabel(status: string): string {
         <span v-if="anythingTargets.length" class="sp-count">{{ anythingTargets.length }}</span>
       </button>
       <div v-if="!collapsed.anything" class="sp-body">
+        <div class="sp-create">
+          <button class="sp-btn" :disabled="anythingBusy" @click="anythingAdd(true)">{{ $t("sidePanel.anything.addFolder") }}</button>
+          <button class="sp-btn" :disabled="anythingBusy" @click="anythingAdd(false)">{{ $t("sidePanel.anything.addFile") }}</button>
+        </div>
+        <div v-for="f in anythingSources" :key="f.caminho" class="sp-row" :title="f.caminho">
+          <span class="row-text">{{ f.tipo === "pasta" ? "📁" : "📄" }} {{ f.caminho }}</span>
+          <button class="sp-btn" :title="$t('sidePanel.anything.remove')" @click="anythingRemove(f.caminho)">✕</button>
+        </div>
+        <p v-if="!anythingSources.length" class="sp-empty">{{ $t("sidePanel.anything.noSources") }}</p>
         <div class="sp-create">
           <button class="sp-btn" :disabled="anythingBusy" @click="anythingScan">{{ $t("sidePanel.anything.scan") }}</button>
           <button class="sp-btn" :disabled="anythingBusy || !anythingTargets.length" @click="anythingPlan">{{ $t("sidePanel.anything.plan") }}</button>

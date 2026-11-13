@@ -10,15 +10,22 @@ use anyhow::Result;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
-/// Pasta de um alvo dentro de `.anything\alvos\`. O número garante ordem e unicidade; o nome vai
-/// reduzido a caracteres seguros (letras, números, `-` e `_`).
-pub fn pasta_do_alvo(root: &Path, indice: usize, caminho: &str) -> PathBuf {
+/// Pasta de um alvo dentro de `.anything\alvos\`. O prefixo é um hash do caminho completo (não a
+/// posição na lista), então adicionar ou remover fontes não troca a pasta de quem já foi estudado.
+/// O nome vai reduzido a caracteres seguros (letras, números, `-` e `_`).
+pub fn pasta_do_alvo(root: &Path, caminho: &str) -> PathBuf {
+    // FNV-1a de 32 bits: simples e estável entre execuções (o hasher padrão do Rust não é).
+    let mut h: u32 = 0x811c_9dc5;
+    for b in caminho.to_lowercase().replace('\\', "/").bytes() {
+        h ^= b as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
     let nome = Path::new(caminho)
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "alvo".into());
     let seguro: String = nome.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
-    root.join(".anything").join("alvos").join(format!("{:03}-{}", indice + 1, seguro))
+    root.join(".anything").join("alvos").join(format!("{:08x}-{}", h, seguro))
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -33,11 +40,11 @@ pub struct Resultado {
 pub async fn planejar_lote(exe: &Path, root: &Path, goal: &str, modo: &str, teto: usize, flags: Vec<String>) -> Result<Vec<Resultado>> {
     let mut alvos = varredor::ler(root)?;
     let mut resultados = Vec::new();
-    for (i, alvo) in alvos.iter_mut().enumerate() {
+    for alvo in alvos.iter_mut() {
         if alvo.status != "fazer" || alvo.suporte != "nativo" {
             continue;
         }
-        let pasta = pasta_do_alvo(root, i, &alvo.caminho);
+        let pasta = pasta_do_alvo(root, &alvo.caminho);
         let ws = Workspace { root: pasta };
         let ctx = Contexto { exe, projeto: project_dir(root), alvo: &alvo.caminho, flags: flags.clone() };
         let (status, detalhe) = match plan::planejar(&ctx, &ws, modo, teto, goal).await {
@@ -51,12 +58,12 @@ pub async fn planejar_lote(exe: &Path, root: &Path, goal: &str, modo: &str, teto
     Ok(resultados)
 }
 
-/// Primeiro alvo com status `planejado`: índice, o alvo e a pasta dele em `.anything/alvos/`.
-pub fn proximo_planejado(root: &Path) -> Option<(usize, Alvo, PathBuf)> {
+/// Primeiro alvo com status `planejado`: o alvo e a pasta dele em `.anything/alvos/`.
+pub fn proximo_planejado(root: &Path) -> Option<(Alvo, PathBuf)> {
     let alvos = varredor::ler(root).ok()?;
-    alvos.into_iter().enumerate().find(|(_, a)| a.status == "planejado").map(|(i, a)| {
-        let pasta = pasta_do_alvo(root, i, &a.caminho);
-        (i, a, pasta)
+    alvos.into_iter().find(|a| a.status == "planejado").map(|a| {
+        let pasta = pasta_do_alvo(root, &a.caminho);
+        (a, pasta)
     })
 }
 
@@ -64,7 +71,7 @@ pub fn proximo_planejado(root: &Path) -> Option<(usize, Alvo, PathBuf)> {
 /// existe outro `planejado` para a fila seguir; `false` em qualquer outro caso (a fila termina).
 pub fn concluir_alvo(root: &Path, ws_dir: &Path) -> bool {
     let Ok(mut alvos) = varredor::ler(root) else { return false };
-    let Some(i) = alvos.iter().enumerate().position(|(i, a)| pasta_do_alvo(root, i, &a.caminho) == ws_dir) else { return false };
+    let Some(i) = alvos.iter().position(|a| pasta_do_alvo(root, &a.caminho) == ws_dir) else { return false };
     if alvos[i].status != "planejado" {
         return false;
     }
@@ -91,19 +98,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn each_target_gets_its_own_numbered_folder_with_safe_name() {
+    fn each_target_gets_its_own_stable_folder_with_safe_name() {
         let r = Path::new("C:/projeto");
-        let p = pasta_do_alvo(r, 0, "C:/projeto/bin/meu app (v2).exe");
-        assert_eq!(p, Path::new("C:/projeto").join(".anything").join("alvos").join("001-meu_app__v2_"));
-        let q = pasta_do_alvo(r, 1, "C:/projeto/lib/core.dll");
-        assert!(q.ends_with("002-core"));
+        let p = pasta_do_alvo(r, "C:/projeto/bin/meu app (v2).exe");
+        let nome = p.file_name().unwrap().to_string_lossy().to_string();
+        assert!(nome.ends_with("-meu_app__v2_"), "{nome}");
+        assert_eq!(nome.len(), 8 + 1 + "meu_app__v2_".len());
+        let q = pasta_do_alvo(r, "C:/projeto/lib/core.dll");
+        assert!(q.ends_with(format!("{}-core", &q.file_name().unwrap().to_string_lossy()[..8])));
         assert_ne!(p, q);
+        // Mesma entrada, mesma pasta; barra e maiúscula não mudam o resultado.
+        assert_eq!(p, pasta_do_alvo(r, "c:\\projeto\\bin\\meu app (v2).exe"));
+        // Mesmo nome de arquivo em pastas diferentes não colide.
+        assert_ne!(pasta_do_alvo(r, "C:/a/x.dll"), pasta_do_alvo(r, "C:/b/x.dll"));
     }
 
     #[test]
     fn a_target_without_a_name_still_gets_a_folder() {
-        let p = pasta_do_alvo(Path::new("C:/p"), 4, "");
-        assert!(p.ends_with("005-alvo"));
+        let p = pasta_do_alvo(Path::new("C:/p"), "");
+        assert!(p.to_string_lossy().ends_with("-alvo"));
     }
 }
 
@@ -151,12 +164,12 @@ mod avanco_tests {
     #[test]
     fn the_queue_goes_to_the_first_planned_target_then_the_next_then_ends() {
         let d = projeto_com_dois_alvos();
-        let (i, a, pasta) = proximo_planejado(&d).unwrap();
-        assert_eq!((i, a.caminho.as_str()), (0, "C:/p/a.exe"));
+        let (a, pasta) = proximo_planejado(&d).unwrap();
+        assert_eq!(a.caminho.as_str(), "C:/p/a.exe");
         // Terminou o primeiro: há outro planejado, a fila segue.
         assert!(concluir_alvo(&d, &pasta));
-        let (i2, a2, pasta2) = proximo_planejado(&d).unwrap();
-        assert_eq!((i2, a2.caminho.as_str()), (1, "C:/p/b.dll"));
+        let (a2, pasta2) = proximo_planejado(&d).unwrap();
+        assert_eq!(a2.caminho.as_str(), "C:/p/b.dll");
         // Terminou o último: nada mais planejado, a fila termina.
         assert!(!concluir_alvo(&d, &pasta2));
         assert!(proximo_planejado(&d).is_none());
@@ -176,7 +189,7 @@ mod avanco_tests {
     #[test]
     fn a_target_already_done_is_not_marked_again() {
         let d = projeto_com_dois_alvos();
-        let (_, _, pasta) = proximo_planejado(&d).unwrap();
+        let (_, pasta) = proximo_planejado(&d).unwrap();
         assert!(concluir_alvo(&d, &pasta));
         assert!(!concluir_alvo(&d, &pasta), "já está feito");
         let _ = std::fs::remove_dir_all(&d);

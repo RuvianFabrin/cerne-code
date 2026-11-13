@@ -210,7 +210,7 @@ pub fn anything_workspace_dir(enabled: bool, project_root: Option<&str>) -> Opti
     if base.join("tarefas.json").is_file() {
         return Some(base);
     }
-    Some(crate::anything::lote::proximo_planejado(&root).map(|(_, _, pasta)| pasta).unwrap_or(base))
+    Some(crate::anything::lote::proximo_planejado(&root).map(|(_, pasta)| pasta).unwrap_or(base))
 }
 
 fn read_tasks(app_data_dir: &PathBuf, session_id: &str, anything: Option<&std::path::Path>) -> Result<String> {

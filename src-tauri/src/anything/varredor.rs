@@ -158,6 +158,113 @@ fn recolher(dir: &Path, profundidade: usize, alvos: &mut Vec<Alvo>, ignorados: &
     Ok(())
 }
 
+/// Fontes da varredura: pastas e arquivos que o usuário adicionou. Ficam em `.anything/fontes.json`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Fonte {
+    pub caminho: String,
+    /// `pasta` ou `arquivo`.
+    pub tipo: String,
+}
+
+fn arquivo_de_fontes(root: &Path) -> PathBuf {
+    root.join(".anything").join("fontes.json")
+}
+
+/// Lê as fontes (vazio se o arquivo não existe).
+pub fn ler_fontes(root: &Path) -> Result<Vec<Fonte>> {
+    let caminho = arquivo_de_fontes(root);
+    if !caminho.is_file() {
+        return Ok(Vec::new());
+    }
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&caminho)?)?;
+    Ok(serde_json::from_value(v["fontes"].clone()).unwrap_or_default())
+}
+
+fn gravar_fontes(root: &Path, fontes: &[Fonte]) -> Result<()> {
+    let texto = serde_json::to_string_pretty(&serde_json::json!({ "fontes": fontes }))?;
+    super::workspace::escrever_atomico(&arquivo_de_fontes(root), &texto)
+}
+
+/// Adiciona uma pasta ou um arquivo à lista. O tipo vem do disco; caminho que não existe é recusado.
+/// Adicionar o que já está na lista não duplica.
+pub fn adicionar_fonte(root: &Path, caminho: &str) -> Result<Vec<Fonte>> {
+    let p = Path::new(caminho);
+    let tipo = if p.is_dir() {
+        "pasta"
+    } else if p.is_file() {
+        "arquivo"
+    } else {
+        anyhow::bail!("'{caminho}' não existe");
+    };
+    let mut fontes = ler_fontes(root)?;
+    if !fontes.iter().any(|f| f.caminho == caminho) {
+        fontes.push(Fonte { caminho: caminho.to_string(), tipo: tipo.into() });
+        gravar_fontes(root, &fontes)?;
+    }
+    Ok(fontes)
+}
+
+/// Tira uma fonte da lista e os alvos que só ela cobria. O que já foi estudado em
+/// `.anything/alvos/` não é apagado.
+pub fn remover_fonte(root: &Path, caminho: &str) -> Result<Vec<Fonte>> {
+    let mut fontes = ler_fontes(root)?;
+    fontes.retain(|f| f.caminho != caminho);
+    gravar_fontes(root, &fontes)?;
+    let alvos: Vec<Alvo> = ler(root)?.into_iter().filter(|a| coberto(&fontes, &a.caminho)).collect();
+    let ignorados = ler_ignorados(root);
+    gravar(root, &Varredura { alvos, ignorados })?;
+    Ok(fontes)
+}
+
+fn coberto(fontes: &[Fonte], caminho: &str) -> bool {
+    let c = Path::new(caminho);
+    fontes.iter().any(|f| if f.tipo == "pasta" { c.starts_with(&f.caminho) } else { c == Path::new(&f.caminho) })
+}
+
+fn ler_ignorados(root: &Path) -> usize {
+    std::fs::read_to_string(root.join(".anything").join("alvos.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|v| v["ignorados"].as_u64())
+        .unwrap_or(0) as usize
+}
+
+/// Varre todas as fontes (a pasta do projeto se a lista está vazia) e junta com o que já havia em
+/// `alvos.json`: quem já estava na lista mantém o status (não volta a `fazer`), quem sumiu do disco sai.
+pub fn varrer_fontes(root: &Path) -> Result<Varredura> {
+    let mut fontes = ler_fontes(root)?;
+    if fontes.is_empty() {
+        fontes.push(Fonte { caminho: root.display().to_string(), tipo: "pasta".into() });
+    }
+    let mut alvos: Vec<Alvo> = Vec::new();
+    let mut ignorados = 0usize;
+    for f in &fontes {
+        let p = Path::new(&f.caminho);
+        if f.tipo == "pasta" {
+            if p.is_dir() {
+                let v = varrer(p)?;
+                ignorados += v.ignorados;
+                alvos.extend(v.alvos);
+            }
+        } else if p.is_file() {
+            // Arquivo escolhido à mão entra mesmo sem assinatura conhecida: quem decide é o usuário.
+            let formato = classificar(p).unwrap_or("desconhecido");
+            alvos.push(Alvo { caminho: p.display().to_string(), formato: formato.into(), suporte: suporte(formato).into(), status: "fazer".into() });
+        }
+    }
+    alvos.sort_by(|a, b| a.caminho.cmp(&b.caminho));
+    alvos.dedup_by(|a, b| a.caminho == b.caminho);
+    let antigos = ler(root).unwrap_or_default();
+    for a in alvos.iter_mut() {
+        if let Some(velho) = antigos.iter().find(|o| o.caminho == a.caminho) {
+            a.status = velho.status.clone();
+        }
+    }
+    let v = Varredura { alvos, ignorados };
+    gravar(root, &v)?;
+    Ok(v)
+}
+
 /// Grava `alvos.json` na pasta `.anything` do projeto (escrita atômica).
 pub fn gravar(root: &Path, varredura: &Varredura) -> Result<PathBuf> {
     let caminho = root.join(".anything").join("alvos.json");
@@ -271,6 +378,55 @@ mod tests {
         assert_eq!(v.ignorados, 1, "o txt conta como ignorado; a pasta .anything nem entra");
         assert!(v.alvos.iter().all(|a| a.status == "fazer"));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn sources_are_added_removed_and_scanned_keeping_status() {
+        let raiz = tmp("fontes");
+        let pasta = tmp("pasta-extra");
+        std::fs::write(pasta.join("a.dll"), b"MZ00").unwrap();
+        std::fs::write(pasta.join("nota.txt"), b"x").unwrap();
+        let solto = tmp("solto").join("b.exe");
+        std::fs::write(&solto, b"MZ00").unwrap();
+        let desconhecido = solto.with_file_name("dados.bin");
+        std::fs::write(&desconhecido, b"zzzz").unwrap();
+
+        assert!(adicionar_fonte(&raiz, "Z:/nao/existe").is_err());
+        adicionar_fonte(&raiz, &pasta.display().to_string()).unwrap();
+        adicionar_fonte(&raiz, &solto.display().to_string()).unwrap();
+        let fontes = adicionar_fonte(&raiz, &solto.display().to_string()).unwrap();
+        assert_eq!(fontes.len(), 2, "repetida não duplica");
+        assert_eq!(fontes[0].tipo, "pasta");
+        assert_eq!(fontes[1].tipo, "arquivo");
+
+        let v = varrer_fontes(&raiz).unwrap();
+        assert_eq!(v.alvos.len(), 2);
+        // Marca um como feito e varre de novo: o status fica.
+        let mut alvos = ler(&raiz).unwrap();
+        alvos[0].status = "feito".into();
+        gravar(&raiz, &Varredura { alvos, ignorados: v.ignorados }).unwrap();
+        adicionar_fonte(&raiz, &desconhecido.display().to_string()).unwrap();
+        let v2 = varrer_fontes(&raiz).unwrap();
+        assert_eq!(v2.alvos.len(), 3, "arquivo escolhido à mão entra mesmo sem assinatura");
+        assert!(v2.alvos.iter().any(|a| a.formato == "desconhecido"));
+        assert_eq!(v2.alvos.iter().filter(|a| a.status == "feito").count(), 1);
+
+        // Remover a pasta tira os alvos dela e deixa os outros.
+        remover_fonte(&raiz, &pasta.display().to_string()).unwrap();
+        let resto = ler(&raiz).unwrap();
+        assert_eq!(resto.len(), 2);
+        assert!(resto.iter().all(|a| !a.caminho.ends_with("a.dll")));
+        assert_eq!(ler_fontes(&raiz).unwrap().len(), 2);
+        let _ = std::fs::remove_dir_all(&raiz);
+        let _ = std::fs::remove_dir_all(&pasta);
+    }
+
+    #[test]
+    fn without_sources_the_project_folder_is_scanned() {
+        let raiz = tmp("padrao");
+        std::fs::write(raiz.join("x.exe"), b"MZ00").unwrap();
+        assert_eq!(varrer_fontes(&raiz).unwrap().alvos.len(), 1);
+        let _ = std::fs::remove_dir_all(&raiz);
     }
 
     #[test]

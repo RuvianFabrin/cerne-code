@@ -119,9 +119,30 @@ pub async fn anything_plan(state: State<'_, AppState>, id: String, modo: String,
 pub fn anything_varrer(state: State<AppState>, id: String) -> Result<varredor::Varredura, String> {
     let sessao = sessions::get_session(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
     let raiz = std::path::PathBuf::from(sessao.project_root.ok_or("a sessão não tem pasta de projeto")?);
-    let v = varredor::varrer(&raiz).map_err(|e| e.to_string())?;
-    varredor::gravar(&raiz, &v).map_err(|e| e.to_string())?;
-    Ok(v)
+    varredor::varrer_fontes(&raiz).map_err(|e| e.to_string())
+}
+
+fn raiz_da_sessao(state: &State<AppState>, id: &str) -> Result<std::path::PathBuf, String> {
+    let sessao = sessions::get_session(&state.app_data_dir, id).map_err(|e| e.to_string())?;
+    Ok(std::path::PathBuf::from(sessao.project_root.ok_or("a sessão não tem pasta de projeto")?))
+}
+
+/// Pastas e arquivos que o usuário adicionou à varredura (`.anything/fontes.json`).
+#[tauri::command]
+pub fn anything_fontes(state: State<AppState>, id: String) -> Result<Vec<varredor::Fonte>, String> {
+    varredor::ler_fontes(&raiz_da_sessao(&state, &id)?).map_err(|e| e.to_string())
+}
+
+/// Adiciona uma pasta ou um arquivo à lista de fontes. Não varre: a varredura é um passo à parte.
+#[tauri::command]
+pub fn anything_fonte_adicionar(state: State<AppState>, id: String, caminho: String) -> Result<Vec<varredor::Fonte>, String> {
+    varredor::adicionar_fonte(&raiz_da_sessao(&state, &id)?, &caminho).map_err(|e| e.to_string())
+}
+
+/// Tira uma fonte da lista, junto com os alvos que só ela cobria. O estudo já feito fica no disco.
+#[tauri::command]
+pub fn anything_fonte_remover(state: State<AppState>, id: String, caminho: String) -> Result<Vec<varredor::Fonte>, String> {
+    varredor::remover_fonte(&raiz_da_sessao(&state, &id)?, &caminho).map_err(|e| e.to_string())
 }
 
 /// Estudo em lote: planeja cada alvo nativo de `alvos.json` que está `fazer`, cada um na própria pasta

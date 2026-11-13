@@ -31,7 +31,7 @@
     "sec": { "env": "Entorno", "context": "Contexto", "mcp": "MCP activos", "git": "Cambios (git)", "jobs": "Procesos en segundo plano", "agents": "Agentes", "sub": "Subsesiones", "browser": "Navegador", "anything": "Anything" },
     "env": { "readWrite": "Puede editar", "readOnly": "Solo lectura", "none": "Sin carpeta de proyecto" },
     "mcp": { "none": "Ningún MCP activo" },
-    "anything": { "scan": "Escanear carpeta", "plan": "Planificar todos", "empty": "Aún no hay objetivos. Escanea la carpeta del proyecto.", "ignored": "{n} archivo(s) ignorado(s) (formato desconocido)", "planned": "{n} objetivo(s) planificado(s)", "status": {"fazer": "pendiente", "planejado": "planificado", "feito": "hecho", "erro": "error"} },
+    "anything": { "addFolder": "Añadir carpeta", "addFile": "Añadir archivo", "remove": "Quitar de la lista", "noSources": "Aún no hay fuentes: se escanea la carpeta del proyecto. Añade carpetas o archivos para elegir qué estudiar.", "scan": "Escanear fuentes", "plan": "Planificar todos", "empty": "Aún no hay objetivos. Escanea la carpeta del proyecto.", "ignored": "{n} archivo(s) ignorado(s) (formato desconocido)", "planned": "{n} objetivo(s) planificado(s)", "status": {"fazer": "pendiente", "planejado": "planificado", "feito": "hecho", "erro": "error"} },
     "git": { "none": "Nada cambiado", "notRepo": "Esta carpeta no es un repositorio git", "noProject": "Sin carpeta de proyecto" },
     "jobs": { "none": "Ningún proceso en segundo plano" },
     "agents": { "none": "Ningún agente en esta sesión" },

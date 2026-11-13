@@ -38,6 +38,11 @@ export interface AnythingTarget {
   /** fazer, planejado, feito ou erro. */
   status: string;
 }
+export interface AnythingSource {
+  caminho: string;
+  /** `pasta` ou `arquivo`. */
+  tipo: string;
+}
 export interface AnythingScan {
   alvos: AnythingTarget[];
   ignorados: number;
@@ -601,6 +606,11 @@ export const api = {
     invoke<Session>("update_session_fable_method", { id, enabled }),
   setSessionAnything: (id: string, enabled: boolean, target: string | null, goal: string | null) =>
     invoke<Session>("set_session_anything", { id, enabled, target, goal }),
+  anythingSources: (id: string) => invoke<AnythingSource[]>("anything_fontes", { id }),
+  anythingAddSource: (id: string, caminho: string) =>
+    invoke<AnythingSource[]>("anything_fonte_adicionar", { id, caminho }),
+  anythingRemoveSource: (id: string, caminho: string) =>
+    invoke<AnythingSource[]>("anything_fonte_remover", { id, caminho }),
   anythingScan: (id: string) => invoke<AnythingScan>("anything_varrer", { id }),
   anythingTargets: (id: string) => invoke<AnythingTarget[]>("anything_alvos", { id }),
   anythingPlanBatch: (id: string, modo: string, teto: number) =>

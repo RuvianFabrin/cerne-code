@@ -31,7 +31,7 @@
     "sec": { "env": "Ambiente", "context": "Contexto", "mcp": "MCPs ativos", "git": "Alterações (git)", "jobs": "Processos em segundo plano", "agents": "Agentes", "sub": "Sub-sessões", "browser": "Navegador", "anything": "Anything" },
     "env": { "readWrite": "Pode editar", "readOnly": "Somente leitura", "none": "Nenhuma pasta de projeto" },
     "mcp": { "none": "Nenhum MCP ativo" },
-    "anything": { "scan": "Varrer pasta", "plan": "Planejar todos", "empty": "Nenhum alvo ainda. Varra a pasta do projeto.", "ignored": "{n} arquivo(s) ignorado(s) (formato desconhecido)", "planned": "{n} alvo(s) planejado(s)", "status": {"fazer": "a fazer", "planejado": "planejado", "feito": "feito", "erro": "erro"} },
+    "anything": { "addFolder": "Adicionar pasta", "addFile": "Adicionar arquivo", "remove": "Tirar da lista", "noSources": "Nenhuma fonte ainda: a pasta do projeto é varrida. Adicione pastas ou arquivos para escolher o que estudar.", "scan": "Varrer fontes", "plan": "Planejar todos", "empty": "Nenhum alvo ainda. Varra a pasta do projeto.", "ignored": "{n} arquivo(s) ignorado(s) (formato desconhecido)", "planned": "{n} alvo(s) planejado(s)", "status": {"fazer": "a fazer", "planejado": "planejado", "feito": "feito", "erro": "erro"} },
     "git": { "none": "Nada alterado", "notRepo": "Esta pasta não é um repositório git", "noProject": "Sem pasta de projeto" },
     "jobs": { "none": "Nenhum processo em segundo plano" },
     "agents": { "none": "Nenhum agente nesta sessão" },
