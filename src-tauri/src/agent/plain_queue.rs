@@ -192,6 +192,96 @@ async fn run_turn(app: &AppHandle, session_id: &str, text: String) -> Result<()>
     super::run_turn(app.clone(), &state, session_id.to_string(), text, Vec::new(), None).await
 }
 
+/// Arquivo da fila de uma sessão do modo Anything: `.anything/tarefas.json` do projeto. `None` quando o
+/// modo está desligado ou a sessão não tem pasta de projeto (a fila segue o arquivo escolhido).
+pub fn anything_queue_file(session: &crate::models::Session) -> Option<PathBuf> {
+    anything_queue_path(session.anything.enabled, session.project_root.as_deref())
+}
+
+/// A regra de [`anything_queue_file`], sem a sessão inteira (para testar).
+pub fn anything_queue_path(enabled: bool, project_root: Option<&str>) -> Option<PathBuf> {
+    if !enabled {
+        return None;
+    }
+    let root = PathBuf::from(project_root?);
+    Some(crate::anything::workspace::Workspace::new(&root).root.join("tarefas.json"))
+}
+
+fn read_tasks(app_data_dir: &PathBuf, session_id: &str, anything: Option<&std::path::Path>) -> Result<String> {
+    match anything {
+        Some(p) => std::fs::read_to_string(p).map_err(|e| anyhow::anyhow!("Não foi possível ler {}: {e}", p.display())),
+        None => sessions::read_plain_queue(app_data_dir, session_id),
+    }
+}
+
+fn write_tasks(app_data_dir: &PathBuf, session_id: &str, anything: Option<&std::path::Path>, tasks: &[serde_json::Value]) -> Result<()> {
+    match anything {
+        Some(p) => crate::anything::workspace::escrever_atomico(p, &task_queue::serialize_tasks(tasks)),
+        None => sessions::write_plain_queue_tasks(app_data_dir, session_id, tasks),
+    }
+}
+
+/// Confere a ficha de um item de função pelo código: o arquivo existe, passa na validação e é da
+/// função do item. Devolve as frases de erro que voltam ao modelo.
+fn checar_ficha(root: &std::path::Path, saida: &str, endereco: &str) -> std::result::Result<(), Vec<String>> {
+    let caminho = root.join(".anything").join(saida);
+    let texto = std::fs::read_to_string(&caminho).map_err(|_| vec![format!("a ficha ainda não existe em {saida}")])?;
+    let ficha = crate::anything::workspace::parse_ficha(&texto)?;
+    if ficha.endereco != endereco {
+        return Err(vec![format!("a ficha tem endereco {} mas o item é {endereco}", ficha.endereco)]);
+    }
+    Ok(())
+}
+
+/// Modo Anything, item de função: o modelo estuda e grava a ficha, e o código confere. Até
+/// `CONFIRM_RETRIES` correções; se ainda não passar, o item vai para `bloqueada` com o motivo e a
+/// fila segue (diferente das tarefas comuns, que param). Não há memória nem compactação por item:
+/// a ficha é a memória do modo.
+async fn item_de_funcao(
+    app: &AppHandle,
+    session_id: &str,
+    root: &std::path::Path,
+    arquivo: &std::path::Path,
+    app_data_dir: &PathBuf,
+    tasks: &mut Vec<serde_json::Value>,
+    idx: usize,
+    prompt: &str,
+) -> Result<()> {
+    let item_id = tasks[idx].get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+    let saida = tasks[idx].get("saida").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let endereco = tasks[idx].get("endereco").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    emit_status(app, session_id, "processing", Some(item_id.clone()), None);
+    run_turn(app, session_id, prompt.to_string()).await?;
+    let mut erros;
+    for tentativa in 0..=CONFIRM_RETRIES {
+        match checar_ficha(root, &saida, &endereco) {
+            Ok(()) => {
+                task_queue::set_status(tasks, idx, crate::anything::STATUS_PRONTO);
+                write_tasks(app_data_dir, session_id, Some(arquivo), tasks)?;
+                emit_status(app, session_id, "confirmed", Some(item_id), None);
+                return Ok(());
+            }
+            Err(e) => erros = e,
+        }
+        if tentativa == CONFIRM_RETRIES {
+            let motivo = erros.join("; ");
+            task_queue::set_status(tasks, idx, crate::anything::STATUS_BLOQUEADA);
+            if let Some(obj) = tasks[idx].as_object_mut() {
+                obj.insert("motivo".into(), serde_json::Value::String(motivo.clone()));
+            }
+            write_tasks(app_data_dir, session_id, Some(arquivo), tasks)?;
+            emit_status(app, session_id, "blocked", Some(item_id), Some(format!("Item bloqueado: {motivo}")));
+            return Ok(());
+        }
+        let correcao = format!(
+            "A ficha em {saida} não passou na conferência:\n- {}\nCorrija e grave o arquivo de novo, no formato do modo. Responda gravando o arquivo.",
+            erros.join("\n- ")
+        );
+        run_turn(app, session_id, correcao).await?;
+    }
+    Ok(())
+}
+
 /// Roda a fila inteira sem interação: próximo `fazer` → turno com o item →
 /// confirmação "feito" (até `CONFIRM_RETRIES`) → `testar` → salvar memória →
 /// compactar → próximo. Para só quando a lista acaba ou quando um item não é
@@ -200,7 +290,9 @@ pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
     let app_data_dir = app.state::<crate::AppState>().app_data_dir.clone();
 
     loop {
-        let tasks_json = sessions::read_plain_queue(&app_data_dir, &session_id)?;
+        let sessao = sessions::get_session(&app_data_dir, &session_id)?;
+        let arquivo_anything = anything_queue_file(&sessao);
+        let tasks_json = read_tasks(&app_data_dir, &session_id, arquivo_anything.as_deref())?;
         let mut tasks = task_queue::parse_tasks(&tasks_json)?;
 
         let Some(idx) = task_queue::find_next_fazer(&tasks) else {
@@ -212,6 +304,13 @@ pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
             .map(|v| v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string()))
             .unwrap_or_else(|| "?".to_string());
         let prompt_text = task_queue::item_prompt_text(&tasks[idx])?;
+        // Modo Anything, item de função: a ficha é conferida pelo código, não pela pergunta "feito?".
+        if let (Some(arquivo), Some(root)) = (arquivo_anything.as_deref(), sessao.project_root.as_deref()) {
+            if tasks[idx].get("tipo").and_then(|v| v.as_str()) == Some("funcao") {
+                item_de_funcao(&app, &session_id, std::path::Path::new(root), arquivo, &app_data_dir, &mut tasks, idx, &prompt_text).await?;
+                continue;
+            }
+        }
         // Os textos e a memória "inteligente" só valem com o Ctx fixo ativo na sessão.
         let ctx_fixo = sessions::get_session(&app_data_dir, &session_id)?.fixed_context.enabled;
 
@@ -254,7 +353,7 @@ pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
         }
 
         task_queue::set_status(&mut tasks, idx, STATUS_TESTAR);
-        sessions::write_plain_queue_tasks(&app_data_dir, &session_id, &tasks)?;
+        write_tasks(&app_data_dir, &session_id, arquivo_anything.as_deref(), &tasks)?;
         emit_status(&app, &session_id, "confirmed", Some(item_id.clone()), None);
 
         emit_status(&app, &session_id, "saving_memory", Some(item_id.clone()), None);
@@ -504,5 +603,60 @@ mod tests {
         assert_eq!(confirm_message("7", "x", false), original);
         assert!(confirm_message("7", "x", true).contains("verificação de novo"));
         std::fs::remove_dir_all(dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod anything_checagem_tests {
+    use super::*;
+
+    fn raiz_com_ficha(conteudo: Option<&str>) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("anything-fila-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(d.join(".anything").join("funcoes")).unwrap();
+        if let Some(c) = conteudo {
+            std::fs::write(d.join(".anything").join("funcoes").join("0x401000.json"), c).unwrap();
+        }
+        d
+    }
+
+    const FICHA: &str = r#"{"endereco":"0x401000","nome_original":"FUN_1","nome_sugerido":"f","resumo":"faz algo","o_que_faz":"faz","base":"observado","confianca":"alta"}"#;
+
+    #[test]
+    fn a_missing_ficha_is_reported_by_path() {
+        let d = raiz_com_ficha(None);
+        let e = checar_ficha(&d, "funcoes/0x401000.json", "0x401000").unwrap_err();
+        assert!(e[0].contains("ainda não existe"));
+        std::fs::remove_dir_all(d).ok();
+    }
+
+    #[test]
+    fn a_valid_ficha_for_the_right_function_passes() {
+        let d = raiz_com_ficha(Some(FICHA));
+        assert!(checar_ficha(&d, "funcoes/0x401000.json", "0x401000").is_ok());
+        std::fs::remove_dir_all(d).ok();
+    }
+
+    #[test]
+    fn a_ficha_for_another_function_is_refused() {
+        let d = raiz_com_ficha(Some(FICHA));
+        let e = checar_ficha(&d, "funcoes/0x401000.json", "0x999999").unwrap_err();
+        assert!(e[0].contains("0x999999"));
+        std::fs::remove_dir_all(d).ok();
+    }
+
+    #[test]
+    fn a_broken_ficha_returns_the_validation_messages() {
+        let d = raiz_com_ficha(Some(r#"{"endereco":"0x401000"}"#));
+        let e = checar_ficha(&d, "funcoes/0x401000.json", "0x401000").unwrap_err();
+        assert!(e.iter().any(|m| m.contains("falta o campo")));
+        std::fs::remove_dir_all(d).ok();
+    }
+
+    #[test]
+    fn only_anything_sessions_use_the_project_queue() {
+        assert!(anything_queue_path(false, Some("C:/projeto")).is_none());
+        assert!(anything_queue_path(true, None).is_none());
+        let f = anything_queue_path(true, Some("C:/projeto")).unwrap();
+        assert!(f.ends_with(std::path::Path::new(".anything").join("tarefas.json")));
     }
 }

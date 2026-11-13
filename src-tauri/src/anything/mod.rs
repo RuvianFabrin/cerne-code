@@ -8,6 +8,11 @@ pub mod plan;
 pub mod session;
 pub mod workspace;
 
+/// Status de um item de função depois que a ficha passou na conferência do código.
+pub const STATUS_PRONTO: &str = "pronto";
+/// Status de um item que não passou na conferência depois das correções. A fila segue.
+pub const STATUS_BLOQUEADA: &str = "bloqueada";
+
 use crate::models::{AnythingState, Session};
 use crate::{sessions, AppState};
 use tauri::State;
