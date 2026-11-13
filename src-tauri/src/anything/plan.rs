@@ -248,7 +248,18 @@ pub fn ordenar(nodos: &[String], arestas: &HashMap<String, Vec<String>>) -> Vec<
 }
 
 /// Um item de função para o `tarefas.json`. A descrição é provisória: a fase 09 põe o prompt definitivo.
+/// Objetivo escrito pela pessoa, ou um padrão quando ela não escreveu (prompt com "objetivo: ." confunde
+/// modelo pequeno).
+pub fn objetivo_ou_padrao(goal: &str) -> String {
+    if goal.trim().is_empty() {
+        "entender como o programa funciona (sem objetivo específico)".to_string()
+    } else {
+        goal.trim().to_string()
+    }
+}
+
 pub fn tarefa_de_funcao(alvo: &str, endereco: &str, nome: &str, chama: &[String], goal: &str) -> Value {
+    let goal = objetivo_ou_padrao(goal);
     json!({
         "id": format!("fn-{endereco}"),
         "status": task_queue::STATUS_FAZER,
@@ -429,6 +440,7 @@ mod real {
 pub fn acrescentar_sintese(ws: &Workspace, objetivo: &str) -> Result<usize> {
     use super::modulos::{componentes, dividir, nome_arquivo};
     use super::prompts::{preencher, MODULO, RELATORIO};
+    let objetivo = &objetivo_ou_padrao(objetivo);
     let caminho = ws.root.join("tarefas.json");
     if !caminho.is_file() {
         return Ok(0);

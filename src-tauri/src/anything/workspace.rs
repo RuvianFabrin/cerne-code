@@ -151,6 +151,23 @@ impl Workspace {
         escrever_atomico(&self.indice_path(), &serde_json::to_string_pretty(&indice)?)
     }
 
+    /// Preenche `chama` na ficha de `endereco` e põe `endereco` em `chamada_por` de cada função chamada que
+    /// já tem ficha. É o código quem liga as fichas (o modelo deixa esses campos vazios), com o grafo do plano.
+    pub fn completar_ligacoes(&self, endereco: &str, chama: &[String]) -> Result<()> {
+        let Some(mut ficha) = self.ler_ficha(endereco)? else { return Ok(()) };
+        ficha.chama = chama.to_vec();
+        self.gravar_ficha(&ficha)?;
+        for c in chama {
+            if let Some(mut chamada) = self.ler_ficha(c)? {
+                if !chamada.chamada_por.iter().any(|x| x == endereco) {
+                    chamada.chamada_por.push(endereco.to_string());
+                    self.gravar_ficha(&chamada)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn ler_ficha(&self, endereco: &str) -> Result<Option<Ficha>> {
         let p = self.ficha_path(endereco);
         if !p.is_file() {
@@ -325,5 +342,45 @@ mod saida_tests {
         assert!(!saida_segura("C:/Windows/x.json"));
         assert!(!saida_segura("alvo.json"));
         assert!(!saida_segura(""));
+    }
+}
+
+#[cfg(test)]
+mod ligacoes_tests {
+    use super::*;
+
+    fn ficha(endereco: &str) -> Ficha {
+        Ficha {
+            endereco: endereco.into(),
+            nome_original: "sub".into(),
+            nome_sugerido: "f".into(),
+            resumo: "faz algo".into(),
+            o_que_faz: "faz".into(),
+            constantes: vec![],
+            chama: vec![],
+            chamada_por: vec![],
+            base: "observado".into(),
+            confianca: "alta".into(),
+            evidencias: vec![],
+            pendencias: vec![],
+        }
+    }
+
+    #[test]
+    fn the_code_links_callers_and_callees_between_fichas() {
+        let d = std::env::temp_dir().join(format!("anything-lig-{}", uuid::Uuid::new_v4()));
+        let ws = Workspace { root: d.clone() };
+        ws.gravar_ficha(&ficha("0x10")).unwrap(); // folha, estudada primeiro
+        ws.gravar_ficha(&ficha("0x20")).unwrap(); // chama a folha
+        ws.completar_ligacoes("0x20", &["0x10".to_string(), "0x99".to_string()]).unwrap();
+        // De novo: não duplica.
+        ws.completar_ligacoes("0x20", &["0x10".to_string(), "0x99".to_string()]).unwrap();
+        let chamadora = ws.ler_ficha("0x20").unwrap().unwrap();
+        assert_eq!(chamadora.chama, ["0x10", "0x99"], "chama vem do plano, mesmo sem ficha do 0x99");
+        let folha = ws.ler_ficha("0x10").unwrap().unwrap();
+        assert_eq!(folha.chamada_por, ["0x20"]);
+        // Função sem ficha: nada acontece, sem erro.
+        ws.completar_ligacoes("0x77", &["0x10".to_string()]).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

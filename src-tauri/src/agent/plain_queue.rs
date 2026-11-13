@@ -354,8 +354,14 @@ Funções que esta chama, já estudadas:
             Ok(()) => {
                 if tasks[idx].get("tipo").and_then(|v| v.as_str()) == Some("funcao") {
                     registrar_no_indice(root, &saida)?;
+                    let endereco = tasks[idx].get("endereco").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+                    crate::anything::workspace::Workspace { root: root.to_path_buf() }.completar_ligacoes(&endereco, &chama)?;
                 }
                 task_queue::set_status(tasks, idx, crate::anything::STATUS_PRONTO);
+                // Se o item já esteve bloqueado, o motivo antigo não vale mais.
+                if let Some(obj) = tasks[idx].as_object_mut() {
+                    obj.remove("motivo");
+                }
                 write_tasks(app_data_dir, session_id, Some(arquivo), tasks)?;
                 emit_status(app, session_id, "confirmed", Some(item_id), None);
                 return Ok(());
