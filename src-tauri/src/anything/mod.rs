@@ -4,7 +4,9 @@
 pub mod cli;
 pub mod doctor;
 pub mod ghidra;
+pub mod plan;
 pub mod session;
+pub mod workspace;
 
 use crate::models::{AnythingState, Session};
 use crate::{sessions, AppState};
@@ -77,6 +79,30 @@ pub async fn anything_doctor(state: State<'_, AppState>) -> Result<doctor::Repor
     tokio::time::timeout(std::time::Duration::from_secs(120), doctor::run(&store))
         .await
         .map_err(|_| "o diagnóstico passou de 2 minutos".to_string())
+}
+
+/// Triagem, seleção, ordem e gravação do `tarefas.json` da sessão. `modo` é `completo` ou `objetivo`.
+/// Usa o alvo e o objetivo da sessão e as opções efetivas (Deep ou clean room).
+#[tauri::command]
+pub async fn anything_plan(state: State<'_, AppState>, id: String, modo: String, teto: usize) -> Result<plan::Resumo, String> {
+    let app_data = state.app_data_dir.clone();
+    let session = sessions::get_session(&app_data, &id).map_err(|e| e.to_string())?;
+    if !session.anything.enabled {
+        return Err("ligue o modo Anything nesta sessão antes de planejar".into());
+    }
+    let alvo = session.anything.target.clone().ok_or("escolha o alvo (arquivo) antes de planejar")?;
+    let objetivo = session.anything.goal.clone().unwrap_or_default();
+    let raiz = std::path::PathBuf::from(session.project_root.clone().ok_or("a sessão não tem pasta de projeto")?);
+    if !std::path::Path::new(&alvo).is_file() {
+        return Err(format!("o alvo '{alvo}' não é um arquivo; por enquanto só arquivos"));
+    }
+    let (exe, _) = cli::find_cli(&cli::store_dir(&app_data)).ok_or("o motor não está instalado")?;
+    let global = state.config.lock().unwrap().anything.clone();
+    let opts = session.anything.effective(&global);
+    let flags = vec![if opts.deep { "--deep".to_string() } else { "--clean-room".to_string() }];
+    let ws = workspace::Workspace::new(&raiz);
+    let ctx = plan::Contexto { exe: &exe, projeto: session::project_dir(&raiz), alvo: &alvo, flags };
+    plan::planejar(&ctx, &ws, &modo, teto, &objetivo).await.map_err(|e| e.to_string())
 }
 
 /// Instala Ghidra e Java pelo motor. Só roda quando o usuário confirma.

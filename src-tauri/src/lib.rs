@@ -2907,6 +2907,7 @@ pub fn run() {
             anything::anything_doctor,
             anything::set_session_anything,
             anything::set_session_anything_options,
+            anything::anything_plan,
             get_default_long_horizon_config,
             check_external_cli_readiness,
             list_external_cli_models,
