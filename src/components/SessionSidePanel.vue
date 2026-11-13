@@ -15,6 +15,7 @@ import {
 import { useSessionStore } from "../stores/session";
 import ContextGauge from "./ContextGauge.vue";
 import ProcessHistoryModal from "./ProcessHistoryModal.vue";
+import AnythingSetupDialog from "./AnythingSetupDialog.vue";
 
 // Painel lateral da sessão atual (espelha o painel direito do Claude Desktop):
 // ambiente (pastas e permissão), contexto, MCPs ativos, alterações do git,
@@ -36,6 +37,7 @@ const anythingSources = ref<AnythingSource[]>([]);
 const anythingIgnored = ref(0);
 const anythingMsg = ref("");
 const anythingBusy = ref(false);
+const anythingSetupVisible = ref(false);
 // Processo aberto no modal de historico (guardado por id, pra acompanhar a saida ao vivo).
 const selectedJobId = ref<string | null>(null);
 const selectedJob = computed(() => jobs.value.find((j) => j.id === selectedJobId.value) ?? null);
@@ -367,6 +369,9 @@ function statusLabel(status: string): string {
       </button>
       <div v-if="!collapsed.anything" class="sp-body">
         <div class="sp-create">
+          <button class="sp-btn" @click="anythingSetupVisible = true">{{ $t("anythingSetup.open") }}</button>
+        </div>
+        <div class="sp-create">
           <button class="sp-btn" :disabled="anythingBusy" @click="anythingAdd(true)">{{ $t("sidePanel.anything.addFolder") }}</button>
           <button class="sp-btn" :disabled="anythingBusy" @click="anythingAdd(false)">{{ $t("sidePanel.anything.addFile") }}</button>
         </div>
@@ -388,6 +393,8 @@ function statusLabel(status: string): string {
         <p v-if="anythingIgnored" class="sp-empty">{{ $t("sidePanel.anything.ignored", { n: anythingIgnored }) }}</p>
       </div>
     </section>
+
+    <AnythingSetupDialog v-model:visible="anythingSetupVisible" />
 
     <!-- Git -->
     <section class="sp-section">
