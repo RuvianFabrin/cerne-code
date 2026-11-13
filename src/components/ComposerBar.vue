@@ -164,7 +164,8 @@ async function togglePlainQueue() {
     return;
   }
   if (!plainQueueCanStart.value) return;
-  if (!sessionStore.currentSession?.plain_queue_path) {
+  // No modo Anything a fila lê o tarefas.json do alvo planejado sozinha: não há caminho a configurar.
+  if (!sessionStore.currentSession?.anything?.enabled && !sessionStore.currentSession?.plain_queue_path) {
     plainQueueVisible.value = true;
     return;
   }
