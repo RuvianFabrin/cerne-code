@@ -1044,6 +1044,10 @@ pub async fn run_turn(
         // Memória da sessão inteira no prompt, em qualquer sessão: fica fora de
         // `messages`, então a compactação nunca a alcança.
         prompt.push_str(&plain_queue::memory_prompt_block(&app_data_dir, &session_id, session.fixed_context.enabled)?);
+        if session.anything.enabled {
+            prompt.push_str("\n\n");
+            prompt.push_str(&crate::anything::session::prompt_block(&session.anything, &session.id));
+        }
         if session.plain_queue_enabled {
             prompt.push_str(&plain_queue::queue_prompt_block(session.fixed_context.enabled));
         }
@@ -1242,12 +1246,17 @@ pub async fn run_turn(
     if !state.config.lock().unwrap().image_gen.base_url.trim().is_empty() {
         tool_specs.extend(tools::image_gen_tool_specs());
     }
-    let mcp_servers = crate::mcp::session_mcp_servers(
+    let mut mcp_servers = crate::mcp::session_mcp_servers(
         &app_data_dir,
         session.enabled_mcp_servers.as_deref(),
         session.browser_profile.as_deref(),
     )
     .unwrap_or_default();
+    // Modo Anything: o servidor desta sessão entra mesmo sem estar na lista de MCPs habilitados.
+    let anything_global = state.config.lock().unwrap().anything.clone();
+    if let Some(server) = crate::anything::session::server_for(&app_data_dir, &anything_global, &session.anything, session.project_root.as_deref(), &session.id) {
+        mcp_servers.push(server);
+    }
     tool_specs.extend(state.mcp_clients.tool_specs(&mcp_servers).await);
     if session.context_economy {
         tool_specs.extend(crate::context_economy::connect(&app, &app_data_dir, &session, &state.mcp_clients).await?);

@@ -925,6 +925,30 @@ export const useSessionStore = defineStore("session", {
       if (idx !== -1) this.sessions[idx] = updated;
     },
 
+    /** Liga/desliga o modo Anything. Ligar pode falhar (falta motor, pasta de projeto): o erro sobe. */
+    async updateAnything(enabled: boolean) {
+      if (!this.currentId) return;
+      const a = this.currentSession?.anything;
+      const updated = await api.setSessionAnything(this.currentId, enabled, a?.target ?? null, a?.goal ?? null);
+      this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === updated.id);
+      if (idx !== -1) this.sessions[idx] = updated;
+    },
+
+    /** Sobrescreve só a opção "ferramentas completas" desta sessão; as outras opções ficam como estão. */
+    async updateAnythingFullTools(on: boolean) {
+      if (!this.currentId) return;
+      const a = this.currentSession?.anything;
+      const updated = await api.setSessionAnythingOptions(this.currentId, {
+        fullTools: on,
+        deep: a?.deep ?? null,
+        allowRun: a?.allow_run ?? null,
+      });
+      this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === updated.id);
+      if (idx !== -1) this.sessions[idx] = updated;
+    },
+
     async updateCliMode(mode: CliMode) {
       if (!this.currentId) return;
       const updated = await api.updateSessionCliMode(this.currentId, mode);

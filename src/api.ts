@@ -191,6 +191,16 @@ export interface Session {
   enabled_mcp_servers: string[] | null;
   /** Perfil de navegador do Playwright desta sessao; null = padrao. */
   browser_profile?: string | null;
+  /** Modo Anything (motor craft-anything) desta sessão. */
+  anything?: {
+    enabled: boolean;
+    target: string | null;
+    goal: string | null;
+    /** Sobrescrita desta sessão; null = segue o padrão global das Configurações. */
+    full_tools?: boolean | null;
+    deep?: boolean | null;
+    allow_run?: boolean | null;
+  };
   fable_method: boolean;
   persona_id: string | null;
   folder_id: string | null;
@@ -569,6 +579,12 @@ export const api = {
   ) => invoke<Session>("update_session_reasoning_effort", { id, effort }),
   updateSessionFableMethod: (id: string, enabled: boolean) =>
     invoke<Session>("update_session_fable_method", { id, enabled }),
+  setSessionAnything: (id: string, enabled: boolean, target: string | null, goal: string | null) =>
+    invoke<Session>("set_session_anything", { id, enabled, target, goal }),
+  setSessionAnythingOptions: (
+    id: string,
+    opts: { fullTools?: boolean | null; deep?: boolean | null; allowRun?: boolean | null },
+  ) => invoke<Session>("set_session_anything_options", { id, ...opts }),
   appendRealtimeTurn: (id: string, audioDataUri: string, replyText: string) =>
     invoke<ChatMessage[]>("append_realtime_turn", { id, audioDataUri, replyText }),
   updateSessionFixedContext: (id: string, enabled: boolean, tokens: number, rolling: boolean, blocks?: boolean) =>

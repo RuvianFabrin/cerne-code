@@ -73,6 +73,7 @@ pub fn create_session(
         // esse default só afeta sessão criada a partir de agora).
         enabled_mcp_servers: Some(Vec::new()),
         browser_profile: None,
+        anything: Default::default(),
         fable_method: false,
         persona_id: None,
         total_prompt_tokens: 0,
@@ -1019,6 +1020,15 @@ pub fn update_folder(app_data_dir: &PathBuf, id: &str, folder_id: Option<String>
         dir.join("session.json"),
         serde_json::to_string_pretty(&session)?,
     )?;
+    Ok(session)
+}
+
+/// Grava o estado do modo Anything da sessão e devolve a sessão atualizada.
+pub fn update_anything(app_data_dir: &PathBuf, id: &str, state: crate::models::AnythingState) -> Result<Session> {
+    let mut session = get_session(app_data_dir, id)?;
+    session.anything = state;
+    let dir = session_dir(app_data_dir, id);
+    std::fs::write(dir.join("session.json"), serde_json::to_string_pretty(&session)?)?;
     Ok(session)
 }
 

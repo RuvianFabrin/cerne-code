@@ -37,6 +37,16 @@ async function changeCliMode(mode: "agent" | "provider") {
   catch (error) { economyError.value = String(error); }
   finally { cliModeBusy.value = false; }
 }
+/** Modo Anything: ligar pode falhar (falta motor ou pasta de projeto); a mensagem vai ao usuário. */
+async function toggleAnything() {
+  const on = !sessionStore.currentSession?.anything?.enabled;
+  try {
+    await sessionStore.updateAnything(on);
+  } catch (e) {
+    window.alert(String(e));
+  }
+}
+
 async function toggleContextEconomy() {
   if (!sessionStore.currentSession || economyBusy.value) return;
   economyBusy.value = true;
@@ -1604,6 +1614,28 @@ watch(
             >
               <span class="msi">route</span>
               <span class="plus-menu-label">{{ $t("composer.fableLabel") }}</span>
+              <span class="plus-menu-switch"><span class="plus-menu-switch-dot" /></span>
+            </button>
+            <button
+              v-if="sessionStore.currentSession"
+              class="plus-menu-item plus-menu-toggle"
+              :class="{ 'plus-menu-toggle-on': sessionStore.currentSession.anything?.enabled }"
+              v-tooltip.right="$t('composer.anythingTooltip')"
+              @click="toggleAnything"
+            >
+              <span class="msi">travel_explore</span>
+              <span class="plus-menu-label">{{ $t("composer.anythingLabel") }}</span>
+              <span class="plus-menu-switch"><span class="plus-menu-switch-dot" /></span>
+            </button>
+            <button
+              v-if="sessionStore.currentSession?.anything?.enabled"
+              class="plus-menu-item plus-menu-toggle"
+              :class="{ 'plus-menu-toggle-on': sessionStore.currentSession.anything?.full_tools }"
+              v-tooltip.right="$t('composer.anythingFullTooltip')"
+              @click="sessionStore.updateAnythingFullTools(!sessionStore.currentSession.anything?.full_tools)"
+            >
+              <span class="msi">build</span>
+              <span class="plus-menu-label">{{ $t("composer.anythingFullLabel") }}</span>
               <span class="plus-menu-switch"><span class="plus-menu-switch-dot" /></span>
             </button>
             <button

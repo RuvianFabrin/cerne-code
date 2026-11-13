@@ -344,6 +344,9 @@ pub struct AppConfig {
     /// sessão nova que ligar o modo.
     #[serde(default)]
     pub long_horizon: LongHorizonConfig,
+    /// Opções do modo Anything (padrão global; cada sessão pode sobrescrever).
+    #[serde(default)]
+    pub anything: AnythingSettings,
     /// Overrides de binário/argumentos por CLI externo (`ProviderKind::Cli`)
     /// — ver `agent::external_cli::ExternalCliConfig`. Editável em
     /// Configurações; sem nenhum override, usa o nome default de cada CLI
@@ -517,6 +520,7 @@ impl Default for AppConfig {
             voicebox_tts_profile: String::new(),
             voicebox_stt_language: String::new(),
             long_horizon: LongHorizonConfig::default(),
+            anything: AnythingSettings::default(),
             external_cli: crate::agent::external_cli::ExternalCliConfig::default(),
             image_gen: ImageGenConfig::default(),
             video_gen: crate::media::VideoConfig::default(),
@@ -601,6 +605,62 @@ where
     }
 }
 
+/// Opções do modo Anything. Os padrões seguem o que o próprio craft-anything usa (Deep ligado,
+/// só o conjunto essencial de ferramentas, nada de executar o alvo sem perguntar). Tudo muda.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AnythingSettings {
+    /// Todas as ferramentas do motor (`--all-tools`). Desligado: só o essencial, e o modelo liga o
+    /// resto com `enable_toolset`. Ligado: mais opções, mais tokens por envio.
+    #[serde(default)]
+    pub full_tools: bool,
+    /// Deep: o motor pode ler código e arquivos do alvo (`--deep`). Desligado = clean room.
+    #[serde(default = "default_deep")]
+    pub deep: bool,
+    /// O motor pode rodar o alvo sem pedir confirmação própria (`--allow-run`). Arriscado.
+    #[serde(default)]
+    pub allow_run: bool,
+}
+
+fn default_deep() -> bool {
+    true
+}
+
+impl Default for AnythingSettings {
+    fn default() -> Self {
+        Self { full_tools: false, deep: true, allow_run: false }
+    }
+}
+
+/// Estado do modo Anything numa sessão. `target` é o caminho ou URL estudado; `goal` é a pergunta.
+/// As opções de sessão (`full_tools`, `deep`, `allow_run`) são `None` quando a sessão segue o padrão
+/// global das Configurações.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AnythingState {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub target: Option<String>,
+    #[serde(default)]
+    pub goal: Option<String>,
+    #[serde(default)]
+    pub full_tools: Option<bool>,
+    #[serde(default)]
+    pub deep: Option<bool>,
+    #[serde(default)]
+    pub allow_run: Option<bool>,
+}
+
+impl AnythingState {
+    /// Opções que valem para esta sessão: o que ela sobrescreveu, ou o padrão global.
+    pub fn effective(&self, global: &AnythingSettings) -> AnythingSettings {
+        AnythingSettings {
+            full_tools: self.full_tools.unwrap_or(global.full_tools),
+            deep: self.deep.unwrap_or(global.deep),
+            allow_run: self.allow_run.unwrap_or(global.allow_run),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
@@ -668,6 +728,10 @@ pub struct Session {
     /// `browser-profiles.json`). `None` = perfil padrao.
     #[serde(default)]
     pub browser_profile: Option<String>,
+    /// Modo Anything (ver `anything/`): estudo de um alvo com o motor craft-anything. Sessões antigas
+    /// desserializam com o modo desligado.
+    #[serde(default)]
+    pub anything: AnythingState,
     /// Método Fable (github.com/Sahir619/fable-method) injetado no system
     /// prompt quando ligado. É um loop de trabalho (classificar → agir →
     /// verificar) que ajuda modelos pequenos/médios a não abandonar tarefas;

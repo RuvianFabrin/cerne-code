@@ -1,4 +1,5 @@
 mod agent;
+mod anything;
 mod overlay;
 mod attachments;
 mod audio;
@@ -2899,6 +2900,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_config,
             set_config,
+            anything::anything_cli_status,
+            anything::anything_cli_install,
+            anything::anything_ghidra_status,
+            anything::anything_ghidra_install,
+            anything::anything_doctor,
+            anything::set_session_anything,
+            anything::set_session_anything_options,
             get_default_long_horizon_config,
             check_external_cli_readiness,
             list_external_cli_models,
