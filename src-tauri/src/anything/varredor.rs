@@ -1,45 +1,138 @@
-//! Varredora de pasta: percorre um diretório do projeto, acha os executáveis pela assinatura do arquivo
-//! (não pela extensão) e grava `.anything/alvos.json` com o caminho completo e o status de cada um.
-//! Ainda não decompila: o estudo de cada alvo é uma tarefa que a fila leva para a frente.
+//! Varredora de pasta: percorre um diretório do projeto e classifica cada arquivo pela assinatura
+//! (os primeiros bytes), não pela extensão, porque a extensão engana (DLL é PE, APK é zip, etc.).
+//! Grava `.anything/alvos.json` com o caminho completo, o formato, se o plano atual já suporta e o
+//! status. Arquivo que não reconhece fica só contado em `ignorados`.
+//! Não decompila: só monta a lista.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Pastas que a varredora não entra.
 const IGNORADAS: &[&str] = &[".anything", ".git", "node_modules", "target"];
 /// Profundidade máxima da varredura.
 const PROFUNDIDADE_MAXIMA: usize = 8;
+/// Quantas entradas de um zip são lidas para decidir se é APK ou JAR.
+const ENTRADAS_ZIP_LIDAS: usize = 5000;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Alvo {
     pub caminho: String,
     pub formato: String,
+    /// `nativo` (o plano atual já estuda) ou a fase em que o formato entra.
+    pub suporte: String,
     pub status: String,
 }
 
-/// Formato pela assinatura dos primeiros bytes. `None` = não é executável que o motor conhece.
-pub fn formato(cabecalho: &[u8]) -> Option<&'static str> {
-    if cabecalho.starts_with(b"MZ") {
-        Some("pe")
-    } else if cabecalho.starts_with(&[0x7f, b'E', b'L', b'F']) {
-        Some("elf")
-    } else if cabecalho.starts_with(&[0xfe, 0xed, 0xfa, 0xce]) || cabecalho.starts_with(&[0xfe, 0xed, 0xfa, 0xcf]) || cabecalho.starts_with(&[0xcf, 0xfa, 0xed, 0xfe]) || cabecalho.starts_with(&[0xce, 0xfa, 0xed, 0xfe]) {
-        Some("macho")
-    } else {
-        None
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct Varredura {
+    pub alvos: Vec<Alvo>,
+    pub ignorados: usize,
+}
+
+/// Formato pela assinatura do arquivo. `None` = não é um formato que o motor conhece.
+pub fn classificar(caminho: &Path) -> Option<&'static str> {
+    let mut cab = [0u8; 16];
+    let n = std::fs::File::open(caminho).ok()?.read(&mut cab).ok()?;
+    let c = &cab[..n];
+    if c.starts_with(b"MZ") {
+        return Some("pe");
+    }
+    if c.starts_with(&[0x7f, b'E', b'L', b'F']) {
+        return Some("elf");
+    }
+    let macho: [[u8; 4]; 4] = [[0xfe, 0xed, 0xfa, 0xce], [0xfe, 0xed, 0xfa, 0xcf], [0xce, 0xfa, 0xed, 0xfe], [0xcf, 0xfa, 0xed, 0xfe]];
+    if macho.iter().any(|m| c.starts_with(m)) {
+        return Some("macho");
+    }
+    if c.starts_with(&[0xca, 0xfe, 0xba, 0xbe]) {
+        // Mesmo começo para .class do Java e para Mach-O "fat". O que muda é o número que vem depois:
+        // no .class é a versão maior (45 a 70); no fat é a quantidade de arquiteturas (poucas).
+        if n >= 8 {
+            let maior = u16::from_be_bytes([c[6], c[7]]);
+            if (45..=70).contains(&maior) {
+                return Some("java-class");
+            }
+        }
+        return Some("macho-fat");
+    }
+    if c.starts_with(b"PK\x03\x04") {
+        return Some(classificar_zip(caminho));
+    }
+    if c.starts_with(b"dex\n") {
+        return Some("dex");
+    }
+    if c.starts_with(b"\0asm") {
+        return Some("wasm");
+    }
+    if c.starts_with(&[0xd4, 0xc3, 0xb2, 0xa1]) || c.starts_with(&[0xa1, 0xb2, 0xc3, 0xd4]) {
+        return Some("pcap");
+    }
+    if c.starts_with(&[0x0a, 0x0d, 0x0d, 0x0a]) {
+        return Some("pcapng");
+    }
+    if c.starts_with(b"SQLite format 3\0") {
+        return Some("sqlite");
+    }
+    if c.starts_with(&[b'7', b'z', 0xbc, 0xaf, 0x27, 0x1c]) {
+        return Some("7z");
+    }
+    // Sem assinatura conhecida: a extensão só decide o texto de web e o pacote do Electron.
+    match caminho.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+        Some("asar") => Some("asar"),
+        Some("js") | Some("mjs") | Some("html") | Some("htm") => Some("web"),
+        _ => None,
     }
 }
 
-/// Percorre `dir` e devolve os executáveis achados, em ordem de caminho (estável).
-pub fn varrer(dir: &Path) -> Result<Vec<Alvo>> {
-    let mut achados = Vec::new();
-    recolher(dir, 0, &mut achados)?;
-    achados.sort_by(|a, b| a.caminho.cmp(&b.caminho));
-    Ok(achados)
+/// Zip: APK tem `AndroidManifest.xml`; JAR tem `META-INF/MANIFEST.MF`; senão, zip comum.
+fn classificar_zip(caminho: &Path) -> &'static str {
+    let Ok(f) = std::fs::File::open(caminho) else { return "zip" };
+    let Ok(mut zip) = zip::ZipArchive::new(f) else { return "zip" };
+    let mut apk = false;
+    let mut jar = false;
+    for i in 0..zip.len().min(ENTRADAS_ZIP_LIDAS) {
+        if let Ok(e) = zip.by_index(i) {
+            match e.name() {
+                "AndroidManifest.xml" => apk = true,
+                "META-INF/MANIFEST.MF" => jar = true,
+                _ => {}
+            }
+        }
+    }
+    if apk {
+        "apk"
+    } else if jar {
+        "jar"
+    } else {
+        "zip"
+    }
 }
 
-fn recolher(dir: &Path, profundidade: usize, achados: &mut Vec<Alvo>) -> Result<()> {
+/// O que o plano atual já estuda. Só o nativo: o resto entra na fase 12.
+pub fn suporte(formato: &str) -> &'static str {
+    match formato {
+        "pe" | "elf" | "macho" | "macho-fat" => "nativo",
+        "java-class" | "jar" => "java (fase 12)",
+        "apk" | "dex" => "android (fase 12)",
+        "web" => "web (fase 12)",
+        "asar" => "electron (fase 12)",
+        "wasm" | "pcap" | "pcapng" | "sqlite" | "zip" | "7z" => "outro (fase 12)",
+        _ => "não suportado",
+    }
+}
+
+/// Percorre `dir` e classifica tudo. Ordem de caminho (estável).
+pub fn varrer(dir: &Path) -> Result<Varredura> {
+    let mut alvos = Vec::new();
+    let mut ignorados = 0usize;
+    recolher(dir, 0, &mut alvos, &mut ignorados)?;
+    alvos.sort_by(|a, b| a.caminho.cmp(&b.caminho));
+    Ok(Varredura { alvos, ignorados })
+}
+
+fn recolher(dir: &Path, profundidade: usize, alvos: &mut Vec<Alvo>, ignorados: &mut usize) -> Result<()> {
     if profundidade > PROFUNDIDADE_MAXIMA {
         return Ok(());
     }
@@ -48,29 +141,27 @@ fn recolher(dir: &Path, profundidade: usize, achados: &mut Vec<Alvo>) -> Result<
         let nome = entrada.file_name().to_string_lossy().to_string();
         if caminho.is_dir() {
             if !IGNORADAS.contains(&nome.as_str()) {
-                recolher(&caminho, profundidade + 1, achados)?;
+                recolher(&caminho, profundidade + 1, alvos, ignorados)?;
             }
         } else if caminho.is_file() {
-            if let Some(f) = ler_formato(&caminho) {
-                achados.push(Alvo { caminho: caminho.display().to_string(), formato: f.to_string(), status: "fazer".into() });
+            match classificar(&caminho) {
+                Some(f) => alvos.push(Alvo {
+                    caminho: caminho.display().to_string(),
+                    formato: f.to_string(),
+                    suporte: suporte(f).to_string(),
+                    status: "fazer".into(),
+                }),
+                None => *ignorados += 1,
             }
         }
     }
     Ok(())
 }
 
-fn ler_formato(caminho: &Path) -> Option<&'static str> {
-    use std::io::Read;
-    let mut cabecalho = [0u8; 4];
-    let mut f = std::fs::File::open(caminho).ok()?;
-    let n = f.read(&mut cabecalho).ok()?;
-    formato(&cabecalho[..n])
-}
-
 /// Grava `alvos.json` na pasta `.anything` do projeto (escrita atômica).
-pub fn gravar(root: &Path, alvos: &[Alvo]) -> Result<PathBuf> {
+pub fn gravar(root: &Path, varredura: &Varredura) -> Result<PathBuf> {
     let caminho = root.join(".anything").join("alvos.json");
-    let texto = serde_json::to_string_pretty(&serde_json::json!({ "alvos": alvos }))?;
+    let texto = serde_json::to_string_pretty(&serde_json::json!({ "alvos": varredura.alvos, "ignorados": varredura.ignorados }))?;
     super::workspace::escrever_atomico(&caminho, &texto)?;
     Ok(caminho)
 }
@@ -95,37 +186,103 @@ mod tests {
         d
     }
 
-    #[test]
-    fn formats_come_from_the_file_signature_not_the_extension() {
-        assert_eq!(formato(b"MZ\x90\x00"), Some("pe"));
-        assert_eq!(formato(&[0x7f, b'E', b'L', b'F']), Some("elf"));
-        assert_eq!(formato(&[0xcf, 0xfa, 0xed, 0xfe]), Some("macho"));
-        assert_eq!(formato(b"texto"), None);
+    fn zip_com(caminho: &Path, nomes: &[&str]) {
+        use std::io::Write;
+        let f = std::fs::File::create(caminho).unwrap();
+        let mut zw = zip::ZipWriter::new(f);
+        let opts = zip::write::SimpleFileOptions::default();
+        for n in nomes {
+            zw.start_file(*n, opts).unwrap();
+            zw.write_all(b"x").unwrap();
+        }
+        zw.finish().unwrap();
     }
 
     #[test]
-    fn the_sweep_finds_binaries_and_skips_the_workspace_folder() {
+    fn dll_is_pe_whatever_the_extension() {
+        let d = tmp("dll");
+        let p = d.join("biblioteca.dll");
+        std::fs::write(&p, b"MZ\x90\x00").unwrap();
+        assert_eq!(classificar(&p), Some("pe"));
+        assert_eq!(suporte("pe"), "nativo");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn java_class_and_fat_macho_share_a_magic_but_are_told_apart() {
+        let d = tmp("cafe");
+        let classe = d.join("Main.class");
+        std::fs::write(&classe, [0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 52]).unwrap();
+        let fat = d.join("universal");
+        std::fs::write(&fat, [0xca, 0xfe, 0xba, 0xbe, 0, 0, 0, 2]).unwrap();
+        assert_eq!(classificar(&classe), Some("java-class"));
+        assert_eq!(classificar(&fat), Some("macho-fat"));
+        assert_eq!(suporte("java-class"), "java (fase 12)");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn apk_jar_and_plain_zip_are_separated_by_their_entries() {
+        let d = tmp("zip");
+        let apk = d.join("app.apk");
+        let jar = d.join("lib.jar");
+        let zip = d.join("dados.zip");
+        zip_com(&apk, &["AndroidManifest.xml", "classes.dex"]);
+        zip_com(&jar, &["META-INF/MANIFEST.MF", "A.class"]);
+        zip_com(&zip, &["texto.txt"]);
+        assert_eq!(classificar(&apk), Some("apk"));
+        assert_eq!(classificar(&jar), Some("jar"));
+        assert_eq!(classificar(&zip), Some("zip"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn other_systems_formats_are_recognised() {
+        let d = tmp("outros");
+        let casos: Vec<(&str, Vec<u8>, &str)> = vec![
+            ("classes.dex", b"dex\n035\0".to_vec(), "dex"),
+            ("modulo.wasm", b"\0asm\x01\0\0\0".to_vec(), "wasm"),
+            ("captura.pcap", vec![0xd4, 0xc3, 0xb2, 0xa1, 0, 0], "pcap"),
+            ("banco.db", b"SQLite format 3\0".to_vec(), "sqlite"),
+            ("app.asar", b"\x04\0\0\0".to_vec(), "asar"),
+        ];
+        for (nome, bytes, esperado) in casos {
+            let p = d.join(nome);
+            std::fs::write(&p, &bytes).unwrap();
+            assert_eq!(classificar(&p), Some(esperado), "{nome}");
+        }
+        let web = d.join("index.html");
+        std::fs::write(&web, b"<!doctype html>").unwrap();
+        assert_eq!(classificar(&web), Some("web"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn unknown_files_are_counted_not_listed() {
         let d = tmp("varre");
         std::fs::create_dir_all(d.join("sub")).unwrap();
         std::fs::create_dir_all(d.join(".anything")).unwrap();
         std::fs::write(d.join("app.exe"), b"MZ0000").unwrap();
-        std::fs::write(d.join("sub").join("lib.bin"), [0x7f, b'E', b'L', b'F', 0]).unwrap();
+        std::fs::write(d.join("sub").join("lib.so"), [0x7f, b'E', b'L', b'F', 0]).unwrap();
         std::fs::write(d.join("leia.txt"), b"nada").unwrap();
         std::fs::write(d.join(".anything").join("oculto.exe"), b"MZ").unwrap();
-        let achados = varrer(&d).unwrap();
-        assert_eq!(achados.len(), 2);
-        assert!(achados.iter().all(|a| a.status == "fazer"));
-        assert!(achados.iter().all(|a| !a.caminho.contains(".anything")));
+        let v = varrer(&d).unwrap();
+        assert_eq!(v.alvos.len(), 2);
+        assert_eq!(v.ignorados, 1, "o txt conta como ignorado; a pasta .anything nem entra");
+        assert!(v.alvos.iter().all(|a| a.status == "fazer"));
         let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
     fn the_list_is_saved_inside_the_project_and_read_back() {
         let d = tmp("grava");
-        let alvos = vec![Alvo { caminho: "C:/p/a.exe".into(), formato: "pe".into(), status: "fazer".into() }];
-        let caminho = gravar(&d, &alvos).unwrap();
+        let v = Varredura {
+            alvos: vec![Alvo { caminho: "C:/p/a.exe".into(), formato: "pe".into(), suporte: "nativo".into(), status: "fazer".into() }],
+            ignorados: 3,
+        };
+        let caminho = gravar(&d, &v).unwrap();
         assert!(caminho.ends_with(Path::new(".anything").join("alvos.json")));
-        assert_eq!(ler(&d).unwrap(), alvos);
+        assert_eq!(ler(&d).unwrap(), v.alvos);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

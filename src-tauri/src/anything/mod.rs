@@ -115,12 +115,12 @@ pub async fn anything_plan(state: State<'_, AppState>, id: String, modo: String,
 
 /// Varre a pasta do projeto da sessão, acha os executáveis e grava `.anything/alvos.json`.
 #[tauri::command]
-pub fn anything_varrer(state: State<AppState>, id: String) -> Result<Vec<varredor::Alvo>, String> {
+pub fn anything_varrer(state: State<AppState>, id: String) -> Result<varredor::Varredura, String> {
     let sessao = sessions::get_session(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
     let raiz = std::path::PathBuf::from(sessao.project_root.ok_or("a sessão não tem pasta de projeto")?);
-    let alvos = varredor::varrer(&raiz).map_err(|e| e.to_string())?;
-    varredor::gravar(&raiz, &alvos).map_err(|e| e.to_string())?;
-    Ok(alvos)
+    let v = varredor::varrer(&raiz).map_err(|e| e.to_string())?;
+    varredor::gravar(&raiz, &v).map_err(|e| e.to_string())?;
+    Ok(v)
 }
 
 /// Lista de alvos já salva em `.anything/alvos.json` da sessão (vazia se ainda não varreu).
