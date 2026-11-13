@@ -90,3 +90,32 @@ mod tests {
         assert_eq!(nome_arquivo(11), "modulo_12");
     }
 }
+
+/// Seções que um arquivo de módulo ou de relatório precisa ter. Devolve as que faltam.
+pub fn secoes_faltando(texto: &str, esperadas: &[&str]) -> Vec<String> {
+    esperadas.iter().filter(|s| !texto.lines().any(|l| l.trim() == **s)).map(|s| format!("falta a seção '{s}'")).collect()
+}
+
+/// Seções de um módulo.
+pub const SECOES_MODULO: &[&str] = &["## Nome", "## O que faz", "## Funções principais", "## Dúvidas em aberto"];
+/// Seções do relatório.
+pub const SECOES_RELATORIO: &[&str] = &["## Resposta ao objetivo", "## Como funciona", "## Observado", "## Inferido", "## Sem resposta"];
+
+#[cfg(test)]
+mod secoes_tests {
+    use super::*;
+
+    #[test]
+    fn missing_sections_are_listed() {
+        let texto = "## Nome\nx\n## O que faz\ny\n";
+        let f = secoes_faltando(texto, SECOES_MODULO);
+        assert_eq!(f.len(), 2);
+        assert!(f[0].contains("Funções principais"));
+    }
+
+    #[test]
+    fn a_complete_report_has_no_missing_sections() {
+        let texto = SECOES_RELATORIO.join("\ncorpo\n");
+        assert!(secoes_faltando(&texto, SECOES_RELATORIO).is_empty());
+    }
+}

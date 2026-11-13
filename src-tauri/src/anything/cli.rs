@@ -120,7 +120,8 @@ pub fn status(store: &Path) -> CliStatus {
     CliStatus { found: true, path: Some(exe.display().to_string()), origin: Some(origin.to_string()), version, matches_pin }
 }
 
-/// SHA-256 de um arquivo, em hexadecimal minúsculo.
+/// SHA-256 de um arquivo, em hexadecimal minúsculo. (Usada pelos testes; a conferência de download é `download_verified`.)
+#[allow(dead_code)]
 pub fn sha256_file(path: &Path) -> Result<String> {
     let mut file = std::fs::File::open(path).with_context(|| format!("não consegui abrir {}", path.display()))?;
     let mut hasher = Sha256::new();

@@ -420,3 +420,127 @@ mod real {
         println!("REPETIDO: {}", serde_json::to_string_pretty(&r2).unwrap());
     }
 }
+
+/// Modo Anything, fase 10: quando todas as funções estão prontas ou bloqueadas, acrescenta a
+/// síntese à fila: um item por módulo (agrupado pelo grafo) e um de relatório no fim. Não mexe no que
+/// já existe, então pode ser chamada de novo sem duplicar. Devolve quantos itens entraram.
+pub fn acrescentar_sintese(ws: &Workspace, objetivo: &str) -> Result<usize> {
+    use super::modulos::{componentes, dividir, nome_arquivo};
+    use super::prompts::{preencher, MODULO, RELATORIO};
+    let caminho = ws.root.join("tarefas.json");
+    if !caminho.is_file() {
+        return Ok(0);
+    }
+    let existentes = task_queue::parse_tasks(&std::fs::read_to_string(&caminho)?)
+        .map_err(|e| anyhow!("tarefas.json não confere: {e}"))?;
+    let funcoes_abertas = existentes.iter().any(|t| t["tipo"] == "funcao" && t["status"] == task_queue::STATUS_FAZER);
+    let ja_tem_relatorio = existentes.iter().any(|t| t["tipo"] == "relatorio");
+    if funcoes_abertas || ja_tem_relatorio {
+        return Ok(0);
+    }
+    let bloqueadas: Vec<String> = existentes
+        .iter()
+        .filter(|t| t["tipo"] == "funcao" && t["status"] == super::STATUS_BLOQUEADA)
+        .filter_map(|t| t["endereco"].as_str().map(str::to_string))
+        .collect();
+    let prontas: Vec<String> = existentes
+        .iter()
+        .filter(|t| t["tipo"] == "funcao" && t["status"] == super::STATUS_PRONTO)
+        .filter_map(|t| t["endereco"].as_str().map(str::to_string))
+        .collect();
+    if prontas.is_empty() {
+        return Ok(0);
+    }
+    let conjunto: HashSet<&String> = prontas.iter().collect();
+    let mut arestas: HashMap<String, Vec<String>> = HashMap::new();
+    let mut linhas: HashMap<String, String> = HashMap::new();
+    for e in &prontas {
+        if let Some(f) = ws.ler_ficha(e)? {
+            arestas.insert(e.clone(), f.chama.iter().filter(|c| conjunto.contains(c)).cloned().collect());
+            linhas.insert(e.clone(), format!("{} ({}): {}", e, f.nome_sugerido, f.resumo));
+        }
+    }
+    let mut novas = Vec::new();
+    let mut nomes_modulos = Vec::new();
+    for (i, grupo) in componentes(&prontas, &arestas).into_iter().flat_map(dividir).enumerate() {
+        let arquivo = nome_arquivo(i);
+        let linhas_grupo: Vec<String> = grupo.iter().filter_map(|e| linhas.get(e).cloned()).collect();
+        let descricao = preencher(MODULO, &[
+            ("modulo", &arquivo),
+            ("objetivo", objetivo),
+            ("linhas", &linhas_grupo.join("\n")),
+            ("arquivo", &arquivo),
+        ]);
+        novas.push(json!({
+            "id": format!("mod-{arquivo}"),
+            "status": task_queue::STATUS_FAZER,
+            "titulo": format!("Módulo {arquivo}"),
+            "descricao": descricao,
+            "tipo": "modulo",
+            "enderecos": grupo,
+            "saida": format!("modulos/{arquivo}.md"),
+        }));
+        nomes_modulos.push(format!("modulos/{arquivo}.md"));
+    }
+    let descricao_relatorio = preencher(RELATORIO, &[
+        ("objetivo", objetivo),
+        ("resumos_modulos", &nomes_modulos.join("\n")),
+        ("bloqueadas", &if bloqueadas.is_empty() { "nenhuma".to_string() } else { bloqueadas.join(", ") }),
+    ]);
+    novas.push(json!({
+        "id": "relatorio",
+        "status": task_queue::STATUS_FAZER,
+        "titulo": "Relatório final",
+        "descricao": descricao_relatorio,
+        "tipo": "relatorio",
+        "saida": "relatorio.md",
+        "bloqueadas": bloqueadas,
+    }));
+    let (tarefas, n) = mesclar(existentes, novas);
+    escrever_atomico(&caminho, &task_queue::serialize_tasks(&tarefas))?;
+    Ok(n)
+}
+
+#[cfg(test)]
+mod sintese_tests {
+    use super::*;
+
+    fn ficha(endereco: &str, chama: &[&str]) -> String {
+        serde_json::json!({
+            "endereco": endereco, "nome_original": "FUN", "nome_sugerido": format!("f{endereco}"),
+            "resumo": "faz algo", "o_que_faz": "faz", "chama": chama,
+            "base": "observado", "confianca": "alta"
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn synthesis_adds_modules_and_a_report_once() {
+        let d = std::env::temp_dir().join(format!("anything-sintese-{}", uuid::Uuid::new_v4()));
+        let ws = Workspace::new(&d);
+        ws.ensure().unwrap();
+        // 0x1 chama 0x2; 0x3 está sozinha. Duas componentes: dois módulos.
+        for (e, chama) in [("0x1", vec!["0x2"]), ("0x2", vec![]), ("0x3", vec![])] {
+            let f = super::super::workspace::parse_ficha(&ficha(e, &chama)).unwrap();
+            ws.gravar_ficha(&f).unwrap();
+        }
+        let tarefas = vec![
+            json!({"id": "fn-0x1", "status": "pronto", "tipo": "funcao", "endereco": "0x1", "saida": "funcoes/0x1.json"}),
+            json!({"id": "fn-0x2", "status": "pronto", "tipo": "funcao", "endereco": "0x2", "saida": "funcoes/0x2.json"}),
+            json!({"id": "fn-0x3", "status": "bloqueada", "tipo": "funcao", "endereco": "0x3", "saida": "funcoes/0x3.json"}),
+        ];
+        std::fs::write(ws.root.join("tarefas.json"), task_queue::serialize_tasks(&tarefas)).unwrap();
+
+        let n = acrescentar_sintese(&ws, "objetivo de teste").unwrap();
+        assert_eq!(n, 2, "um módulo (0x1 e 0x2 estão ligadas) e o relatório; a bloqueada não entra em módulo");
+        let lidas = task_queue::parse_tasks(&std::fs::read_to_string(ws.root.join("tarefas.json")).unwrap()).unwrap();
+        let modulos = lidas.iter().filter(|t| t["tipo"] == "modulo").count();
+        assert_eq!(modulos, 1);
+        let relatorio = lidas.iter().find(|t| t["tipo"] == "relatorio").unwrap();
+        assert_eq!(relatorio["bloqueadas"], json!(["0x3"]), "a bloqueada aparece no relatório");
+
+        // Segunda chamada: nada novo.
+        assert_eq!(acrescentar_sintese(&ws, "objetivo de teste").unwrap(), 0);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}

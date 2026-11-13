@@ -233,6 +233,38 @@ fn checar_ficha(root: &std::path::Path, saida: &str, endereco: &str) -> std::res
     Ok(())
 }
 
+/// Confere a saída de qualquer item do modo Anything, pelo tipo: função (ficha), módulo ou relatório
+/// (arquivo Markdown com as seções pedidas).
+fn checar_item(root: &std::path::Path, item: &serde_json::Value) -> std::result::Result<(), Vec<String>> {
+    let saida = item.get("saida").and_then(|v| v.as_str()).unwrap_or_default();
+    match item.get("tipo").and_then(|v| v.as_str()) {
+        Some("funcao") => checar_ficha(root, saida, item.get("endereco").and_then(|v| v.as_str()).unwrap_or_default()),
+        Some("modulo") => checar_markdown(root, saida, crate::anything::modulos::SECOES_MODULO),
+        Some("relatorio") => checar_markdown(root, saida, crate::anything::modulos::SECOES_RELATORIO),
+        _ => Err(vec!["tipo de item desconhecido".to_string()]),
+    }
+}
+
+/// Arquivo Markdown do modo Anything: existe e tem as seções pedidas.
+fn checar_markdown(root: &std::path::Path, saida: &str, secoes: &[&str]) -> std::result::Result<(), Vec<String>> {
+    let caminho = root.join(".anything").join(saida);
+    let texto = std::fs::read_to_string(&caminho).map_err(|_| vec![format!("o arquivo ainda não existe em {saida}")])?;
+    let faltando = crate::anything::modulos::secoes_faltando(&texto, secoes);
+    if faltando.is_empty() {
+        Ok(())
+    } else {
+        Err(faltando)
+    }
+}
+
+/// Lê a ficha que o modelo gravou, confere de novo e a registra no `indice.json` (a ficha é reescrita
+/// no formato do modo; o índice é o que os resumos de outras funções leem).
+fn registrar_no_indice(root: &std::path::Path, saida: &str) -> Result<()> {
+    let texto = std::fs::read_to_string(root.join(".anything").join(saida))?;
+    let ficha = crate::anything::workspace::parse_ficha(&texto).map_err(|e| anyhow::anyhow!(e.join("; ")))?;
+    crate::anything::workspace::Workspace::new(root).gravar_ficha(&ficha)
+}
+
 /// Modo Anything, item de função: o modelo estuda e grava a ficha, e o código confere. Até
 /// `CONFIRM_RETRIES` correções; se ainda não passar, o item vai para `bloqueada` com o motivo e a
 /// fila segue (diferente das tarefas comuns, que param). Não há memória nem compactação por item:
@@ -249,13 +281,31 @@ async fn item_de_funcao(
 ) -> Result<()> {
     let item_id = tasks[idx].get("id").and_then(|v| v.as_str()).unwrap_or("?").to_string();
     let saida = tasks[idx].get("saida").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-    let endereco = tasks[idx].get("endereco").and_then(|v| v.as_str()).unwrap_or_default().to_string();
     emit_status(app, session_id, "processing", Some(item_id.clone()), None);
-    run_turn(app, session_id, prompt.to_string()).await?;
+    // Resumo de uma linha de cada função que esta chama (já estudadas): é o que o item precisa saber.
+    let chama: Vec<String> = tasks[idx]
+        .get("chama")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let mut texto = prompt.to_string();
+    if !chama.is_empty() {
+        let linhas = crate::anything::workspace::Workspace::new(root).resumos(&chama)?;
+        texto.push_str("
+
+Funções que esta chama, já estudadas:
+");
+        texto.push_str(&linhas.join("
+"));
+    }
+    run_turn(app, session_id, texto).await?;
     let mut erros;
     for tentativa in 0..=CONFIRM_RETRIES {
-        match checar_ficha(root, &saida, &endereco) {
+        match checar_item(root, &tasks[idx]) {
             Ok(()) => {
+                if tasks[idx].get("tipo").and_then(|v| v.as_str()) == Some("funcao") {
+                    registrar_no_indice(root, &saida)?;
+                }
                 task_queue::set_status(tasks, idx, crate::anything::STATUS_PRONTO);
                 write_tasks(app_data_dir, session_id, Some(arquivo), tasks)?;
                 emit_status(app, session_id, "confirmed", Some(item_id), None);
@@ -296,6 +346,16 @@ pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
         let mut tasks = task_queue::parse_tasks(&tasks_json)?;
 
         let Some(idx) = task_queue::find_next_fazer(&tasks) else {
+            // Modo Anything: quando as funções acabaram, a síntese (módulos e relatório) entra na fila.
+            if let (Some(_), Some(root)) = (arquivo_anything.as_deref(), sessao.project_root.as_deref()) {
+                let ws = crate::anything::workspace::Workspace::new(std::path::Path::new(root));
+                let objetivo = sessao.anything.goal.clone().unwrap_or_default();
+                match crate::anything::plan::acrescentar_sintese(&ws, &objetivo) {
+                    Ok(n) if n > 0 => continue,
+                    Ok(_) => {}
+                    Err(e) => eprintln!("[anything] síntese não foi acrescentada: {e}"),
+                }
+            }
             emit_status(&app, &session_id, "finished", None, None);
             return Ok(());
         };
@@ -306,7 +366,7 @@ pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
         let prompt_text = task_queue::item_prompt_text(&tasks[idx])?;
         // Modo Anything, item de função: a ficha é conferida pelo código, não pela pergunta "feito?".
         if let (Some(arquivo), Some(root)) = (arquivo_anything.as_deref(), sessao.project_root.as_deref()) {
-            if tasks[idx].get("tipo").and_then(|v| v.as_str()) == Some("funcao") {
+            if matches!(tasks[idx].get("tipo").and_then(|v| v.as_str()), Some("funcao") | Some("modulo") | Some("relatorio")) {
                 item_de_funcao(&app, &session_id, std::path::Path::new(root), arquivo, &app_data_dir, &mut tasks, idx, &prompt_text).await?;
                 continue;
             }

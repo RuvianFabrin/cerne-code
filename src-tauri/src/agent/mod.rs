@@ -2987,7 +2987,7 @@ async fn run_turn_external_cli(
             format!("{}\n\n---\n\n{}", anterior.trim(), resumo)
         };
         let _ = sessions::write_long_horizon_projeto(&app_data_dir, &session_id, &novo_projeto);
-        if let Ok(updated) = sessions::finalize_long_horizon_turn(
+        if let Ok(_updated) = sessions::finalize_long_horizon_turn(
             &app_data_dir,
             &session_id,
             "sucesso",
@@ -2995,7 +2995,6 @@ async fn run_turn_external_cli(
             state.config.lock().unwrap().long_horizon.teto_falha_repetida,
             false,
         ) {
-            session = updated;
         }
     }
 

@@ -1,3 +1,4 @@
+#![allow(dead_code)] // até a fase 10 ligar este módulo à fila; tirar este allow quando ligar.
 //! Modo Anything, fase 09: os prompts ficam em arquivos `.md` (`anything/prompts/`), carregados aqui
 //! com `include_str!`. Cada modelo tem marcadores `{nome}` preenchidos por [`preencher`].
 
