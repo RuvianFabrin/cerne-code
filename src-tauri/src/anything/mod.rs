@@ -3,6 +3,7 @@
 
 pub mod cli;
 pub mod doctor;
+pub mod lote;
 pub mod ghidra;
 pub mod modulos;
 pub mod plan;
@@ -121,6 +122,24 @@ pub fn anything_varrer(state: State<AppState>, id: String) -> Result<varredor::V
     let v = varredor::varrer(&raiz).map_err(|e| e.to_string())?;
     varredor::gravar(&raiz, &v).map_err(|e| e.to_string())?;
     Ok(v)
+}
+
+/// Estudo em lote: planeja cada alvo nativo de `alvos.json` que está `fazer`, cada um na própria pasta
+/// em `.anything\alvos\`. Um erro num alvo não para os outros. `modo` é `completo` ou `objetivo`.
+#[tauri::command]
+pub async fn anything_planejar_lote(state: State<'_, AppState>, id: String, modo: String, teto: usize) -> Result<Vec<lote::Resultado>, String> {
+    let app_data = state.app_data_dir.clone();
+    let sessao = sessions::get_session(&app_data, &id).map_err(|e| e.to_string())?;
+    if !sessao.anything.enabled {
+        return Err("ligue o modo Anything nesta sessão antes de planejar".into());
+    }
+    let raiz = std::path::PathBuf::from(sessao.project_root.clone().ok_or("a sessão não tem pasta de projeto")?);
+    let objetivo = sessao.anything.goal.clone().unwrap_or_default();
+    let (exe, _) = cli::find_cli(&cli::store_dir(&app_data)).ok_or("o motor não está instalado")?;
+    let global = state.config.lock().unwrap().anything.clone();
+    let opts = sessao.anything.effective(&global);
+    let flags = vec![if opts.deep { "--deep".to_string() } else { "--clean-room".to_string() }];
+    lote::planejar_lote(&exe, &raiz, &objetivo, &modo, teto, flags).await.map_err(|e| e.to_string())
 }
 
 /// Lista de alvos já salva em `.anything/alvos.json` da sessão (vazia se ainda não varreu).

@@ -2910,6 +2910,7 @@ pub fn run() {
             anything::anything_plan,
             anything::anything_varrer,
             anything::anything_alvos,
+            anything::anything_planejar_lote,
             get_default_long_horizon_config,
             check_external_cli_readiness,
             list_external_cli_models,
