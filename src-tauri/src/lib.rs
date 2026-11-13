@@ -2911,6 +2911,8 @@ pub fn run() {
             anything::anything_varrer,
             anything::anything_alvos,
             anything::anything_fontes,
+            anything::set_session_anything_final_prompt,
+            anything::anything_final_prompt_default,
             anything::anything_fonte_adicionar,
             anything::anything_fonte_remover,
             anything::anything_planejar_lote,

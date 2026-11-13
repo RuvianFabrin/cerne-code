@@ -619,6 +619,12 @@ pub struct AnythingSettings {
     /// O motor pode rodar o alvo sem pedir confirmação própria (`--allow-run`). Arriscado.
     #[serde(default)]
     pub allow_run: bool,
+    /// Depois do relatório, a fila gera a "entrega final" (o prompt abaixo). Ligado por padrão.
+    #[serde(default = "default_deep")]
+    pub final_enabled: bool,
+    /// Prompt da entrega final. Vazio = o texto padrão do Cerne (`anything/prompts/entrega.md`).
+    #[serde(default)]
+    pub final_prompt: String,
 }
 
 fn default_deep() -> bool {
@@ -627,7 +633,7 @@ fn default_deep() -> bool {
 
 impl Default for AnythingSettings {
     fn default() -> Self {
-        Self { full_tools: false, deep: true, allow_run: false }
+        Self { full_tools: false, deep: true, allow_run: false, final_enabled: true, final_prompt: String::new() }
     }
 }
 
@@ -648,6 +654,9 @@ pub struct AnythingState {
     pub deep: Option<bool>,
     #[serde(default)]
     pub allow_run: Option<bool>,
+    /// Prompt da entrega final só desta sessão. `None` = segue o das Configurações.
+    #[serde(default)]
+    pub final_prompt: Option<String>,
 }
 
 impl AnythingState {
@@ -657,6 +666,8 @@ impl AnythingState {
             full_tools: self.full_tools.unwrap_or(global.full_tools),
             deep: self.deep.unwrap_or(global.deep),
             allow_run: self.allow_run.unwrap_or(global.allow_run),
+            final_enabled: global.final_enabled,
+            final_prompt: self.final_prompt.clone().filter(|p| !p.trim().is_empty()).unwrap_or_else(|| global.final_prompt.clone()),
         }
     }
 }

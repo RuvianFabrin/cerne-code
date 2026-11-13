@@ -251,14 +251,47 @@ fn checar_ficha(root: &std::path::Path, saida: &str, endereco: &str) -> std::res
 fn checar_item(root: &std::path::Path, item: &serde_json::Value) -> std::result::Result<(), Vec<String>> {
     let saida = item.get("saida").and_then(|v| v.as_str()).unwrap_or_default();
     if !crate::anything::workspace::saida_segura(saida) {
-        return Err(vec![format!("o caminho de saída '{saida}' não é permitido; use funcoes/, modulos/ ou relatorio.md")]);
+        return Err(vec![format!("o caminho de saída '{saida}' não é permitido; use funcoes/, modulos/, entrega/ ou relatorio.md")]);
     }
     match item.get("tipo").and_then(|v| v.as_str()) {
         Some("funcao") => checar_ficha(root, saida, item.get("endereco").and_then(|v| v.as_str()).unwrap_or_default()),
         Some("modulo") => checar_markdown(root, saida, crate::anything::modulos::SECOES_MODULO),
         Some("relatorio") => checar_markdown(root, saida, crate::anything::modulos::SECOES_RELATORIO),
+        Some("entrega") => checar_entrega(root, saida),
         _ => Err(vec!["tipo de item desconhecido".to_string()]),
     }
+}
+
+/// Entrega final: o prompt é livre (a pessoa pode pedir qualquer coisa), então a única conferência é o
+/// `entrega/LEIAME.md` existir e não estar vazio. Os outros arquivos ficam por conta de quem escreveu o prompt.
+fn checar_entrega(root: &std::path::Path, saida: &str) -> std::result::Result<(), Vec<String>> {
+    let texto = std::fs::read_to_string(root.join(saida)).map_err(|_| vec![format!("o arquivo ainda não existe em {saida}")])?;
+    if texto.trim().is_empty() {
+        return Err(vec![format!("o arquivo {saida} está vazio")]);
+    }
+    Ok(())
+}
+
+/// Texto do item de entrega, montado agora: o prompt da pessoa (ou o padrão) com os marcadores
+/// preenchidos, mais o que o código exige sempre (onde gravar e o LEIAME), que ela não consegue apagar.
+fn texto_da_entrega(app_data_dir: &PathBuf, session_id: &str, root: &std::path::Path, global: &crate::models::AnythingSettings) -> String {
+    use crate::anything::prompts::{preencher, prompt_da_entrega};
+    let sessao = sessions::get_session(app_data_dir, session_id).ok();
+    let opts = sessao.as_ref().map(|s| s.anything.effective(global)).unwrap_or_else(|| global.clone());
+    let objetivo = crate::anything::plan::objetivo_ou_padrao(&sessao.and_then(|s| s.anything.goal).unwrap_or_default());
+    let relatorio = root.join("relatorio.md").display().to_string();
+    let mut modulos: Vec<String> = std::fs::read_dir(root.join("modulos"))
+        .map(|d| d.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "md")).map(|p| format!("  - {}", p.display())).collect())
+        .unwrap_or_default();
+    modulos.sort();
+    let pasta = root.join("entrega").display().to_string();
+    let corpo = preencher(
+        &prompt_da_entrega(&opts.final_prompt),
+        &[("objetivo", &objetivo), ("relatorio", &relatorio), ("modulos", &modulos.join("\n")), ("pasta", &pasta)],
+    );
+    format!(
+        "{corpo}\n\nRegras fixas desta etapa:\n- Grave tudo que entregar dentro da pasta {pasta} (crie a pasta se faltar), usando a ferramenta de escrever arquivo.\n- Por último, grave {pasta}\\LEIAME.md dizendo em poucas linhas o que foi gerado e o que ficou por fazer. Sem esse arquivo a etapa não está concluída."
+    )
 }
 
 /// Arquivo Markdown do modo Anything: existe e tem as seções pedidas.
@@ -311,7 +344,10 @@ async fn item_de_funcao(
         crate::anything::workspace::Workspace { root: root.to_path_buf() }.resumos(&chama)?
     };
     let tipo = tasks[idx].get("tipo").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-    let mut texto = if tipo == "funcao" {
+    let mut texto = if tipo == "entrega" {
+        let global = app.state::<crate::AppState>().config.lock().unwrap().anything.clone();
+        texto_da_entrega(app_data_dir, session_id, root, &global)
+    } else if tipo == "funcao" {
         // Modelo pequeno não adivinha o formato da ficha: o prompt completo (regras + passos + exemplo)
         // é montado aqui, e não a descrição curta que o plano gravou.
         use crate::anything::prompts::{preencher, FUNCAO, SISTEMA};
@@ -406,7 +442,8 @@ pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
                 let ws_dir = arquivo.parent().unwrap_or(arquivo);
                 let ws = crate::anything::workspace::Workspace { root: ws_dir.to_path_buf() };
                 let objetivo = sessao.anything.goal.clone().unwrap_or_default();
-                match crate::anything::plan::acrescentar_sintese(&ws, &objetivo) {
+                let com_entrega = app.state::<crate::AppState>().config.lock().unwrap().anything.final_enabled;
+                match crate::anything::plan::acrescentar_sintese(&ws, &objetivo, com_entrega) {
                     Ok(n) if n > 0 => continue,
                     Ok(_) => {}
                     Err(e) => eprintln!("[anything] síntese não foi acrescentada: {e}"),
@@ -428,7 +465,7 @@ pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
         let prompt_text = task_queue::item_prompt_text(&tasks[idx])?;
         // Modo Anything, item de função: a ficha é conferida pelo código, não pela pergunta "feito?".
         if let Some(arquivo) = arquivo_anything.as_deref() {
-            if matches!(tasks[idx].get("tipo").and_then(|v| v.as_str()), Some("funcao") | Some("modulo") | Some("relatorio")) {
+            if matches!(tasks[idx].get("tipo").and_then(|v| v.as_str()), Some("funcao") | Some("modulo") | Some("relatorio") | Some("entrega")) {
                 let ws_dir = arquivo.parent().unwrap_or(arquivo);
                 item_de_funcao(&app, &session_id, ws_dir, arquivo, &app_data_dir, &mut tasks, idx, &prompt_text).await?;
                 continue;
@@ -799,5 +836,27 @@ mod anything_checagem_tests {
         assert!(anything_workspace_dir(true, None).is_none());
         let d = anything_workspace_dir(true, Some("C:/projeto-que-nao-existe")).unwrap();
         assert!(d.ends_with(".anything"));
+    }
+}
+
+#[cfg(test)]
+mod entrega_final_tests {
+    use super::*;
+
+    #[test]
+    fn the_final_delivery_only_needs_a_non_empty_leiame() {
+        let d = std::env::temp_dir().join(format!("anything-entrega-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(d.join("entrega")).unwrap();
+        assert!(checar_entrega(&d, "entrega/LEIAME.md").unwrap_err()[0].contains("ainda não existe"));
+        std::fs::write(d.join("entrega").join("LEIAME.md"), "  \n").unwrap();
+        assert!(checar_entrega(&d, "entrega/LEIAME.md").unwrap_err()[0].contains("vazio"));
+        std::fs::write(d.join("entrega").join("LEIAME.md"), "gerei o esqueleto").unwrap();
+        assert!(checar_entrega(&d, "entrega/LEIAME.md").is_ok());
+        // O item de entrega passa pela mesma conferência de caminho seguro das outras.
+        let item = serde_json::json!({"tipo": "entrega", "saida": "entrega/LEIAME.md"});
+        assert!(checar_item(&d, &item).is_ok());
+        let fora = serde_json::json!({"tipo": "entrega", "saida": "../LEIAME.md"});
+        assert!(checar_item(&d, &fora).is_err());
+        std::fs::remove_dir_all(d).ok();
     }
 }

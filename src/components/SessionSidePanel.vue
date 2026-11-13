@@ -16,6 +16,8 @@ import { useSessionStore } from "../stores/session";
 import ContextGauge from "./ContextGauge.vue";
 import ProcessHistoryModal from "./ProcessHistoryModal.vue";
 import AnythingSetupDialog from "./AnythingSetupDialog.vue";
+import AnythingFinalPrompt from "./AnythingFinalPrompt.vue";
+import { useProviderStore } from "../stores/provider";
 
 // Painel lateral da sessão atual (espelha o painel direito do Claude Desktop):
 // ambiente (pastas e permissão), contexto, MCPs ativos, alterações do git,
@@ -38,6 +40,18 @@ const anythingIgnored = ref(0);
 const anythingMsg = ref("");
 const anythingBusy = ref(false);
 const anythingSetupVisible = ref(false);
+const providerStore = useProviderStore();
+const anythingFinalDefault = ref("");
+api.anythingFinalDefault().then((t) => (anythingFinalDefault.value = t)).catch(() => {});
+// O que vale quando a sessão não escreveu o próprio: o texto das Configurações, ou o padrão do Cerne.
+const anythingFinalFallback = computed(() => providerStore.config?.anything?.final_prompt?.trim() || anythingFinalDefault.value);
+async function saveSessionFinal(value: string) {
+  try {
+    await sessionStore.updateAnythingFinal(value);
+  } catch (e) {
+    anythingMsg.value = String(e);
+  }
+}
 // Processo aberto no modal de historico (guardado por id, pra acompanhar a saida ao vivo).
 const selectedJobId = ref<string | null>(null);
 const selectedJob = computed(() => jobs.value.find((j) => j.id === selectedJobId.value) ?? null);
@@ -390,6 +404,15 @@ function statusLabel(status: string): string {
           <span class="row-text">{{ a.caminho }}</span>
           <span class="row-status">{{ a.formato }} · {{ anythingStatusLabel(a.status) }}</span>
         </div>
+        <details class="sp-final">
+          <summary>{{ $t("anythingFinal.sessionTitle") }}</summary>
+          <AnythingFinalPrompt
+            :value="session?.anything?.final_prompt || ''"
+            :fallback="anythingFinalFallback"
+            :reset-label="$t('anythingFinal.useGlobal')"
+            @save="saveSessionFinal"
+          />
+        </details>
         <p v-if="anythingIgnored" class="sp-empty">{{ $t("sidePanel.anything.ignored", { n: anythingIgnored }) }}</p>
       </div>
     </section>

@@ -19,6 +19,7 @@
     "unknown": "unknown",
     "close": "Close"
   },
+  "anythingFinal": {"title": "Final delivery prompt", "enabledLabel": "Generate a final delivery after the report", "enabledHint": "At the end of the study the queue runs one more step with the prompt below (by default: recreate the program in Rust with GPUI). Turn it off to stop at the report.", "placeholders": "You can use {'{objetivo}'}, {'{relatorio}'}, {'{modulos}'} and {'{pasta}'}; they are filled in when the step runs. The step always saves into the entrega folder and ends with a LEIAME.md.", "saved": "Saved", "reset": "Reset to default", "useGlobal": "Use the global prompt", "sessionTitle": "Final delivery of this session"},
   "anythingSetup": {"title": "Anything mode: engine and tools", "hint": "The mode needs the craft-anything engine, plus Ghidra and Java 21 to study native programs. Nothing is downloaded until you click.", "checking": "Checking…", "installEngine": "Install engine", "installGhidra": "Install Ghidra and Java (~740 MB)", "working": "Working…", "noPercent": "The engine does not report progress for this step; it can take several minutes.", "allReady": "Everything is ready.", "recheck": "Check again", "close": "Close", "open": "Check / install engine and Ghidra", "items": {"motor": "Engine (craft-anything)", "ghidra": "Ghidra (decompiler)", "java_ghidra": "Java 21 for Ghidra", "disco": "Disk space", "servidor_mcp": "Engine tool server", "deep": "Deep mode", "doctor_motor": "Engine self-check"}},
   "sidePanel": {
     "browser": {

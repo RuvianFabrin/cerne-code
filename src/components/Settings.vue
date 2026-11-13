@@ -21,6 +21,7 @@ import VideoSettings from "./VideoSettings.vue";
 import LlamaForkRow from "./LlamaForkRow.vue";
 import ModelBrowserDialog from "./ModelBrowserDialog.vue";
 import AnythingSetupDialog from "./AnythingSetupDialog.vue";
+import AnythingFinalPrompt from "./AnythingFinalPrompt.vue";
 import { MCP_CONNECTORS, type McpConnector } from "../content/mcpConnectors";
 import { executablePickerExtensions, llamaServerPlaceholder } from "../platform";
 
@@ -954,6 +955,13 @@ async function importSessionsBackup() {
 // usuario (2026-09-15). Os CONTEUDOS dos paineis nao mudaram.
 const activeSection = ref('language');
 const anythingSetupVisible = ref(false);
+const anythingFinalDefault = ref("");
+api.anythingFinalDefault().then((t) => (anythingFinalDefault.value = t)).catch(() => {});
+function saveAnythingFinal(value: string) {
+  if (!providerStore.config?.anything) return;
+  providerStore.config.anything.final_prompt = value;
+  providerStore.saveConfig();
+}
 const csQuery = ref('');
 
 /** Item da navegacao: ou tem `chave` (i18n) ou `texto` (literal, ex: nome de
@@ -1808,6 +1816,14 @@ watch(csGruposVisiveis, (grupos) => {
         <div class="field">
           <label><input type="checkbox" v-model="providerStore.config.anything.allow_run" @change="providerStore.saveConfig" /> {{ $t("settings.anythingAllowRunLabel") }}</label>
           <small class="hint">{{ $t("settings.anythingAllowRunHint") }}</small>
+        </div>
+        <div class="field">
+          <label><input type="checkbox" v-model="providerStore.config.anything.final_enabled" @change="providerStore.saveConfig" /> {{ $t("anythingFinal.enabledLabel") }}</label>
+          <small class="hint">{{ $t("anythingFinal.enabledHint") }}</small>
+        </div>
+        <div class="field">
+          <label>{{ $t("anythingFinal.title") }}</label>
+          <AnythingFinalPrompt :value="providerStore.config.anything.final_prompt || ''" :fallback="anythingFinalDefault" @save="saveAnythingFinal" />
         </div>
       </section>
 

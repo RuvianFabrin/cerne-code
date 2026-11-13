@@ -80,6 +80,21 @@ pub async fn set_session_anything_options(
     sessions::update_anything(&app_data, &id, estado).map_err(|e| e.to_string())
 }
 
+/// Troca o prompt da entrega final só desta sessão. Texto vazio (ou `None`) volta a seguir as Configurações.
+#[tauri::command]
+pub fn set_session_anything_final_prompt(state: State<AppState>, id: String, prompt: Option<String>) -> Result<Session, String> {
+    let session = sessions::get_session(&state.app_data_dir, &id).map_err(|e| e.to_string())?;
+    let prompt = prompt.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+    let estado = AnythingState { final_prompt: prompt, ..session.anything.clone() };
+    sessions::update_anything(&state.app_data_dir, &id, estado).map_err(|e| e.to_string())
+}
+
+/// Texto padrão da entrega final, para o botão "Redefinir" e para mostrar quando nada foi escrito.
+#[tauri::command]
+pub fn anything_final_prompt_default() -> String {
+    prompts::ENTREGA.trim().to_string()
+}
+
 /// Ghidra e Java nesta máquina, pelo `engines-list` do motor. Não instala nada.
 #[tauri::command]
 pub async fn anything_ghidra_status(state: State<'_, AppState>) -> Result<Option<ghidra::GhidraState>, String> {

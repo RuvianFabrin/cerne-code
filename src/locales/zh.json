@@ -19,6 +19,7 @@
     "unknown": "未知",
     "close": "关闭"
   },
+  "anythingFinal": {"title": "最终交付提示词", "enabledLabel": "在报告之后生成最终交付", "enabledHint": "研究结束时，队列会用下面的提示词再运行一步（默认：用 Rust 和 GPUI 重建该程序）。关闭后将停在报告。", "placeholders": "可以使用 {'{objetivo}'}、{'{relatorio}'}、{'{modulos}'} 和 {'{pasta}'}；这一步运行时会自动填入。这一步总是保存到 entrega 文件夹，并以 LEIAME.md 结尾。", "saved": "已保存", "reset": "恢复默认", "useGlobal": "使用全局提示词", "sessionTitle": "本会话的最终交付"},
   "anythingSetup": {"title": "Anything 模式：引擎与工具", "hint": "该模式需要 craft-anything 引擎；分析原生程序还需要 Ghidra 和 Java 21。点击之前不会下载任何内容。", "checking": "检查中…", "installEngine": "安装引擎", "installGhidra": "安装 Ghidra 和 Java（约 740 MB）", "working": "处理中…", "noPercent": "引擎不报告此步骤的进度，可能需要几分钟。", "allReady": "全部就绪。", "recheck": "重新检查", "close": "关闭", "open": "检查 / 安装引擎和 Ghidra", "items": {"motor": "引擎 (craft-anything)", "ghidra": "Ghidra（反编译器）", "java_ghidra": "Ghidra 使用的 Java 21", "disco": "磁盘空间", "servidor_mcp": "引擎工具服务器", "deep": "Deep 模式", "doctor_motor": "引擎自检"}},
   "sidePanel": {
     "browser": {

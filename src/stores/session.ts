@@ -936,6 +936,14 @@ export const useSessionStore = defineStore("session", {
     },
 
     /** Sobrescreve só a opção "ferramentas completas" desta sessão; as outras opções ficam como estão. */
+    async updateAnythingFinal(prompt: string) {
+      if (!this.currentId) return;
+      const updated = await api.setSessionAnythingFinal(this.currentId, prompt.trim() ? prompt : null);
+      this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === updated.id);
+      if (idx !== -1) this.sessions[idx] = updated;
+    },
+
     async updateAnythingFullTools(on: boolean) {
       if (!this.currentId) return;
       const a = this.currentSession?.anything;

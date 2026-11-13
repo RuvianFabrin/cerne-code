@@ -119,7 +119,7 @@ mod tests {
 
     #[test]
     fn each_option_becomes_its_engine_flag() {
-        let tudo = AnythingSettings { full_tools: true, deep: false, allow_run: true };
+        let tudo = AnythingSettings { full_tools: true, deep: false, allow_run: true, ..Default::default() };
         let p = preset(Path::new("C:/cli.exe"), Path::new("C:/p"), "s", &tudo);
         assert!(p.args.contains(&"--clean-room".to_string()) && !p.args.contains(&"--deep".to_string()));
         assert!(p.args.contains(&"--allow-run".to_string()));
@@ -130,7 +130,7 @@ mod tests {
 
     #[test]
     fn session_overrides_win_over_the_global_default() {
-        let global = AnythingSettings { full_tools: false, deep: true, allow_run: false };
+        let global = AnythingSettings { full_tools: false, deep: true, allow_run: false, ..Default::default() };
         let sem = AnythingState { enabled: true, ..Default::default() };
         assert_eq!(sem.effective(&global), global, "sem sobrescrita, vale o global");
         let com = AnythingState { full_tools: Some(true), deep: Some(false), ..sem.clone() };
@@ -180,5 +180,22 @@ mod raiz_tests {
     fn old_sessions_without_attached_folders_still_use_project_root() {
         assert_eq!(escolher_raiz(&[], Some("C:/antigo")).as_deref(), Some("C:/antigo"));
         assert_eq!(escolher_raiz(&[], None), None);
+    }
+}
+
+#[cfg(test)]
+mod entrega_opcoes_tests {
+    use super::*;
+
+    #[test]
+    fn the_session_prompt_wins_over_the_global_one_and_blank_falls_back() {
+        let global = AnythingSettings { final_prompt: "do global".into(), ..Default::default() };
+        let segue = AnythingState::default();
+        assert_eq!(segue.effective(&global).final_prompt, "do global");
+        let propria = AnythingState { final_prompt: Some("da sessão".into()), ..Default::default() };
+        assert_eq!(propria.effective(&global).final_prompt, "da sessão");
+        let em_branco = AnythingState { final_prompt: Some("   ".into()), ..Default::default() };
+        assert_eq!(em_branco.effective(&global).final_prompt, "do global");
+        assert!(AnythingSettings::default().final_enabled, "ligada por padrão, como o craft-anything");
     }
 }

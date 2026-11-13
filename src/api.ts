@@ -94,7 +94,7 @@ export interface AppConfig {
   voicebox_stt_language: string;
   long_horizon: LongHorizonConfig;
   /** Opções globais do modo Anything (padrão; cada sessão pode sobrescrever). */
-  anything?: { full_tools: boolean; deep: boolean; allow_run: boolean };
+  anything?: { full_tools: boolean; deep: boolean; allow_run: boolean; final_enabled: boolean; final_prompt: string };
   external_cli: ExternalCliConfig;
   image_gen: ImageGenConfig;
   video_gen: VideoGenConfig;
@@ -240,6 +240,8 @@ export interface Session {
     full_tools?: boolean | null;
     deep?: boolean | null;
     allow_run?: boolean | null;
+    /** Prompt da entrega final só desta sessão; null = segue as Configurações. */
+    final_prompt?: string | null;
   };
   fable_method: boolean;
   persona_id: string | null;
@@ -633,6 +635,9 @@ export const api = {
   anythingTargets: (id: string) => invoke<AnythingTarget[]>("anything_alvos", { id }),
   anythingPlanBatch: (id: string, modo: string, teto: number) =>
     invoke<AnythingBatchResult[]>("anything_planejar_lote", { id, modo, teto }),
+  anythingFinalDefault: () => invoke<string>("anything_final_prompt_default"),
+  setSessionAnythingFinal: (id: string, prompt: string | null) =>
+    invoke<Session>("set_session_anything_final_prompt", { id, prompt }),
   setSessionAnythingOptions: (
     id: string,
     opts: { fullTools?: boolean | null; deep?: boolean | null; allowRun?: boolean | null },

@@ -324,7 +324,7 @@ pub fn saida_segura(saida: &str) -> bool {
     if !p.components().all(|c| matches!(c, Component::Normal(_))) {
         return false;
     }
-    saida == "relatorio.md" || saida.starts_with("funcoes/") || saida.starts_with("modulos/")
+    saida == "relatorio.md" || saida.starts_with("funcoes/") || saida.starts_with("modulos/") || saida.starts_with("entrega/")
 }
 
 #[cfg(test)]
@@ -336,6 +336,8 @@ mod saida_tests {
         assert!(saida_segura("funcoes/0x401000.json"));
         assert!(saida_segura("modulos/modulo_01.md"));
         assert!(saida_segura("relatorio.md"));
+        assert!(saida_segura("entrega/LEIAME.md"));
+        assert!(!saida_segura("entrega/../fora.md"));
         assert!(!saida_segura("../fora.json"));
         assert!(!saida_segura("funcoes/../../fora.json"));
         assert!(!saida_segura("/etc/passwd"));

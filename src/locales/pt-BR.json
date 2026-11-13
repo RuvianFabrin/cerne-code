@@ -19,6 +19,7 @@
     "unknown": "desconhecido",
     "close": "Fechar"
   },
+  "anythingFinal": {"title": "Prompt da entrega final", "enabledLabel": "Gerar uma entrega final depois do relatório", "enabledHint": "No fim do estudo a fila roda mais uma etapa com o prompt abaixo (por padrão: recriar o programa em Rust com GPUI). Desligue para parar no relatório.", "placeholders": "Dá para usar {'{objetivo}'}, {'{relatorio}'}, {'{modulos}'} e {'{pasta}'}; são preenchidos quando a etapa roda. A etapa sempre grava na pasta entrega e termina com um LEIAME.md.", "saved": "Salvo", "reset": "Redefinir para o padrão", "useGlobal": "Usar o prompt global", "sessionTitle": "Entrega final desta sessão"},
   "anythingSetup": {"title": "Modo Anything: motor e ferramentas", "hint": "O modo precisa do motor craft-anything e, para estudar programas nativos, do Ghidra e do Java 21. Nada é baixado até você clicar.", "checking": "Verificando…", "installEngine": "Instalar o motor", "installGhidra": "Instalar Ghidra e Java (~740 MB)", "working": "Trabalhando…", "noPercent": "O motor não informa o progresso desta etapa; pode levar vários minutos.", "allReady": "Tudo pronto.", "recheck": "Verificar de novo", "close": "Fechar", "open": "Verificar / instalar motor e Ghidra", "items": {"motor": "Motor (craft-anything)", "ghidra": "Ghidra (decompilador)", "java_ghidra": "Java 21 para o Ghidra", "disco": "Espaço em disco", "servidor_mcp": "Servidor de ferramentas do motor", "deep": "Modo Deep", "doctor_motor": "Autoverificação do motor"}},
   "sidePanel": {
     "browser": {

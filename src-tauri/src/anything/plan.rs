@@ -437,7 +437,7 @@ mod real {
 /// Modo Anything, fase 10: quando todas as funções estão prontas ou bloqueadas, acrescenta a
 /// síntese à fila: um item por módulo (agrupado pelo grafo) e um de relatório no fim. Não mexe no que
 /// já existe, então pode ser chamada de novo sem duplicar. Devolve quantos itens entraram.
-pub fn acrescentar_sintese(ws: &Workspace, objetivo: &str) -> Result<usize> {
+pub fn acrescentar_sintese(ws: &Workspace, objetivo: &str, com_entrega: bool) -> Result<usize> {
     use super::modulos::{agrupar, nome_arquivo};
     use super::prompts::{preencher, MODULO, RELATORIO};
     let objetivo = &objetivo_ou_padrao(objetivo);
@@ -510,6 +510,18 @@ pub fn acrescentar_sintese(ws: &Workspace, objetivo: &str) -> Result<usize> {
         "saida": "relatorio.md",
         "bloqueadas": bloqueadas,
     }));
+    if com_entrega {
+        // O texto do prompt não é gravado aqui: é montado na hora de rodar, com o que a pessoa tiver
+        // escrito (Configurações ou sessão) naquele momento.
+        novas.push(json!({
+            "id": "entrega",
+            "status": task_queue::STATUS_FAZER,
+            "titulo": "Entrega final",
+            "descricao": "Entrega final: o prompt é montado ao rodar, a partir das Configurações do modo Anything.",
+            "tipo": "entrega",
+            "saida": "entrega/LEIAME.md",
+        }));
+    }
     let (tarefas, n) = mesclar(existentes, novas);
     escrever_atomico(&caminho, &task_queue::serialize_tasks(&tarefas))?;
     Ok(n)
@@ -545,7 +557,7 @@ mod sintese_tests {
         ];
         std::fs::write(ws.root.join("tarefas.json"), task_queue::serialize_tasks(&tarefas)).unwrap();
 
-        let n = acrescentar_sintese(&ws, "objetivo de teste").unwrap();
+        let n = acrescentar_sintese(&ws, "objetivo de teste", false).unwrap();
         assert_eq!(n, 2, "um módulo (0x1 e 0x2 estão ligadas) e o relatório; a bloqueada não entra em módulo");
         let lidas = task_queue::parse_tasks(&std::fs::read_to_string(ws.root.join("tarefas.json")).unwrap()).unwrap();
         let modulos = lidas.iter().filter(|t| t["tipo"] == "modulo").count();
@@ -554,7 +566,7 @@ mod sintese_tests {
         assert_eq!(relatorio["bloqueadas"], json!(["0x3"]), "a bloqueada aparece no relatório");
 
         // Segunda chamada: nada novo.
-        assert_eq!(acrescentar_sintese(&ws, "objetivo de teste").unwrap(), 0);
+        assert_eq!(acrescentar_sintese(&ws, "objetivo de teste", false).unwrap(), 0);
         let _ = std::fs::remove_dir_all(&d);
     }
 }
