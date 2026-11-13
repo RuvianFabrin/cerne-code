@@ -4,7 +4,9 @@
 pub mod cli;
 pub mod doctor;
 pub mod ghidra;
+pub mod modulos;
 pub mod plan;
+pub mod prompts;
 pub mod session;
 pub mod workspace;
 
