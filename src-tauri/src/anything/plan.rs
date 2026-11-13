@@ -248,15 +248,16 @@ pub fn ordenar(nodos: &[String], arestas: &HashMap<String, Vec<String>>) -> Vec<
 }
 
 /// Um item de função para o `tarefas.json`. A descrição é provisória: a fase 09 põe o prompt definitivo.
-pub fn tarefa_de_funcao(endereco: &str, nome: &str, chama: &[String], goal: &str) -> Value {
+pub fn tarefa_de_funcao(alvo: &str, endereco: &str, nome: &str, chama: &[String], goal: &str) -> Value {
     json!({
         "id": format!("fn-{endereco}"),
         "status": task_queue::STATUS_FAZER,
         "titulo": format!("Estudar {nome} ({endereco})"),
         "descricao": format!(
-            "Estude a função {endereco} ({nome}) para o objetivo: {goal}. Decompile e salve a ficha em funcoes/{endereco}.json."
+            "Estude a função {endereco} ({nome}) do arquivo {alvo} para o objetivo: {goal}. Decompile e salve a ficha em funcoes/{endereco}.json."
         ),
         "tipo": "funcao",
+        "alvo": alvo,
         "endereco": endereco,
         "chama": chama,
         "saida": format!("funcoes/{endereco}.json"),
@@ -305,7 +306,7 @@ pub async fn planejar(ctx: &Contexto<'_>, ws: &Workspace, modo: &str, teto: usiz
         .iter()
         .map(|e| {
             let nome = nomes.get(e).map(String::as_str).unwrap_or("sem nome");
-            tarefa_de_funcao(e, nome, arestas.get(e).map(Vec::as_slice).unwrap_or(&[]), goal)
+            tarefa_de_funcao(ctx.alvo, e, nome, arestas.get(e).map(Vec::as_slice).unwrap_or(&[]), goal)
         })
         .collect();
 
@@ -375,7 +376,7 @@ mod tests {
 
     #[test]
     fn a_task_has_the_fields_the_queue_reads() {
-        let t = tarefa_de_funcao("0x401000", "calcula_dano", &nodos(&["0x401200"]), "dano");
+        let t = tarefa_de_funcao("C:/alvo.exe", "0x401000", "calcula_dano", &nodos(&["0x401200"]), "dano");
         assert_eq!(t["id"], "fn-0x401000");
         assert_eq!(t["status"], "fazer");
         assert_eq!(t["saida"], "funcoes/0x401000.json");

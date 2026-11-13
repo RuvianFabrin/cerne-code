@@ -195,16 +195,22 @@ async fn run_turn(app: &AppHandle, session_id: &str, text: String) -> Result<()>
 /// Arquivo da fila de uma sessão do modo Anything: `.anything/tarefas.json` do projeto. `None` quando o
 /// modo está desligado ou a sessão não tem pasta de projeto (a fila segue o arquivo escolhido).
 pub fn anything_queue_file(session: &crate::models::Session) -> Option<PathBuf> {
-    anything_queue_path(session.anything.enabled, session.project_root.as_deref())
+    anything_workspace_dir(session.anything.enabled, session.project_root.as_deref()).map(|d| d.join("tarefas.json"))
 }
 
-/// A regra de [`anything_queue_file`], sem a sessão inteira (para testar).
-pub fn anything_queue_path(enabled: bool, project_root: Option<&str>) -> Option<PathBuf> {
+/// Pasta onde está o `tarefas.json` da fila: a `.anything` do projeto, se o arquivo está lá; senão a
+/// pasta do primeiro alvo `planejado` do lote. Sem nada planejado, a `.anything` (a leitura avisa que
+/// o arquivo não existe). `None` com o modo desligado ou sem pasta de projeto.
+pub fn anything_workspace_dir(enabled: bool, project_root: Option<&str>) -> Option<PathBuf> {
     if !enabled {
         return None;
     }
     let root = PathBuf::from(project_root?);
-    Some(crate::anything::workspace::Workspace::new(&root).root.join("tarefas.json"))
+    let base = crate::anything::workspace::pasta_do_modo(&root);
+    if base.join("tarefas.json").is_file() {
+        return Some(base);
+    }
+    Some(crate::anything::lote::proximo_planejado(&root).map(|(_, _, pasta)| pasta).unwrap_or(base))
 }
 
 fn read_tasks(app_data_dir: &PathBuf, session_id: &str, anything: Option<&std::path::Path>) -> Result<String> {
@@ -224,7 +230,7 @@ fn write_tasks(app_data_dir: &PathBuf, session_id: &str, anything: Option<&std::
 /// Confere a ficha de um item de função pelo código: o arquivo existe, passa na validação e é da
 /// função do item. Devolve as frases de erro que voltam ao modelo.
 fn checar_ficha(root: &std::path::Path, saida: &str, endereco: &str) -> std::result::Result<(), Vec<String>> {
-    let caminho = root.join(".anything").join(saida);
+    let caminho = root.join(saida);
     let texto = std::fs::read_to_string(&caminho).map_err(|_| vec![format!("a ficha ainda não existe em {saida}")])?;
     let ficha = crate::anything::workspace::parse_ficha(&texto)?;
     if ficha.endereco != endereco {
@@ -250,7 +256,7 @@ fn checar_item(root: &std::path::Path, item: &serde_json::Value) -> std::result:
 
 /// Arquivo Markdown do modo Anything: existe e tem as seções pedidas.
 fn checar_markdown(root: &std::path::Path, saida: &str, secoes: &[&str]) -> std::result::Result<(), Vec<String>> {
-    let caminho = root.join(".anything").join(saida);
+    let caminho = root.join(saida);
     let texto = std::fs::read_to_string(&caminho).map_err(|_| vec![format!("o arquivo ainda não existe em {saida}")])?;
     let faltando = crate::anything::modulos::secoes_faltando(&texto, secoes);
     if faltando.is_empty() {
@@ -264,9 +270,9 @@ fn checar_markdown(root: &std::path::Path, saida: &str, secoes: &[&str]) -> std:
 /// no formato do modo; o índice é o que os resumos de outras funções leem).
 fn registrar_no_indice(root: &std::path::Path, saida: &str) -> Result<()> {
     anyhow::ensure!(crate::anything::workspace::saida_segura(saida), "saída insegura: {saida}");
-    let texto = std::fs::read_to_string(root.join(".anything").join(saida))?;
+    let texto = std::fs::read_to_string(root.join(saida))?;
     let ficha = crate::anything::workspace::parse_ficha(&texto).map_err(|e| anyhow::anyhow!(e.join("; ")))?;
-    crate::anything::workspace::Workspace::new(root).gravar_ficha(&ficha)
+    crate::anything::workspace::Workspace { root: root.to_path_buf() }.gravar_ficha(&ficha)
 }
 
 /// Modo Anything, item de função: o modelo estuda e grava a ficha, e o código confere. Até
@@ -294,7 +300,7 @@ async fn item_de_funcao(
         .unwrap_or_default();
     let mut texto = prompt.to_string();
     if !chama.is_empty() {
-        let linhas = crate::anything::workspace::Workspace::new(root).resumos(&chama)?;
+        let linhas = crate::anything::workspace::Workspace { root: root.to_path_buf() }.resumos(&chama)?;
         texto.push_str("
 
 Funções que esta chama, já estudadas:
@@ -351,13 +357,20 @@ pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
 
         let Some(idx) = task_queue::find_next_fazer(&tasks) else {
             // Modo Anything: quando as funções acabaram, a síntese (módulos e relatório) entra na fila.
-            if let (Some(_), Some(root)) = (arquivo_anything.as_deref(), sessao.project_root.as_deref()) {
-                let ws = crate::anything::workspace::Workspace::new(std::path::Path::new(root));
+            if let Some(arquivo) = arquivo_anything.as_deref() {
+                let ws_dir = arquivo.parent().unwrap_or(arquivo);
+                let ws = crate::anything::workspace::Workspace { root: ws_dir.to_path_buf() };
                 let objetivo = sessao.anything.goal.clone().unwrap_or_default();
                 match crate::anything::plan::acrescentar_sintese(&ws, &objetivo) {
                     Ok(n) if n > 0 => continue,
                     Ok(_) => {}
                     Err(e) => eprintln!("[anything] síntese não foi acrescentada: {e}"),
+                }
+                // Lote: este alvo terminou. Se há outro planejado, a fila segue para ele.
+                if let Some(root) = sessao.project_root.as_deref() {
+                    if crate::anything::lote::concluir_alvo(std::path::Path::new(root), ws_dir) {
+                        continue;
+                    }
                 }
             }
             emit_status(&app, &session_id, "finished", None, None);
@@ -369,9 +382,10 @@ pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
             .unwrap_or_else(|| "?".to_string());
         let prompt_text = task_queue::item_prompt_text(&tasks[idx])?;
         // Modo Anything, item de função: a ficha é conferida pelo código, não pela pergunta "feito?".
-        if let (Some(arquivo), Some(root)) = (arquivo_anything.as_deref(), sessao.project_root.as_deref()) {
+        if let Some(arquivo) = arquivo_anything.as_deref() {
             if matches!(tasks[idx].get("tipo").and_then(|v| v.as_str()), Some("funcao") | Some("modulo") | Some("relatorio")) {
-                item_de_funcao(&app, &session_id, std::path::Path::new(root), arquivo, &app_data_dir, &mut tasks, idx, &prompt_text).await?;
+                let ws_dir = arquivo.parent().unwrap_or(arquivo);
+                item_de_funcao(&app, &session_id, ws_dir, arquivo, &app_data_dir, &mut tasks, idx, &prompt_text).await?;
                 continue;
             }
         }
@@ -688,7 +702,7 @@ mod anything_checagem_tests {
     #[test]
     fn a_missing_ficha_is_reported_by_path() {
         let d = raiz_com_ficha(None);
-        let e = checar_ficha(&d, "funcoes/0x401000.json", "0x401000").unwrap_err();
+        let e = checar_ficha(&d.join(".anything"), "funcoes/0x401000.json", "0x401000").unwrap_err();
         assert!(e[0].contains("ainda não existe"));
         std::fs::remove_dir_all(d).ok();
     }
@@ -696,14 +710,14 @@ mod anything_checagem_tests {
     #[test]
     fn a_valid_ficha_for_the_right_function_passes() {
         let d = raiz_com_ficha(Some(FICHA));
-        assert!(checar_ficha(&d, "funcoes/0x401000.json", "0x401000").is_ok());
+        assert!(checar_ficha(&d.join(".anything"), "funcoes/0x401000.json", "0x401000").is_ok());
         std::fs::remove_dir_all(d).ok();
     }
 
     #[test]
     fn a_ficha_for_another_function_is_refused() {
         let d = raiz_com_ficha(Some(FICHA));
-        let e = checar_ficha(&d, "funcoes/0x401000.json", "0x999999").unwrap_err();
+        let e = checar_ficha(&d.join(".anything"), "funcoes/0x401000.json", "0x999999").unwrap_err();
         assert!(e[0].contains("0x999999"));
         std::fs::remove_dir_all(d).ok();
     }
@@ -711,16 +725,16 @@ mod anything_checagem_tests {
     #[test]
     fn a_broken_ficha_returns_the_validation_messages() {
         let d = raiz_com_ficha(Some(r#"{"endereco":"0x401000"}"#));
-        let e = checar_ficha(&d, "funcoes/0x401000.json", "0x401000").unwrap_err();
+        let e = checar_ficha(&d.join(".anything"), "funcoes/0x401000.json", "0x401000").unwrap_err();
         assert!(e.iter().any(|m| m.contains("falta o campo")));
         std::fs::remove_dir_all(d).ok();
     }
 
     #[test]
     fn only_anything_sessions_use_the_project_queue() {
-        assert!(anything_queue_path(false, Some("C:/projeto")).is_none());
-        assert!(anything_queue_path(true, None).is_none());
-        let f = anything_queue_path(true, Some("C:/projeto")).unwrap();
-        assert!(f.ends_with(std::path::Path::new(".anything").join("tarefas.json")));
+        assert!(anything_workspace_dir(false, Some("C:/projeto")).is_none());
+        assert!(anything_workspace_dir(true, None).is_none());
+        let d = anything_workspace_dir(true, Some("C:/projeto-que-nao-existe")).unwrap();
+        assert!(d.ends_with(".anything"));
     }
 }

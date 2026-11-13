@@ -51,6 +51,30 @@ pub async fn planejar_lote(exe: &Path, root: &Path, goal: &str, modo: &str, teto
     Ok(resultados)
 }
 
+/// Primeiro alvo com status `planejado`: índice, o alvo e a pasta dele em `.anything/alvos/`.
+pub fn proximo_planejado(root: &Path) -> Option<(usize, Alvo, PathBuf)> {
+    let alvos = varredor::ler(root).ok()?;
+    alvos.into_iter().enumerate().find(|(_, a)| a.status == "planejado").map(|(i, a)| {
+        let pasta = pasta_do_alvo(root, i, &a.caminho);
+        (i, a, pasta)
+    })
+}
+
+/// Marca como `feito` o alvo cuja pasta é `ws_dir`. Devolve `true` só se havia um alvo assim e ainda
+/// existe outro `planejado` para a fila seguir; `false` em qualquer outro caso (a fila termina).
+pub fn concluir_alvo(root: &Path, ws_dir: &Path) -> bool {
+    let Ok(mut alvos) = varredor::ler(root) else { return false };
+    let Some(i) = alvos.iter().enumerate().position(|(i, a)| pasta_do_alvo(root, i, &a.caminho) == ws_dir) else { return false };
+    if alvos[i].status != "planejado" {
+        return false;
+    }
+    alvos[i].status = "feito".into();
+    if gravar_alvos(root, &alvos).is_err() {
+        return false;
+    }
+    alvos.iter().any(|a| a.status == "planejado")
+}
+
 /// Regrava `alvos.json` com os status atuais (mantém o `ignorados` que já estava lá).
 fn gravar_alvos(root: &Path, alvos: &[Alvo]) -> Result<()> {
     let ignorados = std::fs::read_to_string(root.join(".anything").join("alvos.json"))
@@ -106,5 +130,55 @@ mod real {
         // Rodar de novo não refaz o que já foi planejado.
         let r2 = planejar_lote(&exe, &raiz, "user host name", "completo", 15, vec!["--deep".into()]).await.unwrap();
         assert!(r2.is_empty(), "nada novo para planejar na segunda vez");
+    }
+}
+
+#[cfg(test)]
+mod avanco_tests {
+    use super::*;
+
+    fn projeto_com_dois_alvos() -> PathBuf {
+        let d = std::env::temp_dir().join(format!("anything-lote-avanco-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(d.join(".anything")).unwrap();
+        let alvos = vec![
+            Alvo { caminho: "C:/p/a.exe".into(), formato: "pe".into(), suporte: "nativo".into(), status: "planejado".into() },
+            Alvo { caminho: "C:/p/b.dll".into(), formato: "pe".into(), suporte: "nativo".into(), status: "planejado".into() },
+        ];
+        varredor::gravar(&d, &varredor::Varredura { alvos, ignorados: 0 }).unwrap();
+        d
+    }
+
+    #[test]
+    fn the_queue_goes_to_the_first_planned_target_then_the_next_then_ends() {
+        let d = projeto_com_dois_alvos();
+        let (i, a, pasta) = proximo_planejado(&d).unwrap();
+        assert_eq!((i, a.caminho.as_str()), (0, "C:/p/a.exe"));
+        // Terminou o primeiro: há outro planejado, a fila segue.
+        assert!(concluir_alvo(&d, &pasta));
+        let (i2, a2, pasta2) = proximo_planejado(&d).unwrap();
+        assert_eq!((i2, a2.caminho.as_str()), (1, "C:/p/b.dll"));
+        // Terminou o último: nada mais planejado, a fila termina.
+        assert!(!concluir_alvo(&d, &pasta2));
+        assert!(proximo_planejado(&d).is_none());
+        let status: Vec<String> = varredor::ler(&d).unwrap().into_iter().map(|a| a.status).collect();
+        assert_eq!(status, ["feito", "feito"]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn finishing_a_folder_that_is_not_a_target_changes_nothing() {
+        let d = projeto_com_dois_alvos();
+        assert!(!concluir_alvo(&d, &d.join(".anything")), "a pasta da raiz não é de nenhum alvo");
+        assert_eq!(varredor::ler(&d).unwrap().iter().filter(|a| a.status == "planejado").count(), 2);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_target_already_done_is_not_marked_again() {
+        let d = projeto_com_dois_alvos();
+        let (_, _, pasta) = proximo_planejado(&d).unwrap();
+        assert!(concluir_alvo(&d, &pasta));
+        assert!(!concluir_alvo(&d, &pasta), "já está feito");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
