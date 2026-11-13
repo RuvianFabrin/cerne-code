@@ -20,6 +20,7 @@ import MediaApiSelector from "./MediaApiSelector.vue";
 import VideoSettings from "./VideoSettings.vue";
 import LlamaForkRow from "./LlamaForkRow.vue";
 import ModelBrowserDialog from "./ModelBrowserDialog.vue";
+import AnythingSetupDialog from "./AnythingSetupDialog.vue";
 import { MCP_CONNECTORS, type McpConnector } from "../content/mcpConnectors";
 import { executablePickerExtensions, llamaServerPlaceholder } from "../platform";
 
@@ -952,6 +953,7 @@ async function importSessionsBackup() {
 // e so o painel ativo aparece a direita, no estilo do design enviado pelo
 // usuario (2026-09-15). Os CONTEUDOS dos paineis nao mudaram.
 const activeSection = ref('language');
+const anythingSetupVisible = ref(false);
 const csQuery = ref('');
 
 /** Item da navegacao: ou tem `chave` (i18n) ou `texto` (literal, ex: nome de
@@ -1791,6 +1793,9 @@ watch(csGruposVisiveis, (grupos) => {
 
       <section v-if="providerStore.config && providerStore.config.anything" v-show="activeSection === 'anything'" class="cs-panel">
         <p class="hint">{{ $t("settings.anythingHint") }}</p>
+        <div class="field">
+          <button class="btn" @click="anythingSetupVisible = true">{{ $t("anythingSetup.open") }}</button>
+        </div>
 
         <div class="field">
           <label><input type="checkbox" v-model="providerStore.config.anything.full_tools" @change="providerStore.saveConfig" /> {{ $t("settings.anythingFullLabel") }}</label>
@@ -1918,6 +1923,7 @@ watch(csGruposVisiveis, (grupos) => {
       </template>
     </Dialog>
 
+    <AnythingSetupDialog v-model:visible="anythingSetupVisible" />
     <ModelBrowserDialog
       v-model:visible="modelBrowser.visible"
       :kind="modelBrowser.kind"

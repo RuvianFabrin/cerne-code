@@ -19,6 +19,7 @@
     "unknown": "desconocido",
     "close": "Cerrar"
   },
+  "anythingSetup": {"title": "Modo Anything: motor y herramientas", "hint": "El modo necesita el motor craft-anything y, para estudiar programas nativos, Ghidra y Java 21. No se descarga nada hasta que hagas clic.", "checking": "Comprobando…", "installEngine": "Instalar el motor (~86 MB)", "installGhidra": "Instalar Ghidra y Java (~740 MB)", "working": "Trabajando…", "noPercent": "El motor no informa el progreso de este paso; puede tardar varios minutos.", "allReady": "Todo listo.", "recheck": "Comprobar de nuevo", "close": "Cerrar", "open": "Comprobar / instalar motor y Ghidra", "items": {"motor": "Motor (craft-anything)", "ghidra": "Ghidra (descompilador)", "java_ghidra": "Java 21 para Ghidra", "disco": "Espacio en disco", "servidor_mcp": "Servidor de herramientas del motor", "deep": "Modo Deep", "doctor_motor": "Autocomprobación del motor"}},
   "sidePanel": {
     "browser": {
       "default": "Navegador predeterminado",

@@ -19,6 +19,7 @@
     "unknown": "unknown",
     "close": "Close"
   },
+  "anythingSetup": {"title": "Anything mode: engine and tools", "hint": "The mode needs the craft-anything engine, plus Ghidra and Java 21 to study native programs. Nothing is downloaded until you click.", "checking": "Checking…", "installEngine": "Install engine (~86 MB)", "installGhidra": "Install Ghidra and Java (~740 MB)", "working": "Working…", "noPercent": "The engine does not report progress for this step; it can take several minutes.", "allReady": "Everything is ready.", "recheck": "Check again", "close": "Close", "open": "Check / install engine and Ghidra", "items": {"motor": "Engine (craft-anything)", "ghidra": "Ghidra (decompiler)", "java_ghidra": "Java 21 for Ghidra", "disco": "Disk space", "servidor_mcp": "Engine tool server", "deep": "Deep mode", "doctor_motor": "Engine self-check"}},
   "sidePanel": {
     "browser": {
       "default": "Default browser",

@@ -13,6 +13,7 @@ import ContextGauge from "./ContextGauge.vue";
 import StatusDot from "./StatusDot.vue";
 import ExtraReadPaths from "./ExtraReadPaths.vue";
 import PlainQueueDialog from "./PlainQueueDialog.vue";
+import AnythingSetupDialog from "./AnythingSetupDialog.vue";
 import SessionMemoryDialog from "./SessionMemoryDialog.vue";
 import FileBrowser from "./FileBrowser.vue";
 import RepoDiffViewer from "./RepoDiffViewer.vue";
@@ -38,12 +39,27 @@ async function changeCliMode(mode: "agent" | "provider") {
   finally { cliModeBusy.value = false; }
 }
 /** Modo Anything: ligar pode falhar (falta motor ou pasta de projeto); a mensagem vai ao usuário. */
+const anythingSetupVisible = ref(false);
+
+// Terminou a instalação com tudo pronto: liga o modo, que foi o que a pessoa pediu ao clicar.
+async function toggleAnythingAfterSetup() {
+  if (sessionStore.currentSession?.anything?.enabled) return;
+  try {
+    await sessionStore.updateAnything(true);
+    anythingSetupVisible.value = false;
+  } catch (e) {
+    window.alert(String(e));
+  }
+}
+
 async function toggleAnything() {
   const on = !sessionStore.currentSession?.anything?.enabled;
   try {
     await sessionStore.updateAnything(on);
   } catch (e) {
-    window.alert(String(e));
+    // Falta o motor, o Ghidra ou o Java: abre a tela de instalação em vez de um alerta seco.
+    if (String(e).includes("faltam itens")) anythingSetupVisible.value = true;
+    else window.alert(String(e));
   }
 }
 
@@ -1846,6 +1862,7 @@ watch(
     </Dialog>
 
     <PlainQueueDialog v-model:visible="plainQueueVisible" />
+    <AnythingSetupDialog v-model:visible="anythingSetupVisible" @ready="toggleAnythingAfterSetup" />
     <SessionMemoryDialog v-model:visible="sessionMemoryVisible" />
 
     <Dialog

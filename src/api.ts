@@ -38,6 +38,21 @@ export interface AnythingTarget {
   /** fazer, planejado, feito ou erro. */
   status: string;
 }
+export interface AnythingDoctorItem {
+  id: string;
+  /** ok, falta ou aviso. */
+  status: string;
+  detalhe: string;
+  /** instalar_cli, instalar_ghidra ou nada. */
+  acao: string | null;
+  obrigatorio: boolean;
+}
+export interface AnythingDoctorReport {
+  pronto: boolean;
+  pronto_nativo: boolean;
+  itens: AnythingDoctorItem[];
+  saida_motor: string | null;
+}
 export interface AnythingSource {
   caminho: string;
   /** `pasta` ou `arquivo`. */
@@ -606,6 +621,9 @@ export const api = {
     invoke<Session>("update_session_fable_method", { id, enabled }),
   setSessionAnything: (id: string, enabled: boolean, target: string | null, goal: string | null) =>
     invoke<Session>("set_session_anything", { id, enabled, target, goal }),
+  anythingDoctor: () => invoke<AnythingDoctorReport>("anything_doctor"),
+  anythingInstallCli: () => invoke<unknown>("anything_cli_install"),
+  anythingInstallGhidra: () => invoke<unknown>("anything_ghidra_install"),
   anythingSources: (id: string) => invoke<AnythingSource[]>("anything_fontes", { id }),
   anythingAddSource: (id: string, caminho: string) =>
     invoke<AnythingSource[]>("anything_fonte_adicionar", { id, caminho }),
@@ -791,6 +809,12 @@ export const api = {
     bingEndpoint?: string,
   ) => invoke<number>("test_search_provider", { provider, apiKey, searxngUrl, googleCseId, bingEndpoint }),
 };
+
+export function onAnythingProgress(
+  cb: (p: { stage: string; received: number; total: number | null }) => void,
+): Promise<UnlistenFn> {
+  return listen<{ stage: string; received: number; total: number | null }>("anything:progress", (e) => cb(e.payload));
+}
 
 export function onChatToken(cb: (sessionId: string, delta: string) => void): Promise<UnlistenFn> {
   return listen<{ session_id: string; delta: string }>("chat:token", (e) => cb(e.payload.session_id, e.payload.delta));
