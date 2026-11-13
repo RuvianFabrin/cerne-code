@@ -204,20 +204,44 @@ pub fn unpack_zip(archive: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Instala a versão fixada: baixa e confere, descompacta numa pasta temporária, troca pela pasta final
-/// e confere a versão. Se algo falhar no meio, a pasta final não é tocada.
+/// Nome do zip que vai dentro do instalador (`resources/anything-engine/`).
+pub const BUNDLED_ZIP: &str = "craft-anything-0.6.1-windows-x64-portable.zip";
+
+/// Zip do motor que veio junto com o Cerne, se existir e tiver o hash fixado. Não vem em builds de
+/// outras plataformas, nem num `tauri dev` que não conseguiu baixar na hora de preparar.
+pub fn bundled_zip(app: &AppHandle) -> Option<PathBuf> {
+    use tauri::Manager;
+    let (_, sha) = pinned_zip()?;
+    let zip = app.path().resource_dir().ok()?.join("anything-engine").join(BUNDLED_ZIP);
+    (zip.is_file() && sha256_file(&zip).ok().as_deref() == Some(sha)).then_some(zip)
+}
+
+/// Instala a versão fixada. Usa o zip que vem junto com o Cerne, se houver (sem rede); senão baixa e
+/// confere. Descompacta numa pasta temporária, troca pela pasta final e confere a versão. Se algo
+/// falhar no meio, a pasta final não é tocada.
 pub async fn install(app: &AppHandle, store: &Path) -> Result<PathBuf> {
-    let (url, sha) = pinned_zip().ok_or_else(|| {
-        anyhow!("a instalação automática só existe para Windows x64. Baixe em https://github.com/storytold/craft-anything/releases")
-    })?;
     std::fs::create_dir_all(store)?;
-    let archive = store.join(".craft-anything-cli.zip");
-    download_verified(app, url, &archive, sha, MAX_ZIP_BYTES).await?;
+    let (archive, downloaded) = match bundled_zip(app) {
+        Some(zip) => {
+            emit(app, "Instalando o motor que vem com o Cerne", 0, None);
+            (zip, false)
+        }
+        None => {
+            let (url, sha) = pinned_zip().ok_or_else(|| {
+                anyhow!("a instalação automática só existe para Windows x64. Baixe em https://github.com/storytold/craft-anything/releases")
+            })?;
+            let archive = store.join(".craft-anything-cli.zip");
+            download_verified(app, url, &archive, sha, MAX_ZIP_BYTES).await?;
+            (archive, true)
+        }
+    };
     emit(app, "Preparando o motor", 0, None);
     let incoming = store.join(".incoming");
     let _ = std::fs::remove_dir_all(&incoming);
     let unpacked = unpack_zip(&archive, &incoming);
-    let _ = std::fs::remove_file(&archive);
+    if downloaded {
+        let _ = std::fs::remove_file(&archive);
+    }
     if let Err(e) = unpacked {
         let _ = std::fs::remove_dir_all(&incoming);
         return Err(e);
@@ -326,5 +350,38 @@ mod tests {
             assert_eq!(s, CliStatus { found: false, path: None, origin: None, version: None, matches_pin: false });
         }
         let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
+#[cfg(test)]
+mod embutido_tests {
+    use super::*;
+
+    /// O script de build (`scripts/prepare-anything-engine.mjs`) lê estes valores do JSON; se alguém
+    /// trocar a versão num lado só, o instalador levaria um zip que o Cerne recusa.
+    #[test]
+    fn the_build_script_pins_the_same_engine_as_the_code() {
+        let j: serde_json::Value = serde_json::from_str(include_str!("../../../scripts/anything-engine.json")).unwrap();
+        assert_eq!(j["version"], VERSION);
+        assert_eq!(j["url"], WINDOWS_X64_URL);
+        assert_eq!(j["sha256"], WINDOWS_X64_SHA256);
+        assert_eq!(j["file"], BUNDLED_ZIP);
+    }
+
+    /// Com o zip embutido já baixado (`npm run prepare:anything-engine`): confere o hash, descompacta e
+    /// pede a versão ao motor. `cargo test --lib zip_embutido -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn zip_embutido_real() {
+        let zip = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("resources").join("anything-engine").join(BUNDLED_ZIP);
+        assert_eq!(sha256_file(&zip).unwrap(), WINDOWS_X64_SHA256);
+        let out = std::env::temp_dir().join(format!("anything-embutido-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        unpack_zip(&zip, &out).unwrap();
+        let exe = find_exe_in(&out).expect("o zip traz o executavel");
+        let v = cli_version(&exe).unwrap();
+        println!("versao: {v}");
+        assert_eq!(v.split_whitespace().last(), Some(VERSION));
+        let _ = std::fs::remove_dir_all(&out);
     }
 }

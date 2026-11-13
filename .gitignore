@@ -61,3 +61,6 @@ docs/*-preview.png
 
 # Node privado do app: baixado pelo build (scripts/prepare-node-runtime.mjs)
 src-tauri/resources/node-runtime/bin/
+
+# Zip do motor Anything embutido no instalador do Windows (baixado por npm run prepare:anything-engine)
+src-tauri/resources/anything-engine/

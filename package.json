@@ -9,6 +9,7 @@
     "test:context-economy": "cargo test --manifest-path src-tauri/Cargo.toml --lib context_economy --locked",
     "test:context-economy:reference": "npm run prepare:node-runtime && node --test scripts/test-context-mode.mjs",
     "prepare:node-runtime": "node scripts/prepare-node-runtime.mjs",
+    "prepare:anything-engine": "node scripts/prepare-anything-engine.mjs",
     "build:context-economy": "node scripts/build-context-mode.mjs",
     "preview": "vite preview",
     "tauri": "tauri"

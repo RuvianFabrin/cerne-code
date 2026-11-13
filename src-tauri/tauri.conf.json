@@ -4,9 +4,9 @@
   "version": "0.1.5",
   "identifier": "com.cerne.app",
   "build": {
-    "beforeDevCommand": "npm run prepare:node-runtime && npm run dev",
+    "beforeDevCommand": "npm run prepare:node-runtime && npm run prepare:anything-engine && npm run dev",
     "devUrl": "http://localhost:14200",
-    "beforeBuildCommand": "npm run prepare:node-runtime && npm run build",
+    "beforeBuildCommand": "npm run prepare:node-runtime && npm run prepare:anything-engine && npm run build",
     "frontendDist": "../dist"
   },
   "app": {

@@ -25,6 +25,7 @@ use tauri::State;
 /// obrigatório `ok`; a mensagem de erro diz o que falta. Desligar encerra o servidor da sessão.
 #[tauri::command]
 pub async fn set_session_anything(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: String,
     enabled: bool,
@@ -35,7 +36,12 @@ pub async fn set_session_anything(
     let session = sessions::get_session(&app_data, &id).map_err(|e| e.to_string())?;
     if enabled {
         let root = session::raiz_de_trabalho(&session).ok_or(session::SEM_PASTA)?;
-        let report = doctor::run(&cli::store_dir(&app_data)).await;
+        // O motor vem dentro do Cerne: se ainda não foi instalado na pasta gerenciada, instala agora, sem rede.
+        let store = cli::store_dir(&app_data);
+        if cli::find_cli(&store).is_none() && cli::bundled_zip(&app).is_some() {
+            cli::install(&app, &store).await.map_err(|e| e.to_string())?;
+        }
+        let report = doctor::run(&store).await;
         if !report.pronto {
             let faltam: Vec<String> = report
                 .itens

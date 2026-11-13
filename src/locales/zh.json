@@ -19,7 +19,7 @@
     "unknown": "未知",
     "close": "关闭"
   },
-  "anythingSetup": {"title": "Anything 模式：引擎与工具", "hint": "该模式需要 craft-anything 引擎；分析原生程序还需要 Ghidra 和 Java 21。点击之前不会下载任何内容。", "checking": "检查中…", "installEngine": "安装引擎（约 86 MB）", "installGhidra": "安装 Ghidra 和 Java（约 740 MB）", "working": "处理中…", "noPercent": "引擎不报告此步骤的进度，可能需要几分钟。", "allReady": "全部就绪。", "recheck": "重新检查", "close": "关闭", "open": "检查 / 安装引擎和 Ghidra", "items": {"motor": "引擎 (craft-anything)", "ghidra": "Ghidra（反编译器）", "java_ghidra": "Ghidra 使用的 Java 21", "disco": "磁盘空间", "servidor_mcp": "引擎工具服务器", "deep": "Deep 模式", "doctor_motor": "引擎自检"}},
+  "anythingSetup": {"title": "Anything 模式：引擎与工具", "hint": "该模式需要 craft-anything 引擎；分析原生程序还需要 Ghidra 和 Java 21。点击之前不会下载任何内容。", "checking": "检查中…", "installEngine": "安装引擎", "installGhidra": "安装 Ghidra 和 Java（约 740 MB）", "working": "处理中…", "noPercent": "引擎不报告此步骤的进度，可能需要几分钟。", "allReady": "全部就绪。", "recheck": "重新检查", "close": "关闭", "open": "检查 / 安装引擎和 Ghidra", "items": {"motor": "引擎 (craft-anything)", "ghidra": "Ghidra（反编译器）", "java_ghidra": "Ghidra 使用的 Java 21", "disco": "磁盘空间", "servidor_mcp": "引擎工具服务器", "deep": "Deep 模式", "doctor_motor": "引擎自检"}},
   "sidePanel": {
     "browser": {
       "default": "默认浏览器",

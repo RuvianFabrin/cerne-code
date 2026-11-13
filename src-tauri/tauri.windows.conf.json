@@ -1,7 +1,8 @@
 {
   "bundle": {
     "resources": {
-      "resources/node-runtime/bin/win-x64/node.exe": "node-runtime/bin/win-x64/node.exe"
+      "resources/node-runtime/bin/win-x64/node.exe": "node-runtime/bin/win-x64/node.exe",
+      "resources/anything-engine/craft-anything-0.6.1-windows-x64-portable.zip": "anything-engine/craft-anything-0.6.1-windows-x64-portable.zip"
     }
   }
 }
