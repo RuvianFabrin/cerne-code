@@ -308,6 +308,13 @@ Funções que esta chama, já estudadas:
         texto.push_str(&linhas.join("
 "));
     }
+    // O item traz `saida` relativa (funcoes/0x....json), e o modelo não sabe a que pasta ela se refere: na
+    // prática ele grava na pasta do projeto, e a conferência (que olha a pasta do alvo) não acha a ficha.
+    // Por isso o caminho completo vai no texto, e é o único que vale.
+    let caminho_completo = root.join(&saida).display().to_string();
+    texto.push_str(&format!(
+        "\n\nGrave o arquivo exatamente neste caminho completo (crie a pasta se faltar; outro lugar não é conferido):\n{caminho_completo}"
+    ));
     run_turn(app, session_id, texto).await?;
     let mut erros;
     for tentativa in 0..=CONFIRM_RETRIES {
@@ -334,7 +341,7 @@ Funções que esta chama, já estudadas:
             return Ok(());
         }
         let correcao = format!(
-            "A ficha em {saida} não passou na conferência:\n- {}\nCorrija e grave o arquivo de novo, no formato do modo. Responda gravando o arquivo.",
+            "A ficha em {caminho_completo} não passou na conferência:\n- {}\nCorrija e grave o arquivo de novo nesse mesmo caminho completo, no formato do modo. Responda gravando o arquivo.",
             erros.join("\n- ")
         );
         run_turn(app, session_id, correcao).await?;
