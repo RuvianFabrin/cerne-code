@@ -258,6 +258,7 @@ pub fn tarefa_de_funcao(alvo: &str, endereco: &str, nome: &str, chama: &[String]
         ),
         "tipo": "funcao",
         "alvo": alvo,
+        "nome": nome,
         "endereco": endereco,
         "chama": chama,
         "saida": format!("funcoes/{endereco}.json"),

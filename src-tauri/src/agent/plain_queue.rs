@@ -232,6 +232,13 @@ fn write_tasks(app_data_dir: &PathBuf, session_id: &str, anything: Option<&std::
 fn checar_ficha(root: &std::path::Path, saida: &str, endereco: &str) -> std::result::Result<(), Vec<String>> {
     let caminho = root.join(saida);
     let texto = std::fs::read_to_string(&caminho).map_err(|_| vec![format!("a ficha ainda não existe em {saida}")])?;
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&texto) {
+        if v.get("pseudocode").is_some() || v.get("assembly").is_some() || v.get("sha256").is_some() {
+            return Err(vec![
+                "o arquivo é a saída bruta da ferramenta do motor, não a ficha. Escreva a ficha com as suas palavras, só com os campos pedidos (endereco, nome_original, nome_sugerido, resumo, o_que_faz, constantes, base, confianca, evidencias, pendencias)".to_string(),
+            ]);
+        }
+    }
     let ficha = crate::anything::workspace::parse_ficha(&texto)?;
     if ficha.endereco != endereco {
         return Err(vec![format!("a ficha tem endereco {} mas o item é {endereco}", ficha.endereco)]);
@@ -298,16 +305,41 @@ async fn item_de_funcao(
         .and_then(|v| v.as_array())
         .map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect())
         .unwrap_or_default();
-    let mut texto = prompt.to_string();
-    if !chama.is_empty() {
-        let linhas = crate::anything::workspace::Workspace { root: root.to_path_buf() }.resumos(&chama)?;
-        texto.push_str("
+    let linhas = if chama.is_empty() {
+        Vec::new()
+    } else {
+        crate::anything::workspace::Workspace { root: root.to_path_buf() }.resumos(&chama)?
+    };
+    let tipo = tasks[idx].get("tipo").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let mut texto = if tipo == "funcao" {
+        // Modelo pequeno não adivinha o formato da ficha: o prompt completo (regras + passos + exemplo)
+        // é montado aqui, e não a descrição curta que o plano gravou.
+        use crate::anything::prompts::{preencher, FUNCAO, SISTEMA};
+        let objetivo = sessions::get_session(app_data_dir, session_id)
+            .ok()
+            .and_then(|s| s.anything.goal)
+            .filter(|g| !g.trim().is_empty())
+            .unwrap_or_else(|| "entender como o programa funciona (sem objetivo específico)".to_string());
+        let endereco = tasks[idx].get("endereco").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+        let nome = tasks[idx].get("nome").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| format!("sub_{}", endereco.trim_start_matches("0x")));
+        let resumos = if linhas.is_empty() { "nenhuma (esta função não chama outras já estudadas)".to_string() } else { linhas.join("
+") };
+        let corpo = preencher(FUNCAO, &[("endereco", &endereco), ("nome", &nome), ("objetivo", &objetivo), ("resumos", &resumos)]);
+        format!("{SISTEMA}
+
+{corpo}")
+    } else {
+        let mut t = prompt.to_string();
+        if !linhas.is_empty() {
+            t.push_str("
 
 Funções que esta chama, já estudadas:
 ");
-        texto.push_str(&linhas.join("
+            t.push_str(&linhas.join("
 "));
-    }
+        }
+        t
+    };
     // O item traz `saida` relativa (funcoes/0x....json), e o modelo não sabe a que pasta ela se refere: na
     // prática ele grava na pasta do projeto, e a conferência (que olha a pasta do alvo) não acha a ficha.
     // Por isso o caminho completo vai no texto, e é o único que vale.
@@ -712,6 +744,24 @@ mod anything_checagem_tests {
         let e = checar_ficha(&d.join(".anything"), "funcoes/0x401000.json", "0x401000").unwrap_err();
         assert!(e[0].contains("ainda não existe"));
         std::fs::remove_dir_all(d).ok();
+    }
+
+    #[test]
+    fn the_raw_tool_output_copied_into_the_file_is_recognised() {
+        // Foi o que um modelo local de 32B fez: copiou o JSON bruto da ferramenta no lugar da ficha.
+        let bruto = r#"{"function":"sub_1","address":"0x401000","sha256":"ab","pseudocode":"int f(){}","assembly":[]}"#;
+        let d = raiz_com_ficha(Some(bruto));
+        let e = checar_ficha(&d.join(".anything"), "funcoes/0x401000.json", "0x401000").unwrap_err();
+        assert!(e[0].contains("saída bruta da ferramenta"), "{e:?}");
+        std::fs::remove_dir_all(d).ok();
+    }
+
+    #[test]
+    fn the_function_prompt_names_every_field_the_validation_requires() {
+        use crate::anything::prompts::FUNCAO;
+        for campo in ["endereco", "nome_original", "nome_sugerido", "resumo", "o_que_faz", "base", "confianca"] {
+            assert!(FUNCAO.contains(&format!("\"{campo}\"")), "o prompt não explica o campo {campo}");
+        }
     }
 
     #[test]
