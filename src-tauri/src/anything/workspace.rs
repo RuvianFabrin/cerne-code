@@ -158,7 +158,9 @@ impl Workspace {
         ficha.chama = chama.to_vec();
         self.gravar_ficha(&ficha)?;
         for c in chama {
-            if let Some(mut chamada) = self.ler_ficha(c)? {
+            // Ficha vizinha inválida (item bloqueado que deixou o arquivo no disco) não pode derrubar a fila:
+            // fica sem a ligação até ser corrigida.
+            if let Some(mut chamada) = self.ler_ficha(c).ok().flatten() {
                 if !chamada.chamada_por.iter().any(|x| x == endereco) {
                     chamada.chamada_por.push(endereco.to_string());
                     self.gravar_ficha(&chamada)?;
@@ -383,6 +385,19 @@ mod ligacoes_tests {
         assert_eq!(folha.chamada_por, ["0x20"]);
         // Função sem ficha: nada acontece, sem erro.
         ws.completar_ligacoes("0x77", &["0x10".to_string()]).unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_invalid_neighbour_ficha_does_not_stop_the_linking() {
+        let d = std::env::temp_dir().join(format!("anything-lig-inv-{}", uuid::Uuid::new_v4()));
+        let ws = Workspace { root: d.clone() };
+        ws.gravar_ficha(&ficha("0x20")).unwrap();
+        // Ficha de item bloqueado que ficou no disco com um campo fora do padrão.
+        std::fs::create_dir_all(ws.ficha_path("0x10").parent().unwrap()).unwrap();
+        std::fs::write(ws.ficha_path("0x10"), "{\"endereco\":\"0x10\",\"base\":\"texto livre\"}").unwrap();
+        ws.completar_ligacoes("0x20", &["0x10".to_string()]).unwrap();
+        assert_eq!(ws.ler_ficha("0x20").unwrap().unwrap().chama, ["0x10"]);
         let _ = std::fs::remove_dir_all(&d);
     }
 }

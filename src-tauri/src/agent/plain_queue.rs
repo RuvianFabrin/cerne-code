@@ -269,7 +269,82 @@ fn checar_entrega(root: &std::path::Path, saida: &str) -> std::result::Result<()
     if texto.trim().is_empty() {
         return Err(vec![format!("o arquivo {saida} está vazio")]);
     }
+    // Endereço citado na entrega que não aparece em nenhuma ficha, módulo ou no relatório foi inventado.
+    let inventados = enderecos_inventados(root);
+    if !inventados.is_empty() {
+        return Err(vec![format!(
+            "a entrega cita endereços que não existem no estudo: {}. Use só endereços das fichas (funcoes/), dos módulos e do relatório; onde faltar evidência, deixe `todo!()` e diga no LEIAME.md que não foi estudado",
+            inventados.join(", ")
+        )]);
+    }
     Ok(())
+}
+
+/// Endereços hexadecimais (`0x` + 6 ou mais dígitos), em minúsculas e sem repetir, do texto.
+fn enderecos_no_texto(texto: &str) -> Vec<String> {
+    let b = texto.as_bytes();
+    let mut achados: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i + 2 < b.len() {
+        if b[i] == b'0' && (b[i + 1] == b'x' || b[i + 1] == b'X') {
+            let mut j = i + 2;
+            while j < b.len() && b[j].is_ascii_hexdigit() {
+                j += 1;
+            }
+            if j - (i + 2) >= 6 {
+                let e = texto[i..j].to_ascii_lowercase();
+                if !achados.contains(&e) {
+                    achados.push(e);
+                }
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    achados
+}
+
+fn textos_da_pasta(dir: &std::path::Path, recursivo: bool, saida: &mut String) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            if recursivo {
+                textos_da_pasta(&p, true, saida);
+            }
+        } else if let Ok(t) = std::fs::read_to_string(&p) {
+            saida.push_str(&t);
+            saida.push_str("\n");
+        }
+    }
+}
+
+/// Endereços citados dentro de `entrega/` que o estudo (fichas, módulos, relatório) não contém.
+fn enderecos_inventados(root: &std::path::Path) -> Vec<String> {
+    let mut entrega = String::new();
+    textos_da_pasta(&root.join("entrega"), true, &mut entrega);
+    let mut estudo = std::fs::read_to_string(root.join("relatorio.md")).unwrap_or_default();
+    textos_da_pasta(&root.join("funcoes"), false, &mut estudo);
+    textos_da_pasta(&root.join("modulos"), false, &mut estudo);
+    let conhecidos = enderecos_no_texto(&estudo);
+    // Só vale como endereço o que tem o mesmo tamanho dos endereços das funções do alvo (ex.: 9 dígitos em
+    // 0x140001008) e pelo menos 7 dígitos. Cores (0xeeeeee, 0xeeeeeeff), máscaras e outras constantes hex
+    // têm tamanho diferente e podem ficar no código sem serem confundidas com endereço inventado.
+    let tamanhos: Vec<usize> = std::fs::read_dir(root.join("funcoes"))
+        .map(|d| {
+            d.flatten()
+                .filter_map(|e| e.path().file_stem().and_then(|s| s.to_str()).map(|s| s.to_ascii_lowercase()))
+                .filter_map(|s| s.strip_prefix("0x").map(|h| h.len()))
+                .collect()
+        })
+        .unwrap_or_default();
+    enderecos_no_texto(&entrega)
+        .into_iter()
+        .filter(|e| !conhecidos.contains(e))
+        .filter(|e| e.len() - 2 >= 7 && tamanhos.contains(&(e.len() - 2)))
+        .take(8)
+        .collect()
 }
 
 /// Texto do item de entrega, montado agora: o prompt da pessoa (ou o padrão) com os marcadores
@@ -290,7 +365,7 @@ fn texto_da_entrega(app_data_dir: &PathBuf, session_id: &str, root: &std::path::
         &[("objetivo", &objetivo), ("relatorio", &relatorio), ("modulos", &modulos.join("\n")), ("pasta", &pasta)],
     );
     format!(
-        "{corpo}\n\nRegras fixas desta etapa:\n- Grave tudo que entregar dentro da pasta {pasta} (crie a pasta se faltar), usando a ferramenta de escrever arquivo.\n- Por último, grave {pasta}\\LEIAME.md dizendo em poucas linhas o que foi gerado e o que ficou por fazer. Sem esse arquivo a etapa não está concluída."
+        "{corpo}\n\nRegras fixas desta etapa:\n- Grave tudo que entregar dentro da pasta {pasta} (crie a pasta se faltar), usando a ferramenta de escrever arquivo.\n- Por último, grave {pasta}\\LEIAME.md dizendo em poucas linhas o que foi gerado e o que ficou por fazer. Sem esse arquivo a etapa não está concluída.\n- Use somente o que está no relatório, nos módulos e nas fichas das funções. Não invente funções, endereços, módulos nem comportamento: cada endereço 0x… que você citar tem que existir nesses arquivos. Onde faltar evidência, deixe `todo!()` (ou o equivalente da linguagem pedida) e diga no LEIAME.md que isso não foi estudado. Se o estudo não cobre o que foi pedido, entregue só o que ele sustenta e explique no LEIAME.md."
     )
 }
 
@@ -857,6 +932,29 @@ mod entrega_final_tests {
         assert!(checar_item(&d, &item).is_ok());
         let fora = serde_json::json!({"tipo": "entrega", "saida": "../LEIAME.md"});
         assert!(checar_item(&d, &fora).is_err());
+        std::fs::remove_dir_all(d).ok();
+    }
+}
+
+#[cfg(test)]
+mod entrega_enderecos_tests {
+    use super::*;
+
+    #[test]
+    fn the_delivery_cannot_cite_addresses_missing_from_the_study() {
+        let d = std::env::temp_dir().join(format!("anything-end-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(d.join("entrega").join("src")).unwrap();
+        std::fs::create_dir_all(d.join("funcoes")).unwrap();
+        std::fs::write(d.join("funcoes").join("0x140001008.json"), "{\"endereco\":\"0x140001008\"}").unwrap();
+        std::fs::write(d.join("relatorio.md"), "usa 0xC0000409").unwrap();
+        std::fs::write(d.join("entrega").join("LEIAME.md"), "veio de 0x140001008 e 0xc0000409 (valor 0x100)").unwrap();
+        assert!(checar_entrega(&d, "entrega/LEIAME.md").is_ok());
+        // Cores em hexadecimal (6 e 8 dígitos) não são endereços: podem ficar no código.
+        std::fs::write(d.join("entrega").join("src").join("cores.rs"), "const FUNDO: u32 = 0xeeeeee; const TEXTO: u32 = 0x111111; const COM_ALFA: u32 = 0xEEEEEEFF;").unwrap();
+        assert!(checar_entrega(&d, "entrega/LEIAME.md").is_ok());
+        std::fs::write(d.join("entrega").join("src").join("a.rs"), "// Origem: 0x140001500 (cria_menu_arquivo)").unwrap();
+        let erro = checar_entrega(&d, "entrega/LEIAME.md").unwrap_err();
+        assert!(erro[0].contains("0x140001500"), "{erro:?}");
         std::fs::remove_dir_all(d).ok();
     }
 }
