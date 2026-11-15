@@ -20,7 +20,9 @@ pub fn pasta_do_alvo(root: &Path, caminho: &str) -> PathBuf {
         h ^= b as u32;
         h = h.wrapping_mul(0x0100_0193);
     }
-    let nome = Path::new(caminho)
+    // `\` também separa pastas (caminho do Windows lido em Linux/macOS).
+    let normalizado = caminho.replace('\\', "/");
+    let nome = Path::new(&normalizado)
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "alvo".into());

@@ -78,6 +78,10 @@ jobs:
       - name: Preparar runtime Node embutido
         run: npm run prepare:node-runtime
 
+      # No Windows o tauri.windows.conf.json lista o zip do motor Anything como recurso.
+      - name: Preparar motor Anything embutido
+        run: npm run prepare:anything-engine
+
       - name: Checar tipos TypeScript (vue-tsc)
         run: npx vue-tsc --noEmit
 

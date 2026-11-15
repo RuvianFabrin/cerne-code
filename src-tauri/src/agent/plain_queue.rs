@@ -221,8 +221,11 @@ pub fn item_prompt_block(session_id: &str) -> Option<String> {
 /// Arquivos de controle da fila do Anything (dentro de `.anything`): não pertencem ao modelo e não ajudam a
 /// estudar uma função. Ver o uso em `read_file` (agent/tools.rs).
 pub fn is_queue_control_file(path: &std::path::Path) -> bool {
-    let nome = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_ascii_lowercase();
-    let na_pasta_anything = path.components().any(|c| c.as_os_str() == ".anything");
+    // Caminhos do Windows (`\`) também precisam funcionar quando o app roda em Linux/macOS.
+    let texto = path.to_string_lossy().replace('\\', "/");
+    let mut partes = texto.split('/');
+    let nome = partes.clone().last().unwrap_or_default().to_ascii_lowercase();
+    let na_pasta_anything = partes.any(|c| c == ".anything");
     na_pasta_anything && matches!(nome.as_str(), "tarefas.json" | "alvos.json" | "indice.json" | "fontes.json" | "alvo.json")
 }
 
