@@ -1,53 +1,49 @@
-# Cerne Code v0.1.5
+# Cerne Code v0.1.6
 
 ## Português (Brasil)
 
-- **Imagem e vídeo diretos:** botões no composer enviam somente o prompt atual ao gerador escolhido, sem passar pelo LLM de texto. Prompts e resultados de mídia têm histórico separado.
-- **APIs independentes:** imagem e vídeo podem usar provedores, servidores e modelos diferentes. Qwen Image pode continuar dedicado a imagens. OpenRouter reutiliza a conexão já configurada; conexões reconhecidas também podem ser reaproveitadas.
-- **Adaptadores por serviço:** OpenRouter, Google Gemini/Imagen/Veo, Grok/xAI, fal.ai e APIs locais/compatíveis. OpenAI oferece geração/edição de imagens; a API Sora de vídeo foi encerrada. Consulta de modelos sem gerar mídia. fal.ai usa o ID do endpoint; edição fal.ai com anexos ainda não está disponível.
-- **Resultados no chat:** miniaturas com ampliação, reprodução de vídeo e abertura dos arquivos. Vídeos são salvos na pasta escolhida; uma pasta gravável é exigida antes do envio à API.
-- **Long Horizon e fila:** melhorias de checkpoint e memória compacta, acesso correto aos arquivos da sessão e proteção contra repetições sem progresso. Botões de salvar e iniciar fila padronizados.
-- **Navegador:** Playwright MCP pré-configurado, opção de desativar, escolha Chrome/Edge e modal de configuração. Perfil separado ou conexão ao perfil existente por extensão para ler páginas, preencher campos, clicar e consultar o console.
-- **Modelos locais:** ajustes no ciclo de iniciar/parar e na indicação de saúde do Strata. No Windows, seu adaptador pode abrir um console visível. Correção da ordem das mensagens de sistema para modelos como Bonsai 2. Corrigidos o comando de encerramento de grupos de processos Unix e a verificação de processos nos testes Linux/macOS.
-- **Leitura:** Outfit como fonte padrão, fontes anteriores disponíveis, tamanho ajustado e Markdown mais proporcional em perguntas e respostas: títulos, listas, tabelas, código e espaçamento.
+- **Modo Anything:** estudo de programas, DLLs, Java, Android, WebAssembly e Electron com o motor craft-anything e o Ghidra. Painel na sessão, lista de fontes (pastas e arquivos), varredura que reconhece vários formatos, estudo em lote e instalação guiada do motor, do Ghidra e do Java (o motor já vem no instalador do Windows).
+- **Fila validada por código:** cada ficha de função é conferida antes de ser aceita; módulos agrupam funções avulsas por endereço e recebem nome descritivo; a síntese gera módulos, relatório e entrega final. A entrega agora é dividida por módulo, a escrita de cada item fica restrita à sua pasta e os ids de evidência citados são conferidos contra o armazém de evidências.
+- **Prompts editáveis:** o prompt da entrega final pode ser editado nas Configurações e por sessão, com botão Redefinir. Os prompts de função, módulo e relatório ficam em arquivos.
+- **Modelos locais:** o servidor só sobe ao enviar a mensagem, com comando de servidor por sessão. O pacote de ferramentas nativas do motor volta a ser ligado automaticamente quando faltar, evitando chamadas de ferramenta devolvidas como texto.
+- **Computer use por grade numerada:** novas ferramentas `grid_screenshot`, `grid_click` e `grid_move` desenham uma grade numerada no print; o modelo escolhe a célula e o código calcula o ponto na tela, com refinamento por célula. Útil para modelos com pouca precisão em coordenadas.
+- **Agente e fila:** modo Agente do CLI retoma a sessão do próprio CLI; fila de tarefas sem Long Horizon com Ctx fixo em blocos, sub-agentes em segundo plano e memória da sessão.
+- **Ferramentas novas:** documentos Word/PDF/PowerPoint com runtime Node embutido, glob, busca de skills, anexo de arquivo no chat, `report_findings`, `notebook_edit`, `show_widget` e `html_to_pdf`; overlay do Computer Use e perfis de navegador por sessão.
 
-**Plataformas:** Windows, macOS universal (Apple Silicon e Intel) e Linux `full` e `compat`. Linux `compat` não inclui captura/automação nativa de desktop; Playwright e APIs de mídia são independentes desse recurso. Servidores/modelos locais precisam ser instalados e configurados em cada máquina. Builds automatizados não substituem testes em hardware real; reprodução de vídeo depende dos codecs do sistema. Nenhuma geração paga foi usada nos testes dos adaptadores.
+**Plataformas:** Windows, macOS universal (Apple Silicon e Intel) e Linux `full` e `compat`. Linux `compat` não inclui captura/automação nativa de desktop. Servidores/modelos locais precisam ser instalados e configurados em cada máquina. Builds automatizados não substituem testes em hardware real; a grade de computer use e a entrega por módulo do Anything ainda precisam de mais testes de uso.
 
 ## English
 
-- **Direct images and videos:** composer buttons send only the current prompt to the selected generator, without the text LLM. Media prompts and results have a separate history.
-- **Independent APIs:** images and videos can use different providers, servers and models. Qwen Image can remain dedicated to images. OpenRouter reuses its existing connection; recognized connections can also be reused.
-- **Service-specific adapters:** OpenRouter, Google Gemini/Imagen/Veo, Grok/xAI, fal.ai and local/compatible APIs. OpenAI supports image generation/editing; the Sora video API has shut down. Fetch model catalogs without generating media. fal.ai uses endpoint IDs; its adapter does not yet support editing with attachments.
-- **Results in chat:** thumbnails with enlargement, video playback and file opening. Videos are saved to the chosen folder; a writable folder is required before contacting the API.
-- **Long Horizon and task queue:** improved checkpoints and compact memory, correct session-file access and protection against repetition without progress. Consistent save and start-queue buttons.
-- **Browser:** preconfigured Playwright MCP, optional disabling, Chrome/Edge selection and a setup dialog. Use a separate profile or connect to an existing profile through the extension to read pages, fill forms, click and inspect console messages.
-- **Local models:** improved Strata start/stop lifecycle and health indicators. On Windows, its adapter can open a visible console. Fixed system-message ordering for models such as Bonsai 2. Corrected Unix process-group termination and process checks in Linux/macOS tests.
-- **Readability:** Outfit as the default font, previous fonts still available, adjusted sizes and better Markdown proportions in user and assistant messages: headings, lists, tables, code and spacing.
+- **Anything mode:** study programs, DLLs, Java, Android, WebAssembly and Electron apps with the craft-anything engine and Ghidra. Session panel, source list (folders and files), a scanner that recognizes many formats, batch study, and guided setup of the engine, Ghidra and Java (the engine now ships in the Windows installer).
+- **Code-validated queue:** each function card is checked before it is accepted; modules group loose functions by address and get descriptive names; synthesis produces modules, a report and a final delivery. The delivery is now split per module, each item may only write inside its own folder, and cited evidence ids are checked against the evidence store.
+- **Editable prompts:** the final-delivery prompt can be edited in Settings and per session, with a Reset button. Function, module and report prompts live in files.
+- **Local models:** the server only starts when a message is sent, with a per-session server command. The engine's native toolset is switched on automatically when missing, preventing tool calls returned as plain text.
+- **Numbered-grid computer use:** new `grid_screenshot`, `grid_click` and `grid_move` tools overlay a numbered grid on the screenshot; the model picks a cell and the code computes the screen point, with per-cell refinement. Helpful for models that are imprecise with coordinates.
+- **Agent and queue:** the CLI Agent mode resumes the CLI's own session; task queue without Long Horizon, with fixed-context blocks, background sub-agents and session memory.
+- **New tools:** Word/PDF/PowerPoint documents with a bundled Node runtime, glob, skill search, file attachments in chat, `report_findings`, `notebook_edit`, `show_widget` and `html_to_pdf`; Computer Use overlay and per-session browser profiles.
 
-**Platforms:** Windows, universal macOS (Apple Silicon and Intel), and Linux `full` and `compat`. Linux `compat` excludes native desktop capture/automation; Playwright and media APIs are independent of that feature. Local servers/models must be installed and configured on each machine. Automated builds do not replace real hardware testing; video playback depends on system codecs. No paid generations were used in adapter tests.
+**Platforms:** Windows, universal macOS (Apple Silicon and Intel), and Linux `full` and `compat`. Linux `compat` excludes native desktop capture/automation. Local servers/models must be installed and configured on each machine. Automated builds do not replace real hardware testing; the grid computer use and Anything's per-module delivery still need more real-world testing.
 
 ## Español
 
-- **Imágenes y vídeos directos:** botones del composer envían únicamente el prompt actual al generador elegido, sin pasar por el LLM de texto. Los prompts y resultados tienen un historial separado.
-- **APIs independientes:** imágenes y vídeos pueden usar proveedores, servidores y modelos distintos. Qwen Image puede seguir dedicado a imágenes. OpenRouter reutiliza la conexión existente; también se pueden reutilizar conexiones reconocidas.
-- **Adaptadores por servicio:** OpenRouter, Google Gemini/Imagen/Veo, Grok/xAI, fal.ai y APIs locales/compatibles. OpenAI permite generar/editar imágenes; la API de vídeo Sora fue retirada. Consulta de modelos sin generar medios. fal.ai utiliza el ID del endpoint; su adaptador todavía no admite edición con adjuntos.
-- **Resultados en el chat:** miniaturas ampliables, reproducción de vídeo y apertura de archivos. Los vídeos se guardan en la carpeta elegida; se exige una carpeta con permiso de escritura antes de contactar con la API.
-- **Long Horizon y cola:** mejores checkpoints y memoria compacta, acceso correcto a los archivos de sesión y protección contra repeticiones sin progreso. Botones de guardar e iniciar cola uniformes.
-- **Navegador:** Playwright MCP preconfigurado, opción de desactivarlo, selección Chrome/Edge y diálogo de configuración. Perfil separado o conexión al perfil existente mediante extensión para leer páginas, rellenar campos, hacer clic y consultar la consola.
-- **Modelos locales:** mejoras en inicio/parada e indicadores de salud de Strata. En Windows, su adaptador puede abrir una consola visible. Corrección del orden de los mensajes de sistema para modelos como Bonsai 2. Corregidos el cierre de grupos de procesos Unix y la comprobación de procesos en pruebas Linux/macOS.
-- **Lectura:** Outfit como fuente predeterminada, fuentes anteriores disponibles, tamaños ajustados y Markdown más proporcional en preguntas y respuestas: títulos, listas, tablas, código y espaciado.
+- **Modo Anything:** estudio de programas, DLL, Java, Android, WebAssembly y Electron con el motor craft-anything y Ghidra. Panel en la sesión, lista de fuentes (carpetas y archivos), escáner que reconoce muchos formatos, estudio por lotes e instalación guiada del motor, Ghidra y Java (el motor ya viene en el instalador de Windows).
+- **Cola validada por código:** cada ficha de función se comprueba antes de aceptarse; los módulos agrupan funciones sueltas por dirección y reciben un nombre descriptivo; la síntesis genera módulos, informe y entrega final. La entrega ahora se divide por módulo, cada elemento solo puede escribir en su carpeta y los ids de evidencia citados se comprueban contra el almacén de evidencias.
+- **Prompts editables:** el prompt de la entrega final se edita en Configuración y por sesión, con botón Restablecer. Los prompts de función, módulo e informe están en archivos.
+- **Modelos locales:** el servidor solo arranca al enviar el mensaje, con comando de servidor por sesión. El paquete de herramientas nativas del motor se activa automáticamente si falta, evitando llamadas de herramienta devueltas como texto.
+- **Computer use con cuadrícula numerada:** las nuevas herramientas `grid_screenshot`, `grid_click` y `grid_move` dibujan una cuadrícula numerada en la captura; el modelo elige la celda y el código calcula el punto en pantalla, con refinamiento por celda. Útil para modelos poco precisos con coordenadas.
+- **Agente y cola:** el modo Agente del CLI retoma la sesión del propio CLI; cola de tareas sin Long Horizon con Ctx fijo en bloques, sub-agentes en segundo plano y memoria de sesión.
+- **Herramientas nuevas:** documentos Word/PDF/PowerPoint con runtime Node integrado, glob, búsqueda de skills, adjuntos en el chat, `report_findings`, `notebook_edit`, `show_widget` y `html_to_pdf`; overlay de Computer Use y perfiles de navegador por sesión.
 
-**Plataformas:** Windows, macOS universal (Apple Silicon e Intel) y Linux `full` y `compat`. Linux `compat` no incluye captura/automatización nativa del escritorio; Playwright y las APIs de medios son independientes de esa función. Los servidores/modelos locales deben instalarse y configurarse en cada equipo. Los builds automáticos no sustituyen pruebas en hardware real; la reproducción de vídeo depende de los códecs del sistema. No se realizaron generaciones de pago durante las pruebas de los adaptadores.
+**Plataformas:** Windows, macOS universal (Apple Silicon e Intel) y Linux `full` y `compat`. Linux `compat` no incluye captura/automatización nativa del escritorio. Los servidores/modelos locales deben instalarse y configurarse en cada equipo. Los builds automáticos no sustituyen pruebas en hardware real; la cuadrícula de computer use y la entrega por módulo de Anything aún necesitan más pruebas de uso.
 
 ## 中文
 
-- **直接生成图片和视频：** 输入框按钮只将当前提示词发送给所选生成器，不经过文本大模型。媒体提示词和结果使用独立历史记录。
-- **独立的 API 配置：** 图片和视频可使用不同的服务商、服务器和模型。Qwen Image 可以继续专门用于图片。OpenRouter 复用已有连接，也支持复用可识别的其他连接。
-- **服务商专用适配器：** 支持 OpenRouter、Google Gemini/Imagen/Veo、Grok/xAI、fal.ai 及本地/兼容 API。OpenAI 支持图片生成和编辑；Sora 视频 API 已停止服务。可查询模型列表而不生成媒体。fal.ai 使用端点 ID；其适配器暂不支持通过附件编辑图片。
-- **聊天中的媒体结果：** 图片缩略图可放大查看，视频可直接播放，文件可打开。视频保存到选定文件夹；调用 API 前必须选择可写入的文件夹。
-- **Long Horizon 和任务队列：** 改进检查点与精简记忆，修正会话文件访问，并防止无进展的重复执行。统一保存和启动队列按钮样式。
-- **浏览器：** 预配置 Playwright MCP，可禁用，支持选择 Chrome/Edge，并提供设置对话框。可使用独立配置文件，或通过扩展连接已有配置文件，以读取网页、填写表单、点击及查看控制台消息。
-- **本地模型：** 改进 Strata 的启动/停止流程及健康状态提示。Windows 上其适配器可打开可见控制台。修正 Bonsai 2 等模型的系统消息顺序。修正 Unix 进程组终止命令及 Linux/macOS 测试中的进程状态检查。
-- **阅读体验：** 默认字体改为 Outfit，保留原有字体选项，调整字号，并优化用户消息和模型回复的 Markdown 比例，包括标题、列表、表格、代码和间距。
+- **Anything 模式：** 借助 craft-anything 引擎和 Ghidra 研究程序、DLL、Java、Android、WebAssembly 和 Electron 应用。会话面板、来源列表（文件夹和文件）、可识别多种格式的扫描器、批量研究，以及引擎、Ghidra 和 Java 的引导式安装（Windows 安装包已内置引擎）。
+- **由代码校验的队列：** 每张函数卡片在接受前都会被检查；模块按地址归并零散函数并获得描述性名称；综合阶段生成模块、报告和最终交付。交付现按模块拆分，每个条目只能写入自己的文件夹，所引用的证据 ID 会与证据库核对。
+- **可编辑的提示词：** 最终交付提示词可在设置中和按会话编辑，并带有“重置”按钮。函数、模块和报告提示词以文件形式存放。
+- **本地模型：** 服务器仅在发送消息时启动，并支持按会话设置服务器命令。引擎的原生工具包缺失时会自动开启，避免工具调用被当作纯文本返回。
+- **编号网格的计算机操作：** 新增 `grid_screenshot`、`grid_click` 和 `grid_move` 工具，在截图上叠加编号网格；模型选择格子，代码计算屏幕坐标，并支持按格子细化。适合坐标精度较低的模型。
+- **代理与队列：** CLI 代理模式可恢复 CLI 自身的会话；不使用 Long Horizon 的任务队列，支持分块固定上下文、后台子代理和会话记忆。
+- **新工具：** 内置 Node 运行时的 Word/PDF/PowerPoint 文档、glob、技能搜索、聊天文件附件、`report_findings`、`notebook_edit`、`show_widget` 和 `html_to_pdf`；Computer Use 叠加层以及按会话的浏览器配置文件。
 
-**平台：** Windows、通用 macOS（Apple Silicon 和 Intel），以及 Linux 的 `full` 和 `compat` 版本。Linux `compat` 不包含原生桌面截图/自动化；Playwright 和媒体 API 不依赖该功能。每台设备都需要单独安装和配置本地服务器/模型。自动构建不能替代真实硬件测试；视频播放依赖系统编解码器。适配器测试未进行付费生成。
+**平台：** Windows、通用 macOS（Apple Silicon 和 Intel），以及 Linux 的 `full` 和 `compat` 版本。Linux `compat` 不包含原生桌面截图/自动化。每台设备都需要单独安装和配置本地服务器/模型。自动构建不能替代真实硬件测试；网格式计算机操作和 Anything 的按模块交付仍需更多实际使用测试。
