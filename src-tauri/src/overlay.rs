@@ -31,6 +31,16 @@ fn ensure_window(app: &AppHandle) -> Result<tauri::WebviewWindow> {
     if let Some(window) = app.get_webview_window(OVERLAY_LABEL) {
         return Ok(window);
     }
+    // No macOS `transparent()` exige a feature `macos-private-api` do Tauri (e sem transparencia o overlay
+    // viraria uma janela opaca cobrindo a tela), entao la o overlay simplesmente nao e criado.
+    #[cfg(target_os = "macos")]
+    return Err(anyhow!("overlay indisponivel no macOS"));
+    #[cfg(not(target_os = "macos"))]
+    create_window(app)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn create_window(app: &AppHandle) -> Result<tauri::WebviewWindow> {
     let monitor = app
         .primary_monitor()
         .ok()
