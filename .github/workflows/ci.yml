@@ -73,6 +73,11 @@ jobs:
       - name: Instalar dependencias do frontend
         run: npm ci
 
+      # tauri_build exige os recursos declarados no tauri.conf.json (node_modules do
+      # runtime Node e ignorado pelo git); sem isso o cargo check/test falha.
+      - name: Preparar runtime Node embutido
+        run: npm run prepare:node-runtime
+
       - name: Checar tipos TypeScript (vue-tsc)
         run: npx vue-tsc --noEmit
 
