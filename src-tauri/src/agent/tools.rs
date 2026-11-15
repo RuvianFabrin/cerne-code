@@ -1394,6 +1394,14 @@ async fn execute_project_tool(
                 .as_str()
                 .ok_or_else(|| anyhow!("path obrigatorio"))?;
             let path = resolve_read_path(project_root, extra_read_paths, rel)?;
+            // Item da fila do Anything em andamento: os arquivos de controle da fila (tarefas.json etc.) não
+            // são do modelo e são grandes (até 83 KB por leitura). Lidos em círculo, enchiam a janela de
+            // contexto e empurravam as instruções para fora. Tudo que o item precisa já vai na tarefa.
+            if super::plain_queue::item_tool_step_limit(session_id).is_some() && super::plain_queue::is_queue_control_file(&path) {
+                return Ok(ok(
+                    "Este arquivo é de controle da fila do Anything e não precisa ser lido: tudo que este item precisa já está nas instruções do item (prompt de sistema) e na mensagem da tarefa. Siga os passos do item e grave a ficha.".to_string(),
+                ));
+            }
             // Documentos binários (Word, LibreOffice, PDF, planilhas) viram texto
             // extraído; sem isso o modelo recebia bytes do zip/PDF como texto.
             let content = match path.extension().and_then(|e| e.to_str()).map(str::to_lowercase).as_deref() {

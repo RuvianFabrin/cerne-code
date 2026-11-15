@@ -306,11 +306,11 @@ pub fn spawn_server(fork: &LlamaForkConfig) -> Result<Child> {
             &fork.port.to_string(),
         ])
         .kill_on_drop(true);
-    // The Strata adapter has its own console, with live model loading logs.
+    // Todo servidor sobe numa janela de console própria, para a pessoa acompanhar o carregamento do modelo
+    // (o Strata já tinha a dele; os outros forks subiam sem janela e a saída não aparecia em lugar nenhum).
+    // Fechar a janela encerra o servidor.
     #[cfg(windows)]
-    if is_strata(fork) {
-        command.creation_flags(0x00000010);
-    }
+    command.creation_flags(0x00000010); // CREATE_NEW_CONSOLE
     Ok(command.spawn()?)
 }
 

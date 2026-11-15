@@ -22,6 +22,7 @@
   "anythingFinal": {"title": "Prompt de la entrega final", "enabledLabel": "Generar una entrega final después del informe", "enabledHint": "Al final del estudio la cola ejecuta un paso más con el prompt de abajo (por defecto: recrear el programa en Rust con GPUI). Desactívalo para parar en el informe.", "placeholders": "Puedes usar {'{objetivo}'}, {'{relatorio}'}, {'{modulos}'} y {'{pasta}'}; se rellenan cuando se ejecuta el paso. El paso siempre guarda en la carpeta entrega y termina con un LEIAME.md.", "saved": "Guardado", "reset": "Restablecer el predeterminado", "useGlobal": "Usar el prompt global", "sessionTitle": "Entrega final de esta sesión"},
   "anythingSetup": {"title": "Modo Anything: motor y herramientas", "hint": "El modo necesita el motor craft-anything y, para estudiar programas nativos, Ghidra y Java 21. No se descarga nada hasta que hagas clic.", "checking": "Comprobando…", "installEngine": "Instalar el motor", "installGhidra": "Instalar Ghidra y Java (~740 MB)", "working": "Trabajando…", "noPercent": "El motor no informa el progreso de este paso; puede tardar varios minutos.", "allReady": "Todo listo.", "recheck": "Comprobar de nuevo", "close": "Cerrar", "open": "Comprobar / instalar motor y Ghidra", "items": {"motor": "Motor (craft-anything)", "ghidra": "Ghidra (descompilador)", "java_ghidra": "Java 21 para Ghidra", "disco": "Espacio en disco", "servidor_mcp": "Servidor de herramientas del motor", "deep": "Modo Deep", "doctor_motor": "Autocomprobación del motor"}},
   "sidePanel": {
+    "server": { "placeholder": "Comando que inicia el servidor, p. ej. mise run llm:qwen-64k", "hint": "Se ejecuta solo cuando envías un mensaje y el servidor del modelo no responde. Abrir o crear la sesión no inicia nada. Déjalo vacío para no usarlo." },
     "browser": {
       "default": "Navegador predeterminado",
       "hint": "Cada perfil guarda sus propias cuentas y contraseñas. Inicia sesión una vez en la ventana del perfil.",
@@ -30,7 +31,7 @@
     },
     "show": "Mostrar panel",
     "hide": "Ocultar panel",
-    "sec": { "env": "Entorno", "context": "Contexto", "mcp": "MCP activos", "git": "Cambios (git)", "jobs": "Procesos en segundo plano", "agents": "Agentes", "sub": "Subsesiones", "browser": "Navegador", "anything": "Anything" },
+    "sec": { "env": "Entorno", "context": "Contexto", "mcp": "MCP activos", "git": "Cambios (git)", "jobs": "Procesos en segundo plano", "agents": "Agentes", "sub": "Subsesiones", "browser": "Navegador", "anything": "Anything", "server": "Servidor del modelo" },
     "env": { "readWrite": "Puede editar", "readOnly": "Solo lectura", "none": "Sin carpeta de proyecto" },
     "mcp": { "none": "Ningún MCP activo" },
     "anything": { "addFolder": "Añadir carpeta", "addFile": "Añadir archivo", "remove": "Quitar de la lista", "noSources": "Aún no hay fuentes: se escanea la carpeta del proyecto. Añade carpetas o archivos para elegir qué estudiar.", "scan": "Escanear fuentes", "plan": "Planificar todos", "empty": "Aún no hay objetivos. Escanea la carpeta del proyecto.", "ignored": "{n} archivo(s) ignorado(s) (formato desconocido)", "planned": "{n} objetivo(s) planificado(s)", "status": {"fazer": "pendiente", "planejado": "planificado", "feito": "hecho", "erro": "error"} },

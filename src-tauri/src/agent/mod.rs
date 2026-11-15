@@ -1051,6 +1051,12 @@ pub async fn run_turn(
         if session.plain_queue_enabled {
             prompt.push_str(&plain_queue::queue_prompt_block(session.fixed_context.enabled));
         }
+        // Instruções do item da fila em andamento (formato da ficha etc.): vão NO MESMO prompt de sistema,
+        // junto com a memória e o prompt da fila, e nunca como uma segunda mensagem de sistema. Ficam fora
+        // do histórico, então o Ctx fixo não as corta.
+        if let Some(bloco) = plain_queue::item_prompt_block(&session_id) {
+            prompt.push_str(&bloco);
+        }
         if session.task_queue_enabled {
             prompt.push_str("\n\n");
             prompt.push_str(task_queue::TASK_QUEUE_PROMPT);
@@ -1152,6 +1158,23 @@ pub async fn run_turn(
     }
 
     let (cfg, api_key) = session_provider_config(state, &session)?;
+
+    // Linha de comando de servidor da sessão: só aqui, ao enviar uma mensagem. Se o servidor já responde,
+    // não faz nada; senão sobe e espera. (O llama.cpp com fork tem o caminho dele, acima.)
+    if session.provider != ProviderKind::LlamaCpp && session.provider != ProviderKind::Cli {
+        if let Some(command) = session.server_command.as_deref().filter(|c| !c.trim().is_empty()) {
+            let _ = app.emit(
+                "agent:status",
+                StatusEvent {
+                    session_id: session_id.clone(),
+                    status: "starting_server".to_string(),
+                },
+            );
+            crate::ensure_session_server(state, &session_id, command, &cfg.base_url)
+                .await
+                .map_err(|e| anyhow::anyhow!("nao foi possivel subir o servidor da sessao: {e}"))?;
+        }
+    }
 
     // Auto-nomeação: se é a primeira mensagem e o título ainda é o default,
     // pede ao LLM um nome curto baseado no texto do usuário. Roda em paralelo
@@ -1408,6 +1431,17 @@ pub async fn run_turn(
             )));
             sessions::save_messages(&app_data_dir, &session_id, &messages)?;
             break;
+        }
+        // Item da fila: teto de etapas por turno, para o modelo não girar em círculos por horas. Ao estourar,
+        // o turno termina e a fila confere o item (e corrige ou bloqueia, como sempre).
+        if let Some(limite) = plain_queue::item_tool_step_limit(&session_id) {
+            if tool_steps >= limite {
+                messages.push(long_horizon::stop_message(&format!(
+                    "Limite de {limite} etapas com ferramentas para este item da fila. Turno encerrado sem a ficha gravada."
+                )));
+                sessions::save_messages(&app_data_dir, &session_id, &messages)?;
+                break;
+            }
         }
         if session.long_horizon.enabled {
             lh_briefing = Some(long_horizon::build_briefing(&app_data_dir, &session_id)?);

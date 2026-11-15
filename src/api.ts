@@ -231,6 +231,8 @@ export interface Session {
   enabled_mcp_servers: string[] | null;
   /** Perfil de navegador do Playwright desta sessao; null = padrao. */
   browser_profile?: string | null;
+  /** Linha de comando que sobe o servidor do modelo; roda só ao enviar uma mensagem com o servidor desligado. */
+  server_command?: string | null;
   /** Modo Anything (motor craft-anything) desta sessão. */
   anything?: {
     enabled: boolean;
@@ -619,6 +621,8 @@ export const api = {
     id: string,
     effort: "off" | "on" | "low" | "medium" | "high" | null,
   ) => invoke<Session>("update_session_reasoning_effort", { id, effort }),
+  updateSessionServerCommand: (id: string, command: string | null) =>
+    invoke<Session>("update_session_server_command", { id, command }),
   updateSessionFableMethod: (id: string, enabled: boolean) =>
     invoke<Session>("update_session_fable_method", { id, enabled }),
   setSessionAnything: (id: string, enabled: boolean, target: string | null, goal: string | null) =>

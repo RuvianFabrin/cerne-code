@@ -131,6 +131,9 @@ pub struct AppState {
     pub config: Mutex<AppConfig>,
     pub pending_edits: Mutex<HashMap<String, PendingEdit>>,
     pub llama_children: Mutex<HashMap<String, Child>>,
+    /// Servidores subidos pela linha de comando da sessão (`Session::server_command`), por id de sessão.
+    /// Separado de `llama_children` para que trocar de modelo não derrube o servidor da sessão.
+    pub session_servers: Mutex<HashMap<String, Child>>,
     /// Mesma ideia de `llama_children`, mas pros servidores de geração de
     /// imagem (`agent::image_gen::ImageGenPreset`) — ao contrário do
     /// llama.cpp, vários podem rodar ao mesmo tempo (portas diferentes),
@@ -1738,14 +1741,99 @@ async fn optimize_image_data_url(data_url: String) -> Result<String, String> {
 /// on purpose — a failure here doesn't block saving the session choice; the
 /// same start attempt happens again (and surfaces a real error) the next
 /// time a message is actually sent, see `agent::run_turn`.
-async fn apply_llama_lifecycle(state: &AppState, provider: ProviderKind, fork_id: Option<&str>) {
-    match (provider, fork_id) {
-        (ProviderKind::LlamaCpp, Some(fork)) => {
-            let _ = ensure_llama_ready(state, fork).await;
-        }
-        (ProviderKind::LlamaCpp, None) => {}
-        _ => stop_all_llama_servers(state),
+async fn apply_llama_lifecycle(state: &AppState, provider: ProviderKind, _fork_id: Option<&str>) {
+    // Criar ou abrir uma sessão (ou trocar o modelo) NÃO sobe servidor: esperar o modelo carregar aqui
+    // (até 5 min) deixava o app parecendo travado. O servidor sobe quando uma mensagem é enviada
+    // (`agent::run_turn`). Só liberamos a GPU quando a sessão sai do llama.cpp.
+    if provider != ProviderKind::LlamaCpp {
+        stop_all_llama_servers(state);
     }
+}
+
+/// Resposta do servidor em `base_url` (formato OpenAI, com `/v1` no fim ou não): `/health` na raiz ou
+/// `/models`. Qualquer um respondendo com sucesso vale.
+async fn server_answers(base_url: &str) -> bool {
+    let base = base_url.trim_end_matches('/');
+    let root = base.trim_end_matches("/v1");
+    let client = reqwest::Client::new();
+    for url in [format!("{root}/health"), format!("{base}/models")] {
+        let r = client.get(&url).timeout(std::time::Duration::from_millis(1500)).send().await;
+        if r.map(|r| r.status().is_success()).unwrap_or(false) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Garante o servidor da sessão: se `base_url` já responde, não faz nada; senão roda a linha de comando da
+/// sessão (numa janela de console, para ver o carregamento) e espera responder. Uma GPU só: antes de subir,
+/// derruba os servidores que o app mesmo subiu (os de outras sessões e os forks llama.cpp).
+pub(crate) async fn ensure_session_server(
+    state: &AppState,
+    session_id: &str,
+    command: &str,
+    base_url: &str,
+) -> anyhow::Result<()> {
+    if server_answers(base_url).await {
+        return Ok(());
+    }
+    {
+        let mut servers = state.session_servers.lock().unwrap();
+        let vivo = servers.get_mut(session_id).map(|c| matches!(c.try_wait(), Ok(None))).unwrap_or(false);
+        if !vivo {
+            servers.remove(session_id);
+            for (_, mut child) in servers.drain() {
+                if let Some(pid) = child.id() {
+                    agent::shell::kill_pid_tree_blocking(pid);
+                }
+                let _ = child.start_kill();
+            }
+            drop(servers);
+            stop_all_llama_servers(state);
+            let mut cmd = tokio::process::Command::new(if cfg!(windows) { "cmd" } else { "sh" });
+            cmd.arg(if cfg!(windows) { "/C" } else { "-c" }).arg(command).kill_on_drop(true);
+            #[cfg(windows)]
+            cmd.creation_flags(0x00000010); // CREATE_NEW_CONSOLE: o carregamento do modelo fica visível
+            let child = cmd.spawn().map_err(|e| anyhow::anyhow!("não foi possível rodar o comando do servidor: {e}"))?;
+            state.session_servers.lock().unwrap().insert(session_id.to_string(), child);
+        }
+    }
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+    loop {
+        {
+            let mut servers = state.session_servers.lock().unwrap();
+            if let Some(child) = servers.get_mut(session_id) {
+                // O comando pode terminar sem erro (ex.: lança o servidor e sai); só falha se sair com erro.
+                if let Some(status) = child.try_wait()? {
+                    if !status.success() {
+                        servers.remove(session_id);
+                        anyhow::bail!("O comando do servidor terminou com erro ({status}). Confira o comando da sessão.");
+                    }
+                }
+            }
+        }
+        if server_answers(base_url).await {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!("O servidor não respondeu em 5 minutos em {base_url}. Veja a janela do servidor.");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+}
+
+fn kill_all_session_servers_blocking(state: &AppState) {
+    let pids: Vec<u32> = state.session_servers.lock().unwrap().values().filter_map(|c| c.id()).collect();
+    for pid in pids {
+        agent::shell::kill_pid_tree_blocking(pid);
+    }
+    state.session_servers.lock().unwrap().clear();
+}
+
+/// Linha de comando que sobe o servidor desta sessão. Vazio = sem comando.
+#[tauri::command]
+fn update_session_server_command(state: State<AppState>, id: String, command: Option<String>) -> Result<Session, String> {
+    sessions::update_server_command(&state.app_data_dir, &id, command).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -2881,6 +2969,7 @@ pub fn run() {
                 config: Mutex::new(config),
                 pending_edits: Mutex::new(HashMap::new()),
                 llama_children: Mutex::new(HashMap::new()),
+                session_servers: Mutex::new(HashMap::new()),
                 image_gen_children: Mutex::new(HashMap::new()),
                 running_media: Mutex::new(std::collections::HashSet::new()),
                 background_jobs,
@@ -2997,6 +3086,7 @@ pub fn run() {
             llama_server_health,
             llama_server_status,
             start_llama_server,
+            update_session_server_command,
             stop_llama_server,
             list_sessions,
             create_session,
@@ -3097,8 +3187,33 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 let state = app_handle.state::<AppState>();
                 kill_all_llama_children_blocking(&state);
+                kill_all_session_servers_blocking(&state);
                 kill_all_image_gen_children_blocking(&state);
                 state.background_jobs.kill_all_blocking();
             }
         });
+}
+
+#[cfg(test)]
+mod session_server_tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn the_server_counts_as_up_only_when_it_answers() {
+        // Nada escutando: não responde (o comando da sessão teria de rodar).
+        assert!(!server_answers("http://127.0.0.1:1/v1").await);
+        // Servidor local respondendo 200 em qualquer rota: responde, e não há o que subir.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut s, _)) = listener.accept().await else { return };
+                let mut buf = [0u8; 512];
+                let _ = s.read(&mut buf).await;
+                let _ = s.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").await;
+            }
+        });
+        assert!(server_answers(&format!("http://127.0.0.1:{port}/v1")).await);
+    }
 }

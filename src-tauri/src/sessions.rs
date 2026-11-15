@@ -74,6 +74,7 @@ pub fn create_session(
         enabled_mcp_servers: Some(Vec::new()),
         browser_profile: None,
         anything: Default::default(),
+        server_command: None,
         fable_method: false,
         persona_id: None,
         total_prompt_tokens: 0,
@@ -256,6 +257,15 @@ pub fn update_project_root(
         dir.join("session.json"),
         serde_json::to_string_pretty(&session)?,
     )?;
+    Ok(session)
+}
+
+/// Guarda a linha de comando que sobe o servidor desta sessão. Vazio ou só espaços = sem comando.
+pub fn update_server_command(app_data_dir: &PathBuf, id: &str, command: Option<String>) -> Result<Session> {
+    let mut session = get_session(app_data_dir, id)?;
+    session.server_command = command.map(|c| c.trim().to_string()).filter(|c| !c.is_empty());
+    let dir = session_dir(app_data_dir, id);
+    std::fs::write(dir.join("session.json"), serde_json::to_string_pretty(&session)?)?;
     Ok(session)
 }
 
@@ -1871,5 +1881,17 @@ mod tests {
         let novas = load_messages_since(&dir, &session.id, 999).unwrap();
 
         assert!(novas.is_empty());
+    }
+
+    #[test]
+    fn the_server_command_is_trimmed_and_blank_clears_it() {
+        let dir = scratch_dir();
+        let session = sessao_long_horizon(&dir);
+        assert_eq!(get_session(&dir, &session.id).unwrap().server_command, None, "sessão nova nasce sem comando");
+        let s = update_server_command(&dir, &session.id, Some("  mise run llm:qwen-64k  ".into())).unwrap();
+        assert_eq!(s.server_command.as_deref(), Some("mise run llm:qwen-64k"));
+        assert_eq!(get_session(&dir, &session.id).unwrap().server_command.as_deref(), Some("mise run llm:qwen-64k"));
+        let s = update_server_command(&dir, &session.id, Some("   ".into())).unwrap();
+        assert_eq!(s.server_command, None);
     }
 }

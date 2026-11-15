@@ -743,6 +743,10 @@ pub struct Session {
     /// desserializam com o modo desligado.
     #[serde(default)]
     pub anything: AnythingState,
+    /// Linha de comando que sobe o servidor do modelo desta sessão (ex.: `mise run llm:qwen-64k`). Roda só
+    /// quando uma mensagem é enviada e o servidor do provedor não responde; abrir ou criar a sessão não sobe nada.
+    #[serde(default)]
+    pub server_command: Option<String>,
     /// Método Fable (github.com/Sahir619/fable-method) injetado no system
     /// prompt quando ligado. É um loop de trabalho (classificar → agir →
     /// verificar) que ajuda modelos pequenos/médios a não abandonar tarefas;

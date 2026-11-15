@@ -909,6 +909,14 @@ export const useSessionStore = defineStore("session", {
       this.contextUsage = await api.getSessionContextUsage(updated.id);
     },
 
+    async updateServerCommand(command: string) {
+      if (!this.currentId) return;
+      const updated = await api.updateSessionServerCommand(this.currentId, command.trim() ? command : null);
+      this.currentSession = updated;
+      const idx = this.sessions.findIndex((s) => s.id === updated.id);
+      if (idx !== -1) this.sessions[idx] = updated;
+    },
+
     async updateReasoningEffort(effort: "off" | "on" | "low" | "medium" | "high" | null) {
       if (!this.currentId) return;
       const updated = await api.updateSessionReasoningEffort(this.currentId, effort);

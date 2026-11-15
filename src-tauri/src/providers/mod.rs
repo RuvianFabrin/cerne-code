@@ -342,6 +342,62 @@ fn apply_openrouter_attribution(
     }
 }
 
+/// Troca esquemas booleanos (`"evidence": true`) dos parâmetros das ferramentas pelo objeto equivalente
+/// (`{}` e `{"not": {}}`). São JSON Schema válido, mas o `llama-server` recusa a requisição inteira com
+/// HTTP 500 ("schema must be an object") ao montar a gramática das chamadas de ferramenta. É o caso das
+/// ferramentas do motor Anything. Trocar não muda o significado do esquema.
+fn normalize_tool_schemas(tools: &mut serde_json::Value) {
+    let Some(lista) = tools.as_array_mut() else { return };
+    for t in lista {
+        if let Some(p) = t.pointer_mut("/function/parameters") {
+            normalize_schema(p);
+        }
+    }
+}
+
+fn normalize_schema(schema: &mut serde_json::Value) {
+    use serde_json::Value;
+    let Value::Object(map) = schema else { return };
+    for key in ["properties", "$defs", "definitions", "patternProperties"] {
+        if let Some(Value::Object(filhos)) = map.get_mut(key) {
+            for v in filhos.values_mut() {
+                normalize_subschema(v);
+            }
+        }
+    }
+    for key in ["items", "not", "additionalItems", "contains", "if", "then", "else", "propertyNames"] {
+        if let Some(v) = map.get_mut(key) {
+            normalize_subschema(v);
+        }
+    }
+    for key in ["oneOf", "anyOf", "allOf", "prefixItems"] {
+        if let Some(Value::Array(lista)) = map.get_mut(key) {
+            for v in lista {
+                normalize_subschema(v);
+            }
+        }
+    }
+    // `additionalProperties: true/false` é aceito como está; só entra quando é um esquema de verdade.
+    if let Some(v @ Value::Object(_)) = map.get_mut("additionalProperties") {
+        normalize_schema(v);
+    }
+}
+
+fn normalize_subschema(v: &mut serde_json::Value) {
+    use serde_json::Value;
+    match v {
+        Value::Bool(true) => *v = json!({}),
+        Value::Bool(false) => *v = json!({ "not": {} }),
+        Value::Object(_) => normalize_schema(v),
+        Value::Array(lista) => {
+            for item in lista {
+                normalize_subschema(item);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn apply_reasoning(
     body: &mut serde_json::Value,
     kind: ProviderKind,
@@ -360,7 +416,18 @@ fn apply_reasoning(
             // On só é oferecido pela UI pra providers locais; se chegar aqui
             // por algum outro caminho, não faz nada (Auto de fato). `Cli`
             // nunca passa por aqui (não é HTTP, ver `external_cli::dispatch`).
-            ProviderKind::Openrouter | ProviderKind::Custom | ProviderKind::Cli => {}
+            // Custom: servidor local atrás de um endereço próprio (Strata, vLLM, sglang…). "Ligado" manda o
+            // mesmo `enable_thinking` que o "Desligado" manda como falso; endpoints de API nativos (OpenAI,
+            // Gemini) usam `reasoning_effort`.
+            ProviderKind::Custom => {
+                if is_reasoning_effort_native(base_url) {
+                    body["reasoning_effort"] = json!("medium");
+                } else {
+                    body["enable_thinking"] = json!(true);
+                    body["chat_template_kwargs"] = json!({ "enable_thinking": true });
+                }
+            }
+            ProviderKind::Openrouter | ProviderKind::Cli => {}
         },
         Some(ReasoningEffort::Off) => match kind {
             ProviderKind::Ollama => {
@@ -437,6 +504,7 @@ pub async fn chat_stream(
     });
     if !tools.is_empty() {
         body["tools"] = serde_json::to_value(tools)?;
+        normalize_tool_schemas(&mut body["tools"]);
         if let Some(tc) = tool_choice {
             body["tool_choice"] = json!(tc);
         }
@@ -1318,6 +1386,52 @@ mod tests {
             // Não manda reasoning_effort:"none" nem nada que sugira desligar.
             assert!(body.get("reasoning_effort").is_none());
         }
+    }
+
+    #[test]
+    fn boolean_subschemas_in_tool_parameters_become_objects() {
+        // Caso real: o llama-server recusava com 500 "schema must be an object" em
+        // #/$defs/RecordSource/oneOf/1/properties/evidence.
+        let mut tools = json!([{
+            "type": "function",
+            "function": {
+                "name": "t",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "tudo": true, "nada": false, "n": { "type": "integer" } },
+                    "additionalProperties": false,
+                    "required": ["n"],
+                    "$defs": { "RecordSource": { "oneOf": [
+                        { "type": "object", "properties": { "a": { "type": "string" } } },
+                        { "type": "object", "properties": { "evidence": true } }
+                    ] } }
+                }
+            }
+        }]);
+        normalize_tool_schemas(&mut tools);
+        let p = &tools[0]["function"]["parameters"];
+        assert_eq!(p["properties"]["tudo"], json!({}));
+        assert_eq!(p["properties"]["nada"], json!({ "not": {} }));
+        assert_eq!(p["properties"]["n"], json!({ "type": "integer" }));
+        assert_eq!(p["$defs"]["RecordSource"]["oneOf"][1]["properties"]["evidence"], json!({}));
+        // Booleanos que não são esquemas ficam como estão.
+        assert_eq!(p["additionalProperties"], json!(false));
+        assert_eq!(p["required"], json!(["n"]));
+    }
+
+    #[test]
+    fn apply_reasoning_on_custom_turns_thinking_on() {
+        // Servidor local atrás de um provedor Custom: "Ligado" é o espelho do "Desligado".
+        let mut body = empty_body();
+        apply_reasoning(&mut body, ProviderKind::Custom, "http://127.0.0.1:8080/v1", Some(ReasoningEffort::On));
+        assert_eq!(body["enable_thinking"], json!(true));
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], json!(true));
+        assert!(body.get("reasoning_effort").is_none());
+        // Endpoint de API nativo usa o campo da API.
+        let mut nativo = empty_body();
+        apply_reasoning(&mut nativo, ProviderKind::Custom, "https://api.openai.com/v1", Some(ReasoningEffort::On));
+        assert_eq!(nativo["reasoning_effort"], json!("medium"));
+        assert!(nativo.get("enable_thinking").is_none());
     }
 
     #[test]

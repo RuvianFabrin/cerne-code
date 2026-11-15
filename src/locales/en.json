@@ -22,6 +22,7 @@
   "anythingFinal": {"title": "Final delivery prompt", "enabledLabel": "Generate a final delivery after the report", "enabledHint": "At the end of the study the queue runs one more step with the prompt below (by default: recreate the program in Rust with GPUI). Turn it off to stop at the report.", "placeholders": "You can use {'{objetivo}'}, {'{relatorio}'}, {'{modulos}'} and {'{pasta}'}; they are filled in when the step runs. The step always saves into the entrega folder and ends with a LEIAME.md.", "saved": "Saved", "reset": "Reset to default", "useGlobal": "Use the global prompt", "sessionTitle": "Final delivery of this session"},
   "anythingSetup": {"title": "Anything mode: engine and tools", "hint": "The mode needs the craft-anything engine, plus Ghidra and Java 21 to study native programs. Nothing is downloaded until you click.", "checking": "Checking…", "installEngine": "Install engine", "installGhidra": "Install Ghidra and Java (~740 MB)", "working": "Working…", "noPercent": "The engine does not report progress for this step; it can take several minutes.", "allReady": "Everything is ready.", "recheck": "Check again", "close": "Close", "open": "Check / install engine and Ghidra", "items": {"motor": "Engine (craft-anything)", "ghidra": "Ghidra (decompiler)", "java_ghidra": "Java 21 for Ghidra", "disco": "Disk space", "servidor_mcp": "Engine tool server", "deep": "Deep mode", "doctor_motor": "Engine self-check"}},
   "sidePanel": {
+    "server": { "placeholder": "Command that starts the server, e.g. mise run llm:qwen-64k", "hint": "Runs only when you send a message and the model server isn't answering. Opening or creating the session starts nothing. Leave empty to skip." },
     "browser": {
       "default": "Default browser",
       "hint": "Each profile keeps its own accounts and saved passwords. Sign in once in the profile's window.",
@@ -30,7 +31,7 @@
     },
     "show": "Show panel",
     "hide": "Hide panel",
-    "sec": { "env": "Environment", "context": "Context", "mcp": "Active MCPs", "git": "Changes (git)", "jobs": "Background processes", "agents": "Agents", "sub": "Sub-sessions", "browser": "Browser", "anything": "Anything" },
+    "sec": { "env": "Environment", "context": "Context", "mcp": "Active MCPs", "git": "Changes (git)", "jobs": "Background processes", "agents": "Agents", "sub": "Sub-sessions", "browser": "Browser", "anything": "Anything", "server": "Model server" },
     "env": { "readWrite": "Can edit", "readOnly": "Read only", "none": "No project folder" },
     "mcp": { "none": "No active MCP" },
     "anything": { "addFolder": "Add folder", "addFile": "Add file", "remove": "Remove from the list", "noSources": "No sources yet: the project folder is scanned. Add folders or files to choose what to study.", "scan": "Scan sources", "plan": "Plan all", "empty": "No targets yet. Scan the project folder.", "ignored": "{n} file(s) ignored (unknown format)", "planned": "{n} target(s) planned", "status": {"fazer": "to do", "planejado": "planned", "feito": "done", "erro": "error"} },

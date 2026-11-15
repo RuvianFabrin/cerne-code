@@ -192,6 +192,141 @@ async fn run_turn(app: &AppHandle, session_id: &str, text: String) -> Result<()>
     super::run_turn(app.clone(), &state, session_id.to_string(), text, Vec::new(), None).await
 }
 
+/// Teto de etapas com ferramentas num turno de item da fila. Um item normal usa poucas etapas; passar disso
+/// é o modelo girando em círculos (listar pastas e reler arquivos sem gravar a ficha). Visto ao vivo: um
+/// turno com milhares de chamadas, por horas, até a RAM do servidor acabar.
+pub const ITEM_TOOL_STEP_LIMIT: usize = 40;
+
+/// Item da fila em andamento por sessão -> as instruções dele (regras, formato, exemplo e caminho).
+static ITEM_ATIVO: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// Teto de etapas valendo para a sessão agora: só enquanto a fila roda um item dela.
+pub fn item_tool_step_limit(session_id: &str) -> Option<usize> {
+    let ativos = ITEM_ATIVO.lock().ok()?;
+    ativos.iter().any(|(s, _)| s == session_id).then_some(ITEM_TOOL_STEP_LIMIT)
+}
+
+/// Bloco do item atual para o PROMPT DE SISTEMA (a mesma mensagem única de sistema, junto com a memória e o
+/// prompt da fila). Fica fora do histórico, então nenhuma janela de contexto o empurra para fora: o modelo
+/// sempre sabe o formato da ficha, por maior que seja o resultado das ferramentas. `None` quando a fila não
+/// está rodando um item desta sessão.
+pub fn item_prompt_block(session_id: &str) -> Option<String> {
+    let ativos = ITEM_ATIVO.lock().ok()?;
+    let (_, instrucoes) = ativos.iter().find(|(s, _)| s == session_id)?;
+    Some(format!(
+        "\n\n## Item atual da fila (estas instruções sempre valem; não procure o formato em pastas nem em arquivos)\n{instrucoes}"
+    ))
+}
+
+/// Arquivos de controle da fila do Anything (dentro de `.anything`): não pertencem ao modelo e não ajudam a
+/// estudar uma função. Ver o uso em `read_file` (agent/tools.rs).
+pub fn is_queue_control_file(path: &std::path::Path) -> bool {
+    let nome = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_ascii_lowercase();
+    let na_pasta_anything = path.components().any(|c| c.as_os_str() == ".anything");
+    na_pasta_anything && matches!(nome.as_str(), "tarefas.json" | "alvos.json" | "indice.json" | "fontes.json" | "alvo.json")
+}
+
+/// Memória física disponível, em GB: a que o sistema consegue dar sem recorrer ao disco (inclui o cache de
+/// arquivos que ele libera sob pressão, como o "Disponível" do Gerenciador de Tarefas). `None` se não der
+/// para medir neste sistema.
+#[cfg(windows)]
+fn available_memory_gb() -> Option<f64> {
+    #[repr(C)]
+    struct MemoryStatusEx {
+        length: u32,
+        memory_load: u32,
+        total_phys: u64,
+        avail_phys: u64,
+        total_page_file: u64,
+        avail_page_file: u64,
+        total_virtual: u64,
+        avail_virtual: u64,
+        avail_extended_virtual: u64,
+    }
+    extern "system" {
+        fn GlobalMemoryStatusEx(buffer: *mut MemoryStatusEx) -> i32;
+    }
+    let mut s = MemoryStatusEx {
+        length: std::mem::size_of::<MemoryStatusEx>() as u32,
+        memory_load: 0,
+        total_phys: 0,
+        avail_phys: 0,
+        total_page_file: 0,
+        avail_page_file: 0,
+        total_virtual: 0,
+        avail_virtual: 0,
+        avail_extended_virtual: 0,
+    };
+    // SAFETY: a struct tem o layout de MEMORYSTATUSEX e `length` está preenchido, como a API exige.
+    if unsafe { GlobalMemoryStatusEx(&mut s) } == 0 {
+        return None;
+    }
+    Some(s.avail_phys as f64 / 1_073_741_824.0)
+}
+
+#[cfg(target_os = "linux")]
+fn available_memory_gb() -> Option<f64> {
+    let texto = std::fs::read_to_string("/proc/meminfo").ok()?;
+    let kb: f64 = texto.lines().find(|l| l.starts_with("MemAvailable:"))?.split_whitespace().nth(1)?.parse().ok()?;
+    Some(kb / 1_048_576.0)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn available_memory_gb() -> Option<f64> {
+    None
+}
+
+/// Abaixo disso a fila não começa outro item: o servidor do modelo ou o sistema podem cair sem aviso.
+const MIN_AVAILABLE_MEMORY_GB: f64 = 2.0;
+/// Quanto a fila espera a memória voltar antes de parar (verificações de 30 s).
+const MEMORY_WAIT_CHECKS: u32 = 20;
+
+/// Memória disponível abaixo do mínimo? Sem medida (`None`), não bloqueia.
+fn memory_is_low(disponivel_gb: Option<f64>, minimo_gb: f64) -> bool {
+    disponivel_gb.is_some_and(|g| g < minimo_gb)
+}
+
+/// Rede de segurança: antes de cada item, confere a memória. Se estiver baixa, espera até 10 minutos pela
+/// recuperação (outro programa liberando memória, por exemplo). `false` = continua baixa, e a fila para.
+async fn memory_ok(app: &AppHandle, session_id: &str, item_id: &str) -> bool {
+    let primeira = available_memory_gb();
+    if !memory_is_low(primeira, MIN_AVAILABLE_MEMORY_GB) {
+        return true;
+    }
+    emit_status(
+        app,
+        session_id,
+        "processing",
+        Some(item_id.to_string()),
+        Some(format!(
+            "Memória disponível baixa ({:.1} GB, mínimo {MIN_AVAILABLE_MEMORY_GB} GB): aguardando até {} minutos antes do próximo item.",
+            primeira.unwrap_or(0.0),
+            MEMORY_WAIT_CHECKS / 2
+        )),
+    );
+    for _ in 0..MEMORY_WAIT_CHECKS {
+        tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+        if !memory_is_low(available_memory_gb(), MIN_AVAILABLE_MEMORY_GB) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Turno de um item da fila: igual a `run_turn`, mas com o teto de etapas por turno e com as instruções do
+/// item fixas no prompt de sistema enquanto ele roda.
+async fn run_item_turn(app: &AppHandle, session_id: &str, text: String, instrucoes: &str) -> Result<()> {
+    if let Ok(mut ativos) = ITEM_ATIVO.lock() {
+        ativos.retain(|(s, _)| s != session_id);
+        ativos.push((session_id.to_string(), instrucoes.to_string()));
+    }
+    let resultado = run_turn(app, session_id, text).await;
+    if let Ok(mut ativos) = ITEM_ATIVO.lock() {
+        ativos.retain(|(s, _)| s != session_id);
+    }
+    resultado
+}
+
 /// Arquivo da fila de uma sessão do modo Anything: `.anything/tarefas.json` do projeto. `None` quando o
 /// modo está desligado ou a sessão não tem pasta de projeto (a fila segue o arquivo escolhido).
 pub fn anything_queue_file(session: &crate::models::Session) -> Option<PathBuf> {
@@ -419,13 +554,17 @@ async fn item_de_funcao(
         crate::anything::workspace::Workspace { root: root.to_path_buf() }.resumos(&chama)?
     };
     let tipo = tasks[idx].get("tipo").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    // Instruções que vão fixas no prompt de sistema durante o item. Para função são sempre as mesmas (regras,
+    // formato e exemplo), então o prompt de sistema é igual de um item para o outro e o servidor reaproveita
+    // o prompt já lido. Para os outros tipos (poucos itens) é o próprio texto do item.
+    let mut instrucoes_fixas: Option<String> = None;
     let mut texto = if tipo == "entrega" {
         let global = app.state::<crate::AppState>().config.lock().unwrap().anything.clone();
         texto_da_entrega(app_data_dir, session_id, root, &global)
     } else if tipo == "funcao" {
         // Modelo pequeno não adivinha o formato da ficha: o prompt completo (regras + passos + exemplo)
         // é montado aqui, e não a descrição curta que o plano gravou.
-        use crate::anything::prompts::{preencher, FUNCAO, SISTEMA};
+        use crate::anything::prompts::{preencher, FUNCAO, FUNCAO_REGRAS, SISTEMA};
         let objetivo = sessions::get_session(app_data_dir, session_id)
             .ok()
             .and_then(|s| s.anything.goal)
@@ -436,9 +575,8 @@ async fn item_de_funcao(
         let resumos = if linhas.is_empty() { "nenhuma (esta função não chama outras já estudadas)".to_string() } else { linhas.join("
 ") };
         let corpo = preencher(FUNCAO, &[("endereco", &endereco), ("nome", &nome), ("objetivo", &objetivo), ("resumos", &resumos)]);
-        format!("{SISTEMA}
-
-{corpo}")
+        instrucoes_fixas = Some(format!("{SISTEMA}\n\n{FUNCAO_REGRAS}"));
+        corpo
     } else {
         let mut t = prompt.to_string();
         if !linhas.is_empty() {
@@ -458,7 +596,8 @@ Funções que esta chama, já estudadas:
     texto.push_str(&format!(
         "\n\nGrave o arquivo exatamente neste caminho completo (crie a pasta se faltar; outro lugar não é conferido):\n{caminho_completo}"
     ));
-    run_turn(app, session_id, texto).await?;
+    let instrucoes = instrucoes_fixas.unwrap_or_else(|| texto.clone());
+    run_item_turn(app, session_id, texto.clone(), &instrucoes).await?;
     let mut erros;
     for tentativa in 0..=CONFIRM_RETRIES {
         match checar_item(root, &tasks[idx]) {
@@ -489,11 +628,15 @@ Funções que esta chama, já estudadas:
             emit_status(app, session_id, "blocked", Some(item_id), Some(format!("Item bloqueado: {motivo}")));
             return Ok(());
         }
+        // As instruções do item (regras, formato e exemplo) ficam no prompt de sistema durante todo o item
+        // (`item_prompt_block`), então a correção só diz o que falhou. Antes, sem isso, o modelo perdia o
+        // formato da janela de contexto, saía procurando em pastas e arquivos, e o resultado grande dessas
+        // leituras empurrava as instruções ainda mais para fora: um ciclo sem fim.
         let correcao = format!(
-            "A ficha em {caminho_completo} não passou na conferência:\n- {}\nCorrija e grave o arquivo de novo nesse mesmo caminho completo, no formato do modo. Responda gravando o arquivo.",
+            "A tentativa anterior de {caminho_completo} não passou na conferência:\n- {}\nRefaça seguindo o formato e o exemplo das instruções do item (no prompt de sistema) e grave o arquivo nesse mesmo caminho completo. Não procure o formato em pastas nem em outros arquivos. Responda gravando o arquivo.",
             erros.join("\n- ")
         );
-        run_turn(app, session_id, correcao).await?;
+        run_item_turn(app, session_id, correcao, &instrucoes).await?;
     }
     Ok(())
 }
@@ -538,6 +681,21 @@ pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
             .map(|v| v.as_str().map(str::to_owned).unwrap_or_else(|| v.to_string()))
             .unwrap_or_else(|| "?".to_string());
         let prompt_text = task_queue::item_prompt_text(&tasks[idx])?;
+        // Rede de segurança: com pouca memória disponível a fila não começa outro item (o servidor do modelo
+        // ou o sistema podem cair sem aviso). Espera um pouco e, se não voltar, para com o item ainda "fazer".
+        if !memory_ok(&app, &session_id, &item_id).await {
+            emit_status(
+                &app,
+                &session_id,
+                "stuck",
+                Some(item_id.clone()),
+                Some(format!(
+                    "Fila parada: memória disponível abaixo de {MIN_AVAILABLE_MEMORY_GB} GB por {} minutos. Libere memória ou reinicie o servidor do modelo e retome; o item {item_id} continua \"fazer\".",
+                    MEMORY_WAIT_CHECKS / 2
+                )),
+            );
+            return Ok(());
+        }
         // Modo Anything, item de função: a ficha é conferida pelo código, não pela pergunta "feito?".
         if let Some(arquivo) = arquivo_anything.as_deref() {
             if matches!(tasks[idx].get("tipo").and_then(|v| v.as_str()), Some("funcao") | Some("modulo") | Some("relatorio") | Some("entrega")) {
@@ -876,9 +1034,10 @@ mod anything_checagem_tests {
 
     #[test]
     fn the_function_prompt_names_every_field_the_validation_requires() {
-        use crate::anything::prompts::FUNCAO;
+        // O formato mora nas regras fixas (prompt de sistema), não na mensagem de cada função.
+        use crate::anything::prompts::FUNCAO_REGRAS;
         for campo in ["endereco", "nome_original", "nome_sugerido", "resumo", "o_que_faz", "base", "confianca"] {
-            assert!(FUNCAO.contains(&format!("\"{campo}\"")), "o prompt não explica o campo {campo}");
+            assert!(FUNCAO_REGRAS.contains(&format!("\"{campo}\"")), "o prompt não explica o campo {campo}");
         }
     }
 
@@ -956,5 +1115,60 @@ mod entrega_enderecos_tests {
         let erro = checar_entrega(&d, "entrega/LEIAME.md").unwrap_err();
         assert!(erro[0].contains("0x140001500"), "{erro:?}");
         std::fs::remove_dir_all(d).ok();
+    }
+}
+
+#[cfg(test)]
+mod item_step_limit_tests {
+    use super::*;
+
+    #[test]
+    fn the_step_limit_only_applies_while_an_item_of_that_session_runs() {
+        let id = "sessao-teste-limite";
+        assert_eq!(item_tool_step_limit(id), None);
+        assert_eq!(item_prompt_block(id), None, "sem item rodando, nada entra no prompt de sistema");
+        ITEM_ATIVO.lock().unwrap().push((id.to_string(), "FORMATO: {\"endereco\": ...}".to_string()));
+        assert_eq!(item_tool_step_limit(id), Some(ITEM_TOOL_STEP_LIMIT));
+        assert_eq!(item_tool_step_limit("outra-sessao"), None);
+        let bloco = item_prompt_block(id).unwrap();
+        assert!(bloco.contains("FORMATO:") && bloco.contains("Item atual da fila"));
+        assert_eq!(item_prompt_block("outra-sessao"), None);
+        ITEM_ATIVO.lock().unwrap().retain(|(s, _)| s != id);
+        assert_eq!(item_tool_step_limit(id), None);
+        assert_eq!(item_prompt_block(id), None);
+    }
+}
+
+#[cfg(test)]
+mod memory_and_control_files_tests {
+    use super::*;
+
+    #[test]
+    fn low_memory_only_when_measured_and_below_the_minimum() {
+        assert!(memory_is_low(Some(1.0), 2.0));
+        assert!(!memory_is_low(Some(2.0), 2.0));
+        assert!(!memory_is_low(Some(8.0), 2.0));
+        assert!(!memory_is_low(None, 2.0), "sem medida, a fila não é bloqueada");
+    }
+
+    #[test]
+    fn the_memory_can_be_measured_on_this_system() {
+        if cfg!(any(windows, target_os = "linux")) {
+            let gb = available_memory_gb().expect("deveria medir a memória");
+            assert!(gb > 0.0 && gb < 4096.0, "{gb}");
+        }
+    }
+
+    #[test]
+    fn only_the_queue_files_inside_dot_anything_are_control_files() {
+        use std::path::Path;
+        let alvo = Path::new(r"F:\proj\.anything\alvos\8748987e-notepad");
+        for nome in ["tarefas.json", "indice.json", "alvo.json"] {
+            assert!(is_queue_control_file(&alvo.join(nome)), "{nome}");
+        }
+        assert!(is_queue_control_file(&Path::new("/p/.anything").join("alvos.json")));
+        // A ficha de uma função e arquivos fora de .anything seguem legíveis.
+        assert!(!is_queue_control_file(&alvo.join("funcoes").join("0x1400012dc.json")));
+        assert!(!is_queue_control_file(Path::new("/p/src/tarefas.json")));
     }
 }

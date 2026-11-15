@@ -286,6 +286,11 @@ const REASONING_EFFORT_OPTIONS = computed<{
   }
   return [
     { value: "off", label: `💤 ${t("composer.reasoningOff")}` },
+    // "Ligado" só para Custom: servidor local atrás de um endereço próprio (ex.: Strata), onde o Cerne
+    // manda enable_thinking. Em OpenRouter e outras APIs o controle certo são Baixo/Médio/Alto.
+    ...(sessionStore.currentSession?.provider === "custom"
+      ? [{ value: "on" as const, label: `🧠 ${t("composer.reasoningOn")}` }]
+      : []),
     { value: "auto", label: `🧠 ${t("composer.reasoningAuto")}` },
     { value: "low", label: `🧠 ${t("composer.reasoningLow")}` },
     { value: "medium", label: `🧠 ${t("composer.reasoningMedium")}` },

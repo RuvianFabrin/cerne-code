@@ -45,6 +45,25 @@ const anythingFinalDefault = ref("");
 api.anythingFinalDefault().then((t) => (anythingFinalDefault.value = t)).catch(() => {});
 // O que vale quando a sessão não escreveu o próprio: o texto das Configurações, ou o padrão do Cerne.
 const anythingFinalFallback = computed(() => providerStore.config?.anything?.final_prompt?.trim() || anythingFinalDefault.value);
+// Linha de comando que sobe o servidor do modelo desta sessão. Só roda ao enviar uma mensagem com o servidor
+// desligado; abrir ou criar a sessão não sobe nada.
+const serverCommand = ref("");
+const serverMsg = ref("");
+watch(
+  () => sessionStore.currentSession?.server_command,
+  (v) => (serverCommand.value = v ?? ""),
+  { immediate: true },
+);
+async function saveServerCommand() {
+  if ((sessionStore.currentSession?.server_command ?? "") === serverCommand.value.trim()) return;
+  try {
+    await sessionStore.updateServerCommand(serverCommand.value);
+    serverMsg.value = "";
+  } catch (e) {
+    serverMsg.value = String(e);
+  }
+}
+
 async function saveSessionFinal(value: string) {
   try {
     await sessionStore.updateAnythingFinal(value);
@@ -371,6 +390,27 @@ function statusLabel(status: string): string {
             {{ $t("sidePanel.browser.create") }}
           </button>
         </div>
+      </div>
+    </section>
+
+    <!-- Servidor do modelo -->
+    <section class="sp-section">
+      <button class="sp-head" @click="toggle('server')">
+        <span class="msi chevron">{{ collapsed.server ? "chevron_right" : "expand_more" }}</span>
+        <span class="sp-title">{{ $t("sidePanel.sec.server") }}</span>
+      </button>
+      <div v-if="!collapsed.server" class="sp-body">
+        <input
+          v-model="serverCommand"
+          class="sp-input"
+          spellcheck="false"
+          :placeholder="$t('sidePanel.server.placeholder')"
+          :aria-label="$t('sidePanel.sec.server')"
+          @blur="saveServerCommand"
+          @keydown.enter="saveServerCommand"
+        />
+        <p class="sp-empty">{{ $t("sidePanel.server.hint") }}</p>
+        <p v-if="serverMsg" class="sp-empty">{{ serverMsg }}</p>
       </div>
     </section>
 
