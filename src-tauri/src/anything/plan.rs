@@ -434,6 +434,58 @@ mod real {
     }
 }
 
+/// Item da entrega de UM módulo: escreve o código dele e uma nota curta em `entrega/notas/`.
+fn item_de_entrega_do_modulo(arquivo: &str, enderecos: &[String]) -> Value {
+    json!({
+        "id": format!("ent-{arquivo}"),
+        "status": task_queue::STATUS_FAZER,
+        "titulo": format!("Entrega do módulo {arquivo}"),
+        "descricao": "Entrega do módulo: o texto é montado ao rodar, a partir do prompt da entrega final.",
+        "tipo": "entrega_modulo",
+        "modulo": format!("modulos/{arquivo}.md"),
+        "enderecos": enderecos,
+        "saida": format!("entrega/notas/{arquivo}.md"),
+    })
+}
+
+/// Fila com uma entrega só e módulos prontos: devolve a fila com um item de entrega por módulo antes da
+/// entrega final, que volta a `fazer` (a de uma peça só falhou ou nem rodou). `None` se não há o que mudar:
+/// sem entrega, entrega já pronta, já dividida, ou sem módulos.
+pub fn dividir_entrega_existente(existentes: &[Value]) -> Option<(Vec<Value>, usize)> {
+    let entrega = existentes.iter().find(|t| t["tipo"] == "entrega")?;
+    if entrega["status"] == super::STATUS_PRONTO || existentes.iter().any(|t| t["tipo"] == "entrega_modulo") {
+        return None;
+    }
+    let novos: Vec<Value> = existentes
+        .iter()
+        .filter(|t| t["tipo"] == "modulo")
+        .filter_map(|t| {
+            let arquivo = t["saida"].as_str()?.strip_prefix("modulos/")?.strip_suffix(".md")?.to_string();
+            let enderecos: Vec<String> = t["enderecos"].as_array()?.iter().filter_map(|e| e.as_str().map(str::to_string)).collect();
+            Some(item_de_entrega_do_modulo(&arquivo, &enderecos))
+        })
+        .collect();
+    if novos.is_empty() {
+        return None;
+    }
+    let n = novos.len();
+    let mut saida = Vec::with_capacity(existentes.len() + n);
+    for t in existentes {
+        if t["tipo"] == "entrega" {
+            saida.extend(novos.iter().cloned());
+            let mut e = t.clone();
+            e["status"] = json!(task_queue::STATUS_FAZER);
+            if let Some(o) = e.as_object_mut() {
+                o.remove("motivo");
+            }
+            saida.push(e);
+        } else {
+            saida.push(t.clone());
+        }
+    }
+    Some((saida, n))
+}
+
 /// Modo Anything, fase 10: quando todas as funções estão prontas ou bloqueadas, acrescenta a
 /// síntese à fila: um item por módulo (agrupado pelo grafo) e um de relatório no fim. Não mexe no que
 /// já existe, então pode ser chamada de novo sem duplicar. Devolve quantos itens entraram.
@@ -447,6 +499,14 @@ pub fn acrescentar_sintese(ws: &Workspace, objetivo: &str, com_entrega: bool) ->
     }
     let existentes = task_queue::parse_tasks(&std::fs::read_to_string(&caminho)?)
         .map_err(|e| anyhow!("tarefas.json não confere: {e}"))?;
+    // Fila antiga, com uma entrega só: passa a ter uma entrega por módulo antes da final (a de uma peça só
+    // enchia a janela de contexto do modelo e ele girava em círculos sem gravar nada).
+    if com_entrega {
+        if let Some((tarefas, n)) = dividir_entrega_existente(&existentes) {
+            escrever_atomico(&caminho, &task_queue::serialize_tasks(&tarefas))?;
+            return Ok(n);
+        }
+    }
     let funcoes_abertas = existentes.iter().any(|t| t["tipo"] == "funcao" && t["status"] == task_queue::STATUS_FAZER);
     let ja_tem_relatorio = existentes.iter().any(|t| t["tipo"] == "relatorio");
     if funcoes_abertas || ja_tem_relatorio {
@@ -476,6 +536,7 @@ pub fn acrescentar_sintese(ws: &Workspace, objetivo: &str, com_entrega: bool) ->
     }
     let mut novas = Vec::new();
     let mut nomes_modulos = Vec::new();
+    let mut entregas_modulo: Vec<Value> = Vec::new();
     for (i, grupo) in agrupar(&prontas, &arestas).into_iter().enumerate() {
         let arquivo = nome_arquivo(i);
         let linhas_grupo: Vec<String> = grupo.iter().filter_map(|e| linhas.get(e).cloned()).collect();
@@ -495,6 +556,7 @@ pub fn acrescentar_sintese(ws: &Workspace, objetivo: &str, com_entrega: bool) ->
             "saida": format!("modulos/{arquivo}.md"),
         }));
         nomes_modulos.push(format!("modulos/{arquivo}.md"));
+        entregas_modulo.push(item_de_entrega_do_modulo(&arquivo, &grupo));
     }
     let descricao_relatorio = preencher(RELATORIO, &[
         ("objetivo", objetivo),
@@ -511,8 +573,10 @@ pub fn acrescentar_sintese(ws: &Workspace, objetivo: &str, com_entrega: bool) ->
         "bloqueadas": bloqueadas,
     }));
     if com_entrega {
-        // O texto do prompt não é gravado aqui: é montado na hora de rodar, com o que a pessoa tiver
+        // Primeiro o código de cada módulo (um item por módulo, janela de contexto pequena); o item final só
+        // monta. O texto do prompt não é gravado aqui: é montado na hora de rodar, com o que a pessoa tiver
         // escrito (Configurações ou sessão) naquele momento.
+        novas.extend(entregas_modulo);
         novas.push(json!({
             "id": "entrega",
             "status": task_queue::STATUS_FAZER,
@@ -568,5 +632,57 @@ mod sintese_tests {
         // Segunda chamada: nada novo.
         assert_eq!(acrescentar_sintese(&ws, "objetivo de teste", false).unwrap(), 0);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_delivery_gets_one_item_per_module_before_the_final_one() {
+        let d = std::env::temp_dir().join(format!("anything-entrega-mod-{}", uuid::Uuid::new_v4()));
+        let ws = Workspace::new(&d);
+        ws.ensure().unwrap();
+        for (e, chama) in [("0x1", vec!["0x2"]), ("0x2", vec![]), ("0x3", vec![])] {
+            ws.gravar_ficha(&super::super::workspace::parse_ficha(&ficha(e, &chama)).unwrap()).unwrap();
+        }
+        let tarefas: Vec<Value> = ["0x1", "0x2", "0x3"]
+            .iter()
+            .map(|e| json!({"id": format!("fn-{e}"), "status": "pronto", "tipo": "funcao", "endereco": e, "saida": format!("funcoes/{e}.json")}))
+            .collect();
+        std::fs::write(ws.root.join("tarefas.json"), task_queue::serialize_tasks(&tarefas)).unwrap();
+        acrescentar_sintese(&ws, "objetivo", true).unwrap();
+        let lidas = task_queue::parse_tasks(&std::fs::read_to_string(ws.root.join("tarefas.json")).unwrap()).unwrap();
+        let tipos: Vec<&str> = lidas.iter().filter_map(|t| t["tipo"].as_str()).collect();
+        let n_mod = tipos.iter().filter(|t| **t == "modulo").count();
+        assert_eq!(tipos.iter().filter(|t| **t == "entrega_modulo").count(), n_mod, "uma entrega por módulo");
+        assert_eq!(*tipos.last().unwrap(), "entrega", "a final por último");
+        let primeira = lidas.iter().find(|t| t["tipo"] == "entrega_modulo").unwrap();
+        assert!(primeira["saida"].as_str().unwrap().starts_with("entrega/notas/"));
+        assert!(primeira["modulo"].as_str().unwrap().starts_with("modulos/"));
+        assert!(!primeira["enderecos"].as_array().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn an_old_queue_with_a_single_delivery_is_split_and_the_blocked_one_is_reopened() {
+        let antigas = vec![
+            json!({"id": "fn-0x1", "status": "pronto", "tipo": "funcao", "endereco": "0x1", "saida": "funcoes/0x1.json"}),
+            json!({"id": "mod-modulo_01", "status": "pronto", "tipo": "modulo", "enderecos": ["0x1", "0x2"], "saida": "modulos/modulo_01.md"}),
+            json!({"id": "mod-modulo_02", "status": "pronto", "tipo": "modulo", "enderecos": ["0x3"], "saida": "modulos/modulo_02.md"}),
+            json!({"id": "relatorio", "status": "pronto", "tipo": "relatorio", "saida": "relatorio.md"}),
+            json!({"id": "entrega", "status": "bloqueada", "motivo": "o arquivo ainda não existe", "tipo": "entrega", "saida": "entrega/LEIAME.md"}),
+        ];
+        let (novas, n) = dividir_entrega_existente(&antigas).expect("deveria dividir");
+        assert_eq!(n, 2);
+        let ids: Vec<&str> = novas.iter().filter_map(|t| t["id"].as_str()).collect();
+        assert_eq!(ids, ["fn-0x1", "mod-modulo_01", "mod-modulo_02", "relatorio", "ent-modulo_01", "ent-modulo_02", "entrega"]);
+        let entrega = novas.last().unwrap();
+        assert_eq!(entrega["status"], "fazer");
+        assert!(entrega.get("motivo").is_none(), "o motivo antigo não vale mais");
+        assert_eq!(novas[4]["enderecos"], json!(["0x1", "0x2"]));
+        // Já dividida: não divide de novo. Entrega pronta, sem módulos ou sem entrega: nada a fazer.
+        assert!(dividir_entrega_existente(&novas).is_none());
+        let mut pronta = antigas.clone();
+        pronta[4]["status"] = json!("pronto");
+        assert!(dividir_entrega_existente(&pronta).is_none());
+        assert!(dividir_entrega_existente(&antigas[..4]).is_none());
+        assert!(dividir_entrega_existente(&[antigas[0].clone(), antigas[4].clone()]).is_none());
     }
 }

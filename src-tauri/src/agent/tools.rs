@@ -2034,6 +2034,9 @@ async fn execute_project_tool(
                 .as_str()
                 .ok_or_else(|| anyhow!("content obrigatorio"))?;
             let target = resolve_path(project_root, rel, execution_mode, writable_extra_roots)?;
+            if let Err(aviso) = super::plain_queue::item_write_allowed(session_id, &target) {
+                return Ok(ok(aviso));
+            }
             if *execution_mode == crate::models::ExecutionMode::Yolo {
                 let (diff, is_new_file) = sandbox::write_direct(&target, content)?;
                 Ok(ToolOutcome {
@@ -2074,6 +2077,9 @@ async fn execute_project_tool(
                 .as_str()
                 .ok_or_else(|| anyhow!("new_str obrigatorio"))?;
             let target = resolve_path(project_root, rel, execution_mode, writable_extra_roots)?;
+            if let Err(aviso) = super::plain_queue::item_write_allowed(session_id, &target) {
+                return Ok(ok(aviso));
+            }
             let original = sandbox::read_current_content(project_root, &target)?;
             let occurrences = original.matches(old_str).count();
             let new_content = match occurrences {
@@ -2166,6 +2172,9 @@ async fn execute_project_tool(
                 .as_str()
                 .ok_or_else(|| anyhow!("language obrigatorio"))?;
             let target = resolve_path(project_root, rel, execution_mode, writable_extra_roots)?;
+            if let Err(aviso) = super::plain_queue::item_write_allowed(session_id, &target) {
+                return Ok(ok(aviso));
+            }
             let original = sandbox::read_current_content(project_root, &target)?;
             let new_content = match ast_tools::rewrite_file(&original, pattern, rewrite, lang) {
                 Ok(c) => c,

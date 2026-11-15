@@ -11,4 +11,4 @@ Até 8 frases, só com o que as funções acima mostram.
 Uma linha por função importante: endereço e o que ela faz.
 ## Dúvidas em aberto
 O que as fichas não respondem.
-Cite só endereços que estão na lista acima.
+Cite só endereços que estão na lista acima. Não escreva identificadores de evidência `ev_…`.

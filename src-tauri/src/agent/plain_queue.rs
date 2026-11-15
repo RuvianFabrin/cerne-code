@@ -315,16 +315,77 @@ async fn memory_ok(app: &AppHandle, session_id: &str, item_id: &str) -> bool {
 
 /// Turno de um item da fila: igual a `run_turn`, mas com o teto de etapas por turno e com as instruções do
 /// item fixas no prompt de sistema enquanto ele roda.
-async fn run_item_turn(app: &AppHandle, session_id: &str, text: String, instrucoes: &str) -> Result<()> {
+async fn run_item_turn(app: &AppHandle, session_id: &str, text: String, instrucoes: &str, escrita: Vec<PathBuf>) -> Result<()> {
     if let Ok(mut ativos) = ITEM_ATIVO.lock() {
         ativos.retain(|(s, _)| s != session_id);
         ativos.push((session_id.to_string(), instrucoes.to_string()));
+    }
+    if let Ok(mut perm) = ITEM_ESCRITA.lock() {
+        perm.retain(|(s, _)| s != session_id);
+        perm.push((session_id.to_string(), escrita));
     }
     let resultado = run_turn(app, session_id, text).await;
     if let Ok(mut ativos) = ITEM_ATIVO.lock() {
         ativos.retain(|(s, _)| s != session_id);
     }
+    if let Ok(mut perm) = ITEM_ESCRITA.lock() {
+        perm.retain(|(s, _)| s != session_id);
+    }
     resultado
+}
+
+/// Onde o item em andamento pode gravar, por sessão (pasta ou arquivo). Sem entrada, a sessão grava onde quiser.
+/// Visto ao vivo: na entrega, o modelo reescreveu um módulo do estudo (`modulos/modulo_01.md`) com funções que
+/// nunca foram estudadas. O estudo é a fonte da entrega e não pode mudar enquanto ela é feita.
+static ITEM_ESCRITA: std::sync::Mutex<Vec<(String, Vec<PathBuf>)>> = std::sync::Mutex::new(Vec::new());
+
+/// Caminho comparável: barras iguais, minúsculas (Windows), sem o prefixo `\\?\` e com `.` e `..` resolvidos
+/// na escrita do texto, para que `entrega/../modulos/x.md` não passe por dentro de `entrega/`.
+fn caminho_comparavel(p: &std::path::Path) -> String {
+    let texto = p.to_string_lossy().replace('\\', "/");
+    let texto = texto.trim_start_matches("//?/").to_ascii_lowercase();
+    let mut partes: Vec<&str> = Vec::new();
+    for parte in texto.split('/') {
+        match parte {
+            "" | "." => {}
+            ".." => {
+                partes.pop();
+            }
+            outra => partes.push(outra),
+        }
+    }
+    partes.join("/")
+}
+
+/// `Ok` se a sessão pode gravar neste caminho agora. Fora de um item da fila do Anything, sempre `Ok`.
+pub fn item_write_allowed(session_id: &str, alvo: &std::path::Path) -> std::result::Result<(), String> {
+    let Ok(lista) = ITEM_ESCRITA.lock() else { return Ok(()) };
+    let Some((_, permitidos)) = lista.iter().find(|(s, _)| s == session_id) else { return Ok(()) };
+    let a = caminho_comparavel(alvo);
+    let dentro = permitidos.iter().any(|p| {
+        let p = caminho_comparavel(p);
+        a == p || a.starts_with(&format!("{p}/"))
+    });
+    if dentro {
+        Ok(())
+    } else {
+        let onde: Vec<String> = permitidos.iter().map(|p| p.display().to_string()).collect();
+        Err(format!(
+            "Neste item da fila você só pode gravar em: {}. O estudo (fichas, módulos e relatório) é a fonte e não pode ser alterado aqui. Grave no caminho indicado no item.",
+            onde.join(", ")
+        ))
+    }
+}
+
+/// Onde cada tipo de item do modo Anything pode gravar.
+fn escrita_permitida(root: &std::path::Path, tipo: &str) -> Vec<PathBuf> {
+    match tipo {
+        "funcao" => vec![root.join("funcoes")],
+        "modulo" => vec![root.join("modulos")],
+        "relatorio" => vec![root.join("relatorio.md")],
+        "entrega" | "entrega_modulo" => vec![root.join("entrega")],
+        _ => Vec::new(),
+    }
 }
 
 /// Arquivo da fila de uma sessão do modo Anything: `.anything/tarefas.json` do projeto. `None` quando o
@@ -390,9 +451,10 @@ fn checar_item(root: &std::path::Path, item: &serde_json::Value) -> std::result:
     }
     match item.get("tipo").and_then(|v| v.as_str()) {
         Some("funcao") => checar_ficha(root, saida, item.get("endereco").and_then(|v| v.as_str()).unwrap_or_default()),
-        Some("modulo") => checar_markdown(root, saida, crate::anything::modulos::SECOES_MODULO),
-        Some("relatorio") => checar_markdown(root, saida, crate::anything::modulos::SECOES_RELATORIO),
+        Some("modulo") => checar_markdown(root, saida, crate::anything::modulos::SECOES_MODULO).and_then(|_| checar_ids_de_evidencia(root, saida)),
+        Some("relatorio") => checar_markdown(root, saida, crate::anything::modulos::SECOES_RELATORIO).and_then(|_| checar_ids_de_evidencia(root, saida)),
         Some("entrega") => checar_entrega(root, saida),
+        Some("entrega_modulo") => checar_entrega(root, saida),
         _ => Err(vec!["tipo de item desconhecido".to_string()]),
     }
 }
@@ -482,9 +544,100 @@ fn enderecos_inventados(root: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
+/// Identificadores de evidência (`ev_` + 64 dígitos hexadecimais) escritos no texto, sem repetir.
+fn ids_de_evidencia_no_texto(texto: &str) -> Vec<String> {
+    let b = texto.as_bytes();
+    let mut achados: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i + 3 + 64 <= b.len() {
+        if &b[i..i + 3] == b"ev_" && b[i + 3..i + 67].iter().all(|c| c.is_ascii_hexdigit()) {
+            let id = texto[i..i + 67].to_ascii_lowercase();
+            if !achados.contains(&id) {
+                achados.push(id);
+            }
+            i += 67;
+        } else {
+            i += 1;
+        }
+    }
+    achados
+}
+
+/// Pasta de evidências do motor (`investigacao.cany/evidence`), procurada de `root` para cima. `None` se não
+/// houver (então a conferência não bloqueia nada: sem como conferir, não se acusa).
+fn pasta_de_evidencias(root: &std::path::Path) -> Option<PathBuf> {
+    root.ancestors().map(|a| a.join("investigacao.cany").join("evidence")).find(|p| p.is_dir())
+}
+
+/// O relatório e os módulos citam evidência por identificador. O modelo, sem ter o identificador na janela,
+/// inventava hashes de aparência real (visto ao vivo: 10 de 11 não existiam). Cada identificador citado
+/// precisa ser um arquivo do armazém de evidências do motor.
+fn checar_ids_de_evidencia(root: &std::path::Path, saida: &str) -> std::result::Result<(), Vec<String>> {
+    let Some(pasta) = pasta_de_evidencias(root) else { return Ok(()) };
+    let texto = std::fs::read_to_string(root.join(saida)).unwrap_or_default();
+    let inexistentes: Vec<String> = ids_de_evidencia_no_texto(&texto)
+        .into_iter()
+        .filter(|id| !pasta.join(&id[3..5]).join(format!("{id}.json")).is_file())
+        .collect();
+    if inexistentes.is_empty() {
+        return Ok(());
+    }
+    let curtos: Vec<String> = inexistentes.iter().take(5).map(|i| format!("{}…", &i[..14])).collect();
+    Err(vec![format!(
+        "o texto cita {} identificador(es) de evidência que não existem ({}). Não escreva identificadores `ev_…` de cabeça: apague essas citações e cite a evidência pelo endereço da função (ex.: 0x140001008) e pelo que a ficha diz",
+        inexistentes.len(),
+        curtos.join(", ")
+    )])
+}
+
+/// Texto do item de entrega de UM módulo: o pedido geral da pessoa vira contexto e o item pede só o código
+/// daquele módulo, lendo só o módulo e as fichas dele (poucos milhares de tokens), mais uma nota curta.
+fn texto_da_entrega_do_modulo(
+    app_data_dir: &PathBuf,
+    session_id: &str,
+    root: &std::path::Path,
+    global: &crate::models::AnythingSettings,
+    item: &serde_json::Value,
+) -> String {
+    let geral = corpo_da_entrega(app_data_dir, session_id, root, global);
+    let modulo = item.get("modulo").and_then(|v| v.as_str()).unwrap_or_default();
+    let nota = root.join(item.get("saida").and_then(|v| v.as_str()).unwrap_or_default()).display().to_string();
+    let fichas: Vec<String> = item
+        .get("enderecos")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|x| x.as_str()).map(|e| format!("  - {}", root.join("funcoes").join(format!("{e}.json")).display())).collect())
+        .unwrap_or_default();
+    let pasta = root.join("entrega").display().to_string();
+    format!(
+        "Esta é UMA PARTE da entrega final, feita módulo a módulo para caber na janela de contexto. O pedido geral da pessoa, para você saber a linguagem e o estilo, é:\n\n{geral}\n\nSUA PARTE agora: escreva SOMENTE o código deste módulo.\n- Leia o módulo: {}\n- Leia as fichas das funções dele (só estas):\n{}\n- Grave o código dentro de {pasta} (um arquivo por módulo, no estilo do pedido acima). Não escreva Cargo.toml nem o ponto de entrada: isso é de outra etapa. Não leia nem altere outros módulos.\n- Não invente funções, endereços nem comportamento: cada endereço 0x… que você citar tem que existir nas fichas acima.\n- Implemente de verdade só o que as fichas comprovam; no resto deixe `todo!()` (ou o equivalente) com um comentário dizendo o que falta descobrir e em qual função original.\n- Por último, grave a nota deste módulo em {nota}: quais arquivos gerou, que função original cada parte cobre e o que ficou como `todo!()`.",
+        root.join(modulo).display(),
+        fichas.join("\n"),
+    )
+}
+
+/// Acréscimo ao item final quando o código já foi escrito módulo a módulo: ele só monta.
+fn montagem_da_entrega(root: &std::path::Path) -> String {
+    let notas = root.join("entrega").join("notas").display().to_string();
+    format!(
+        "\n\nETAPA DE MONTAGEM: o código de cada módulo JÁ foi escrito em {} (uma nota por módulo em {notas}). Leia só as notas. Não reescreva os arquivos dos módulos: grave apenas o que falta para o projeto fechar (manifesto, ponto de entrada que liga os módulos e o LEIAME.md), usando os nomes dos arquivos que as notas citam.",
+        root.join("entrega").display()
+    )
+}
+
 /// Texto do item de entrega, montado agora: o prompt da pessoa (ou o padrão) com os marcadores
 /// preenchidos, mais o que o código exige sempre (onde gravar e o LEIAME), que ela não consegue apagar.
 fn texto_da_entrega(app_data_dir: &PathBuf, session_id: &str, root: &std::path::Path, global: &crate::models::AnythingSettings) -> String {
+    let corpo = corpo_da_entrega(app_data_dir, session_id, root, global);
+    let pasta = root.join("entrega").display().to_string();
+    format!(
+        "{corpo}\n\nRegras fixas desta etapa:\n- Grave tudo que entregar dentro da pasta {pasta} (crie a pasta se faltar), usando a ferramenta de escrever arquivo.\n- Por último, grave {pasta}\\LEIAME.md dizendo em poucas linhas o que foi gerado e o que ficou por fazer. Sem esse arquivo a etapa não está concluída.\n- {REGRA_SEM_INVENCAO}"
+    )
+}
+
+const REGRA_SEM_INVENCAO: &str = "Use somente o que está no relatório, nos módulos e nas fichas das funções. Não invente funções, endereços, módulos nem comportamento: cada endereço 0x… que você citar tem que existir nesses arquivos. Onde faltar evidência, deixe `todo!()` (ou o equivalente da linguagem pedida) e diga no LEIAME.md que isso não foi estudado. Se o estudo não cobre o que foi pedido, entregue só o que ele sustenta e explique no LEIAME.md.";
+
+/// O prompt da entrega escrito pela pessoa (ou o padrão), com os marcadores preenchidos.
+fn corpo_da_entrega(app_data_dir: &PathBuf, session_id: &str, root: &std::path::Path, global: &crate::models::AnythingSettings) -> String {
     use crate::anything::prompts::{preencher, prompt_da_entrega};
     let sessao = sessions::get_session(app_data_dir, session_id).ok();
     let opts = sessao.as_ref().map(|s| s.anything.effective(global)).unwrap_or_else(|| global.clone());
@@ -495,12 +648,9 @@ fn texto_da_entrega(app_data_dir: &PathBuf, session_id: &str, root: &std::path::
         .unwrap_or_default();
     modulos.sort();
     let pasta = root.join("entrega").display().to_string();
-    let corpo = preencher(
+    preencher(
         &prompt_da_entrega(&opts.final_prompt),
         &[("objetivo", &objetivo), ("relatorio", &relatorio), ("modulos", &modulos.join("\n")), ("pasta", &pasta)],
-    );
-    format!(
-        "{corpo}\n\nRegras fixas desta etapa:\n- Grave tudo que entregar dentro da pasta {pasta} (crie a pasta se faltar), usando a ferramenta de escrever arquivo.\n- Por último, grave {pasta}\\LEIAME.md dizendo em poucas linhas o que foi gerado e o que ficou por fazer. Sem esse arquivo a etapa não está concluída.\n- Use somente o que está no relatório, nos módulos e nas fichas das funções. Não invente funções, endereços, módulos nem comportamento: cada endereço 0x… que você citar tem que existir nesses arquivos. Onde faltar evidência, deixe `todo!()` (ou o equivalente da linguagem pedida) e diga no LEIAME.md que isso não foi estudado. Se o estudo não cobre o que foi pedido, entregue só o que ele sustenta e explique no LEIAME.md."
     )
 }
 
@@ -558,9 +708,18 @@ async fn item_de_funcao(
     // formato e exemplo), então o prompt de sistema é igual de um item para o outro e o servidor reaproveita
     // o prompt já lido. Para os outros tipos (poucos itens) é o próprio texto do item.
     let mut instrucoes_fixas: Option<String> = None;
-    let mut texto = if tipo == "entrega" {
+    let mut texto = if tipo == "entrega" || tipo == "entrega_modulo" {
         let global = app.state::<crate::AppState>().config.lock().unwrap().anything.clone();
-        texto_da_entrega(app_data_dir, session_id, root, &global)
+        let por_modulo = tasks.iter().any(|t| t.get("tipo").and_then(|v| v.as_str()) == Some("entrega_modulo"));
+        if tipo == "entrega_modulo" {
+            texto_da_entrega_do_modulo(app_data_dir, session_id, root, &global, &tasks[idx])
+        } else {
+            let mut t = texto_da_entrega(app_data_dir, session_id, root, &global);
+            if por_modulo {
+                t.push_str(&montagem_da_entrega(root));
+            }
+            t
+        }
     } else if tipo == "funcao" {
         // Modelo pequeno não adivinha o formato da ficha: o prompt completo (regras + passos + exemplo)
         // é montado aqui, e não a descrição curta que o plano gravou.
@@ -597,7 +756,8 @@ Funções que esta chama, já estudadas:
         "\n\nGrave o arquivo exatamente neste caminho completo (crie a pasta se faltar; outro lugar não é conferido):\n{caminho_completo}"
     ));
     let instrucoes = instrucoes_fixas.unwrap_or_else(|| texto.clone());
-    run_item_turn(app, session_id, texto.clone(), &instrucoes).await?;
+    let escrita = escrita_permitida(root, &tipo);
+    run_item_turn(app, session_id, texto.clone(), &instrucoes, escrita.clone()).await?;
     let mut erros;
     for tentativa in 0..=CONFIRM_RETRIES {
         match checar_item(root, &tasks[idx]) {
@@ -636,7 +796,7 @@ Funções que esta chama, já estudadas:
             "A tentativa anterior de {caminho_completo} não passou na conferência:\n- {}\nRefaça seguindo o formato e o exemplo das instruções do item (no prompt de sistema) e grave o arquivo nesse mesmo caminho completo. Não procure o formato em pastas nem em outros arquivos. Responda gravando o arquivo.",
             erros.join("\n- ")
         );
-        run_item_turn(app, session_id, correcao, &instrucoes).await?;
+        run_item_turn(app, session_id, correcao, &instrucoes, escrita.clone()).await?;
     }
     Ok(())
 }
@@ -698,7 +858,7 @@ pub async fn run_queue(app: AppHandle, session_id: String) -> Result<()> {
         }
         // Modo Anything, item de função: a ficha é conferida pelo código, não pela pergunta "feito?".
         if let Some(arquivo) = arquivo_anything.as_deref() {
-            if matches!(tasks[idx].get("tipo").and_then(|v| v.as_str()), Some("funcao") | Some("modulo") | Some("relatorio") | Some("entrega")) {
+            if matches!(tasks[idx].get("tipo").and_then(|v| v.as_str()), Some("funcao") | Some("modulo") | Some("relatorio") | Some("entrega") | Some("entrega_modulo")) {
                 let ws_dir = arquivo.parent().unwrap_or(arquivo);
                 item_de_funcao(&app, &session_id, ws_dir, arquivo, &app_data_dir, &mut tasks, idx, &prompt_text).await?;
                 continue;
@@ -1170,5 +1330,94 @@ mod memory_and_control_files_tests {
         // A ficha de uma função e arquivos fora de .anything seguem legíveis.
         assert!(!is_queue_control_file(&alvo.join("funcoes").join("0x1400012dc.json")));
         assert!(!is_queue_control_file(Path::new("/p/src/tarefas.json")));
+    }
+}
+
+#[cfg(test)]
+mod escrita_e_evidencias_tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn the_write_lock_only_exists_while_an_item_runs_and_only_allows_its_folder() {
+        let id = "sessao-teste-escrita";
+        let raiz = Path::new(r"F:\proj\.anything\alvos\8748987e-notepad");
+        assert!(item_write_allowed(id, &raiz.join("modulos").join("modulo_01.md")).is_ok(), "fora de um item, grava onde quiser");
+        ITEM_ESCRITA.lock().unwrap().push((id.to_string(), escrita_permitida(raiz, "entrega")));
+        assert!(item_write_allowed(id, &raiz.join("entrega").join("src").join("main.rs")).is_ok());
+        assert!(item_write_allowed(id, &raiz.join("entrega")).is_ok());
+        // O estudo não pode ser alterado durante a entrega (visto ao vivo com modulo_01.md).
+        let erro = item_write_allowed(id, &raiz.join("modulos").join("modulo_01.md")).unwrap_err();
+        assert!(erro.contains("entrega"), "{erro}");
+        assert!(item_write_allowed(id, &raiz.join("funcoes").join("0x140001008.json")).is_err());
+        // Outra pasta de nome parecido e a fuga por `..` também são barradas; maiúsculas não importam (Windows).
+        assert!(item_write_allowed(id, &raiz.join("entrega-velha").join("x.md")).is_err());
+        assert!(item_write_allowed(id, &raiz.join("entrega").join("..").join("modulos").join("m.md")).is_err());
+        assert!(item_write_allowed(id, Path::new(r"F:\PROJ\.ANYTHING\ALVOS\8748987E-NOTEPAD\ENTREGA\a.rs")).is_ok());
+        assert!(item_write_allowed("outra-sessao", &raiz.join("modulos").join("m.md")).is_ok());
+        ITEM_ESCRITA.lock().unwrap().retain(|(s, _)| s != id);
+        assert!(item_write_allowed(id, &raiz.join("modulos").join("m.md")).is_ok());
+    }
+
+    #[test]
+    fn each_item_type_may_write_only_its_own_place() {
+        let raiz = Path::new("/p/.anything/alvos/x");
+        assert_eq!(escrita_permitida(raiz, "funcao"), vec![raiz.join("funcoes")]);
+        assert_eq!(escrita_permitida(raiz, "modulo"), vec![raiz.join("modulos")]);
+        assert_eq!(escrita_permitida(raiz, "relatorio"), vec![raiz.join("relatorio.md")]);
+        assert_eq!(escrita_permitida(raiz, "entrega_modulo"), vec![raiz.join("entrega")]);
+    }
+
+    #[test]
+    fn evidence_ids_are_found_in_the_text() {
+        let a = format!("ev_{}", "a".repeat(64));
+        let b = format!("ev_{}", "0123456789abcdef".repeat(4));
+        let texto = format!("vi [evidência: {a}] e depois {b} e de novo {a}; curto ev_abc e ev_{} (63)", "f".repeat(63));
+        assert_eq!(ids_de_evidencia_no_texto(&texto), vec![a, b]);
+    }
+
+    #[test]
+    fn made_up_evidence_ids_are_refused_and_real_ones_pass() {
+        let d = std::env::temp_dir().join(format!("anything-ev-{}", uuid::Uuid::new_v4()));
+        let root = d.join(".anything").join("alvos").join("x");
+        std::fs::create_dir_all(&root).unwrap();
+        let real = format!("ev_{}", "ab".repeat(32));
+        let falso = format!("ev_{}", "cd".repeat(32));
+        let pasta = d.join(".anything").join("investigacao.cany").join("evidence").join(&real[3..5]);
+        std::fs::create_dir_all(&pasta).unwrap();
+        std::fs::write(pasta.join(format!("{real}.json")), "{}").unwrap();
+
+        std::fs::write(root.join("relatorio.md"), format!("fato [{real}]")).unwrap();
+        assert!(checar_ids_de_evidencia(&root, "relatorio.md").is_ok());
+        std::fs::write(root.join("relatorio.md"), format!("fato [{real}] e outro [{falso}]")).unwrap();
+        let erro = checar_ids_de_evidencia(&root, "relatorio.md").unwrap_err();
+        assert!(erro[0].contains("1 identificador") && erro[0].contains("0x140001008"), "{erro:?}");
+        std::fs::write(root.join("relatorio.md"), "sem nenhum id").unwrap();
+        assert!(checar_ids_de_evidencia(&root, "relatorio.md").is_ok());
+
+        // Sem o armazém do motor por perto não há como conferir, e então nada é barrado.
+        let solto = std::env::temp_dir().join(format!("anything-ev-solto-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&solto).unwrap();
+        std::fs::write(solto.join("relatorio.md"), format!("fato [{falso}]")).unwrap();
+        assert!(checar_ids_de_evidencia(&solto, "relatorio.md").is_ok());
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&solto);
+    }
+
+    #[test]
+    fn a_module_delivery_item_is_checked_by_its_note() {
+        let d = std::env::temp_dir().join(format!("anything-entmod-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(d.join("entrega").join("notas")).unwrap();
+        let item = serde_json::json!({"tipo": "entrega_modulo", "saida": "entrega/notas/modulo_01.md"});
+        assert!(checar_item(&d, &item).unwrap_err()[0].contains("ainda não existe"));
+        std::fs::write(d.join("entrega").join("notas").join("modulo_01.md"), "gerei src/etw.rs").unwrap();
+        assert!(checar_item(&d, &item).is_ok());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_assembly_text_points_at_the_notes_and_forbids_rewriting_the_modules() {
+        let t = montagem_da_entrega(Path::new("/p/.anything/alvos/x"));
+        assert!(t.contains("notas") && t.contains("Não reescreva") && t.contains("LEIAME.md"));
     }
 }

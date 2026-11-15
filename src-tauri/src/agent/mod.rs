@@ -1285,10 +1285,24 @@ pub async fn run_turn(
     .unwrap_or_default();
     // Modo Anything: o servidor desta sessão entra mesmo sem estar na lista de MCPs habilitados.
     let anything_global = state.config.lock().unwrap().anything.clone();
+    let mut anything_server_name: Option<String> = None;
     if let Some(server) = crate::anything::session::server_for(&app_data_dir, &anything_global, &session.anything, crate::anything::session::raiz_de_trabalho(&session).as_deref(), &session.id) {
+        anything_server_name = Some(server.name.clone());
         mcp_servers.push(server);
     }
-    tool_specs.extend(state.mcp_clients.tool_specs(&mcp_servers).await);
+    let mut mcp_specs = state.mcp_clients.tool_specs(&mcp_servers).await;
+    // O motor do Anything sobe só com as ferramentas básicas; as do Ghidra (`native_*`) ficam num pacote
+    // desligado que se perde quando o motor reinicia (app reaberto, queda de luz). O modelo não liga
+    // sozinho e passa a escrever chamadas de ferramentas que não existem. O app liga o pacote.
+    if let Some(nome) = &anything_server_name {
+        let ligar = format!("mcp__{nome}__enable_toolset");
+        let tem_ligar = mcp_specs.iter().any(|t| t.function.name == ligar);
+        let tem_native = mcp_specs.iter().any(|t| t.function.name == format!("mcp__{nome}__native_function_pseudocode"));
+        if tem_ligar && !tem_native && state.mcp_clients.call(&ligar, serde_json::json!({ "toolset": "native" })).await.is_ok() {
+            mcp_specs = state.mcp_clients.tool_specs(&mcp_servers).await;
+        }
+    }
+    tool_specs.extend(mcp_specs);
     if session.context_economy {
         tool_specs.extend(crate::context_economy::connect(&app, &app_data_dir, &session, &state.mcp_clients).await?);
         crate::context_economy::sync(&app_data_dir, &session_id, &state.mcp_clients).await?;
