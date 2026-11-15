@@ -96,6 +96,10 @@ Distros compatíveis (glibc/webkit2gtk) estão na tabela em [🐧 Compatibilidad
 
 👉 **[Baixe a última versão do Cerne Code](https://ruvianfabrin.github.io/cerne-code.html)** (Windows, instalador NSIS)
 
+⭐ **Gostou do Cerne Code? Deixe uma estrela no [GitHub](https://github.com/RuvianFabrin/cerne-code)** — ajuda o projeto a chegar a mais pessoas.
+
+🐞 **Encontrou um bug?** [Abra uma Issue](https://github.com/RuvianFabrin/cerne-code/issues/new) contando o que aconteceu (versão, sistema e passos para repetir).
+
 > 🐧 **Linux:** o suporte está implementado e em fase final de validação — o
 > instalador será publicado assim que os testes em VM terminarem. As versões
 > compatíveis estão na tabela abaixo.
@@ -235,6 +239,10 @@ Supported distros (glibc/webkit2gtk) are in the table under [🐧 Linux compatib
 
 👉 **[Download the latest Cerne Code](https://ruvianfabrin.github.io/cerne-code.html)** (Windows, NSIS installer)
 
+⭐ **Like Cerne Code? Give it a star on [GitHub](https://github.com/RuvianFabrin/cerne-code)** — it helps the project reach more people.
+
+🐞 **Found a bug?** [Open an Issue](https://github.com/RuvianFabrin/cerne-code/issues/new) describing what happened (version, system and steps to reproduce).
+
 > 🐧 **Linux:** support is implemented and in final validation — the installer
 > will be published as soon as VM testing is done. Compatible distros below.
 
@@ -365,6 +373,10 @@ Las distros compatibles (glibc/webkit2gtk) están en la tabla de [🐧 Compatibi
 
 👉 **[Descarga la última versión de Cerne Code](https://ruvianfabrin.github.io/cerne-code.html)** (Windows, instalador NSIS)
 
+⭐ **¿Te gusta Cerne Code? Deja una estrella en [GitHub](https://github.com/RuvianFabrin/cerne-code)** — ayuda a que el proyecto llegue a más personas.
+
+🐞 **¿Encontraste un error?** [Abre una Issue](https://github.com/RuvianFabrin/cerne-code/issues/new) contando qué pasó (versión, sistema y pasos para reproducirlo).
+
 > 🐧 **Linux:** el soporte está implementado y en validación final — el instalador se publicará cuando terminen las pruebas en máquina virtual. Las versiones compatibles están en la tabla de abajo.
 
 ---
@@ -490,6 +502,10 @@ pkg-config --modversion glib-2.0   # necesita ser 2.70 o mayor
 ### 📥 下载
 
 👉 **[下载 Cerne Code 最新版本](https://ruvianfabrin.github.io/cerne-code.html)**（Windows，NSIS 安装程序）
+
+⭐ **喜欢 Cerne Code？请在 [GitHub](https://github.com/RuvianFabrin/cerne-code) 上点一颗星** — 这能帮助更多人发现这个项目。
+
+🐞 **发现 Bug？** 请[提交 Issue](https://github.com/RuvianFabrin/cerne-code/issues/new)，说明发生了什么（版本、系统和复现步骤）。
 
 > 🐧 **Linux：**支持已实现，正在进行最后验证 — 虚拟机测试完成后即发布安装包。兼容版本见下表。
 
