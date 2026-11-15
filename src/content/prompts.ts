@@ -13,7 +13,7 @@ export const READY_PROMPTS: ReadyPrompt[] = [
   { id: "create-file", tools: ["write_file"], scope: "code" },
   { id: "edit-file", tools: ["edit_file"], scope: "code" },
   { id: "run-command", tools: ["run_command"], scope: "code" },
-  { id: "computer-use", tools: ["computer_use_screenshot", "computer_use_click", "computer_use_type_text"], scope: "both" },
+  { id: "computer-use", tools: ["computer_use_screenshot", "computer_use_click", "computer_use_type_text", "computer_use_grid_screenshot", "computer_use_grid_click", "computer_use_grid_move"], scope: "both" },
   { id: "create-excel", tools: ["create_excel"], scope: "both" },
   { id: "create-word", tools: ["create_word"], scope: "both" },
   { id: "create-pdf", tools: ["create_pdf"], scope: "both" },

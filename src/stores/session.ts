@@ -322,7 +322,7 @@ export const useSessionStore = defineStore("session", {
           this.liveBlocks.push({ kind: "tools", id: `live-tools-${Date.now()}`, tasks: [task] });
         }
         if (tool.startsWith("computer_use_")) {
-          if (["computer_use_screenshot", "computer_use_click", "computer_use_type_text", "computer_use_press_key", "computer_use_scroll", "computer_use_drag", "computer_use_right_click", "computer_use_double_click"].includes(tool)) {
+          if (["computer_use_screenshot", "computer_use_grid_screenshot", "computer_use_grid_click", "computer_use_grid_move", "computer_use_click", "computer_use_type_text", "computer_use_press_key", "computer_use_scroll", "computer_use_drag", "computer_use_right_click", "computer_use_double_click"].includes(tool)) {
             this.screenshotCount++;
           }
           if (!this.computerUseWarned) {

@@ -62,6 +62,45 @@ pub fn tool_specs() -> Vec<ToolSpec> {
             }),
         ),
         spec(
+            "computer_use_grid_screenshot",
+            "Screenshot do MONITOR PRIMARIO com uma GRADE NUMERADA por cima (linhas finas magenta; cada celula tem seu numero amarelo no canto superior esquerdo, de 1 em diante, linha a linha: 1 = primeira coluna da primeira linha). Em vez de estimar pixels, escolha o NUMERO da celula e use computer_use_grid_click ou computer_use_grid_move; o codigo calcula o centro da celula. Se o alvo for pequeno para a celula, chame de novo com `cell`=N: a imagem mostra so aquela celula ampliada com uma grade nova (refinamento, pode repetir). Sem `cell`, volta a grade da tela inteira. Escolha a celula que contem o CENTRO do elemento. REQUER modelo com visao.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "cell": { "type": "integer", "description": "Numero de uma celula da grade ATUAL para ampliar com uma grade nova. Omita para a tela inteira." },
+                    "cols": { "type": "integer", "description": "Colunas da grade (2 a 20). Padrao: 10 na tela inteira, 6 ao refinar." },
+                    "rows": { "type": "integer", "description": "Linhas da grade (2 a 20). Padrao: 6 na tela inteira, 4 ao refinar." }
+                },
+                "required": []
+            }),
+        ),
+        spec(
+            "computer_use_grid_click",
+            "Clica no CENTRO da celula numerada da ultima grade mostrada por computer_use_grid_screenshot (ou computer_use_grid_move). Use `double`=true para duplo clique. Depois do clique devolve uma grade nova da tela inteira (a tela mudou). Chame computer_use_grid_screenshot ANTES. REQUER modelo com visao.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "cell": { "type": "integer", "description": "Numero da celula da grade atual" },
+                    "button": { "type": "string", "enum": ["left", "right", "middle"], "description": "Botao do mouse (default: left)" },
+                    "double": { "type": "boolean", "description": "true = duplo clique (default: false)" },
+                    "window_title": { "type": "string", "description": "Titulo parcial da janela alvo (opcional). Se informado, ela e trazida pro primeiro plano ANTES do clique." }
+                },
+                "required": ["cell"]
+            }),
+        ),
+        spec(
+            "computer_use_grid_move",
+            "Move o mouse para o centro da celula numerada da grade atual SEM clicar, para conferir antes. Devolve a mesma grade com uma cruz vermelha onde o sistema diz que o cursor esta. Se a cruz nao estiver sobre o alvo, escolha outra celula ou refine com computer_use_grid_screenshot(cell). REQUER modelo com visao.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "cell": { "type": "integer", "description": "Numero da celula da grade atual" },
+                    "window_title": { "type": "string", "description": "Titulo parcial da janela alvo (opcional, traz pro primeiro plano antes)" }
+                },
+                "required": ["cell"]
+            }),
+        ),
+        spec(
             "computer_use_cursor_position",
             "Le a posicao atual do cursor do mouse em coordenadas de tela. Nao precisa de visao.",
             json!({ "type": "object", "properties": {}, "required": [] }),
@@ -188,6 +227,9 @@ pub const VISION_REQUIRED_TOOLS: &[&str] = &[
     "computer_use_screenshot",
     "computer_use_click",
     "computer_use_mouse_move",
+    "computer_use_grid_screenshot",
+    "computer_use_grid_click",
+    "computer_use_grid_move",
 ];
 
 pub fn requires_vision(tool_name: &str) -> bool {

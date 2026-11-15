@@ -431,6 +431,23 @@ pub async fn execute(name: &str, args: &Value, app_data_dir: &Path) -> Result<Co
             check_authorization(app_data_dir)?;
             exec_mouse_move(args)
         }
+        "computer_use_grid_screenshot" => exec_grid_screenshot(args),
+        "computer_use_grid_click" => {
+            if should_use_wayland_backend() {
+                return Err(anyhow!("computer_use_grid_click ainda nao funciona no Wayland"));
+            }
+            maybe_focus_from_args(args)?;
+            check_authorization(app_data_dir)?;
+            exec_grid_click(args)
+        }
+        "computer_use_grid_move" => {
+            if should_use_wayland_backend() {
+                return Err(anyhow!("computer_use_grid_move ainda nao funciona no Wayland"));
+            }
+            maybe_focus_from_args(args)?;
+            check_authorization(app_data_dir)?;
+            exec_grid_move(args)
+        }
         "computer_use_cursor_position" => exec_cursor_position(),
         "computer_use_type_text" => {
             if should_use_wayland_backend() {
@@ -805,6 +822,177 @@ fn exec_mouse_move(args: &Value) -> Result<ComputerOutcome> {
             "Mouse movido para ({x},{y}) SEM clicar. Posicao reportada pelo sistema: ({rx},{ry}) - {verdict}. \
              Na screenshot anexada, a cruz vermelha marca a posicao reportada ({meta}). \
              Confira se a cruz esta sobre o alvo; se nao estiver, corrija as coordenadas pela diferenca visual."
+        ),
+        screenshot_base64: Some(b64),
+    })
+}
+
+// ---------------------------------------------------------------------------
+// Computer use por GRADE (ver `computer_grid.rs`): o modelo escolhe o número de uma célula numerada sobre o
+// screenshot e o código calcula o centro dela. A geometria e o desenho ficam lá, com testes; aqui só a captura
+// da tela e o mouse.
+// ---------------------------------------------------------------------------
+
+enum PedidoDeGrade {
+    /// Grade na tela inteira.
+    Inteira { colunas: u32, linhas: u32 },
+    /// Grade nova só dentro de uma célula da grade atual.
+    Refinar { celula: i64, colunas: u32, linhas: u32 },
+    /// A mesma grade de antes (ex.: depois de mover o mouse para conferir).
+    Mesma,
+}
+
+/// Captura o monitor primário, desenha a grade e guarda o estado para o próximo clique. `cursor` (em
+/// coordenadas de clique) desenha a cruz vermelha na posição que o sistema reporta.
+fn capturar_com_grade(pedido: PedidoDeGrade, cursor: Option<(i32, i32)>) -> Result<(String, crate::agent::computer_grid::GradeAtual)> {
+    use crate::agent::computer_grid as grid;
+    use xcap::Monitor;
+
+    let monitors = Monitor::all().map_err(|e| anyhow!("falha ao listar monitores: {e}"))?;
+    let monitor = monitors.first().ok_or_else(|| anyhow!("nenhum monitor encontrado"))?;
+    let mon_x = monitor.x().unwrap_or(0);
+    let mon_y = monitor.y().unwrap_or(0);
+    let mon_w = monitor.width().unwrap_or(0).max(1);
+    let mon_h = monitor.height().unwrap_or(0).max(1);
+    let mut img = monitor.capture_image().map_err(|e| anyhow!("falha ao capturar tela: {e}"))?;
+    let (raw_w, raw_h) = (img.width(), img.height());
+
+    let inteira = |colunas: u32, linhas: u32| grid::GradeAtual {
+        imagem_w: raw_w,
+        imagem_h: raw_h,
+        monitor_x: mon_x,
+        monitor_y: mon_y,
+        monitor_w: mon_w,
+        monitor_h: mon_h,
+        regiao: grid::Retangulo { x: 0.0, y: 0.0, w: raw_w as f64, h: raw_h as f64 },
+        colunas,
+        linhas,
+    };
+    // A grade anterior só vale se a tela continua com a mesma geometria.
+    let anterior = grid::atual().filter(|g| {
+        (g.imagem_w, g.imagem_h, g.monitor_x, g.monitor_y, g.monitor_w, g.monitor_h) == (raw_w, raw_h, mon_x, mon_y, mon_w, mon_h)
+    });
+    let sem_grade = || anyhow!("nao ha grade ativa (ou a tela mudou de tamanho): chame computer_use_grid_screenshot, sem `cell`, primeiro");
+    let estado = match pedido {
+        PedidoDeGrade::Inteira { colunas, linhas } => inteira(colunas, linhas),
+        PedidoDeGrade::Refinar { celula, colunas, linhas } => anterior.ok_or_else(sem_grade)?.refinar(celula, colunas, linhas)?,
+        PedidoDeGrade::Mesma => anterior.ok_or_else(sem_grade)?,
+    };
+
+    if let Some((cx, cy)) = cursor {
+        let x = (((cx - mon_x) as f64) * raw_w as f64 / mon_w as f64).round() as i32;
+        let y = (((cy - mon_y) as f64) * raw_h as f64 / mon_h as f64).round() as i32;
+        draw_cursor_marker(&mut img, x, y);
+    }
+    let (x, y, w, h) = estado.recorte();
+    let mut recorte = image::imageops::crop_imm(&img, x, y, w, h).to_image();
+    // Um recorte pequeno (célula ampliada) é aumentado antes de desenhar, para os números ficarem legíveis.
+    let maior = w.max(h);
+    if maior < grid::LADO_MINIMO_DO_RECORTE {
+        let f = (grid::LADO_MINIMO_DO_RECORTE as f64 / maior as f64).min(6.0);
+        recorte = image::imageops::resize(
+            &recorte,
+            ((w as f64 * f).round() as u32).max(1),
+            ((h as f64 * f).round() as u32).max(1),
+            image::imageops::FilterType::Triangle,
+        );
+    }
+    grid::desenhar_grade(&mut recorte, estado.colunas, estado.linhas);
+    let b64 = rgba_to_base64(recorte)?;
+    grid::guardar(estado.clone());
+    Ok((b64, estado))
+}
+
+fn texto_da_grade(g: &crate::agent::computer_grid::GradeAtual) -> String {
+    let inteira = g.regiao.w >= g.imagem_w as f64 - 0.5 && g.regiao.h >= g.imagem_h as f64 - 0.5;
+    format!(
+        "Grade {}x{} (colunas x linhas), celulas numeradas de 1 a {}, linha a linha: 1 = primeira coluna da primeira linha, {} = ultima coluna da primeira linha. {}Escolha a celula que contem o CENTRO do alvo e use computer_use_grid_click(cell) (double=true para duplo clique) ou computer_use_grid_move(cell) para conferir antes. Se o alvo for pequeno para a celula, chame computer_use_grid_screenshot(cell=N) para ampliar so aquela celula com uma grade nova.",
+        g.colunas,
+        g.linhas,
+        g.total(),
+        g.colunas,
+        if inteira { "A imagem mostra a tela inteira do monitor primario. " } else { "A imagem mostra SO a celula ampliada escolhida antes (as celulas desta grade sao sub-celulas dela). " },
+    )
+}
+
+fn exec_grid_screenshot(args: &Value) -> Result<ComputerOutcome> {
+    use crate::agent::computer_grid as grid;
+    let (colunas, linhas) = (args["cols"].as_i64(), args["rows"].as_i64());
+    let pedido = match args["cell"].as_i64() {
+        Some(celula) => PedidoDeGrade::Refinar {
+            celula,
+            colunas: grid::dimensao(colunas, grid::COLUNAS_REFINO),
+            linhas: grid::dimensao(linhas, grid::LINHAS_REFINO),
+        },
+        None => PedidoDeGrade::Inteira {
+            colunas: grid::dimensao(colunas, grid::COLUNAS_PADRAO),
+            linhas: grid::dimensao(linhas, grid::LINHAS_PADRAO),
+        },
+    };
+    let (b64, g) = capturar_com_grade(pedido, None)?;
+    Ok(ComputerOutcome { text: texto_da_grade(&g), screenshot_base64: Some(b64) })
+}
+
+fn exec_grid_click(args: &Value) -> Result<ComputerOutcome> {
+    use crate::agent::computer_grid as grid;
+    rate_limit()?;
+    let cell = args["cell"].as_i64().ok_or_else(|| anyhow!("cell obrigatorio (integer)"))?;
+    let grade = grid::atual().ok_or_else(|| anyhow!("nao ha grade ativa: chame computer_use_grid_screenshot antes"))?;
+    // Valida a célula antes de mexer no mouse.
+    let (x, y) = grade.centro_na_tela(cell)?;
+    let button_str = args["button"].as_str().unwrap_or("left");
+    let button = match button_str {
+        "right" => enigo::Button::Right,
+        "middle" => enigo::Button::Middle,
+        _ => enigo::Button::Left,
+    };
+    let duplo = args["double"].as_bool().unwrap_or(false);
+
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| anyhow!("falha ao inicializar enigo: {e}"))?;
+    enigo.move_mouse(x, y, enigo::Coordinate::Abs).map_err(|e| anyhow!("falha ao mover mouse: {e}"))?;
+    enigo.button(button, enigo::Direction::Click).map_err(|e| anyhow!("falha ao clicar: {e}"))?;
+    if duplo {
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        enigo.button(button, enigo::Direction::Click).map_err(|e| anyhow!("falha ao clicar: {e}"))?;
+    }
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    // A tela mudou: a grade antiga não vale mais. Mostra uma nova, da tela inteira.
+    grid::limpar();
+    let (b64, g) = capturar_com_grade(
+        PedidoDeGrade::Inteira { colunas: grid::COLUNAS_PADRAO, linhas: grid::LINHAS_PADRAO },
+        None,
+    )?;
+    Ok(ComputerOutcome {
+        text: format!(
+            "Clique {button_str}{} no centro da celula {cell} (coordenada de tela {x},{y}). Imagem pos-clique com uma grade NOVA da tela inteira: verifique o efeito. {}",
+            if duplo { " duplo" } else { "" },
+            texto_da_grade(&g)
+        ),
+        screenshot_base64: Some(b64),
+    })
+}
+
+fn exec_grid_move(args: &Value) -> Result<ComputerOutcome> {
+    use crate::agent::computer_grid as grid;
+    rate_limit()?;
+    let cell = args["cell"].as_i64().ok_or_else(|| anyhow!("cell obrigatorio (integer)"))?;
+    let grade = grid::atual().ok_or_else(|| anyhow!("nao ha grade ativa: chame computer_use_grid_screenshot antes"))?;
+    let (x, y) = grade.centro_na_tela(cell)?;
+
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| anyhow!("falha ao inicializar enigo: {e}"))?;
+    enigo.move_mouse(x, y, enigo::Coordinate::Abs).map_err(|e| anyhow!("falha ao mover mouse: {e}"))?;
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let (rx, ry) = enigo.location().map_err(|e| anyhow!("falha ao ler posicao do mouse: {e}"))?;
+
+    // Mesma grade (a região não muda), agora com a cruz vermelha na posição reportada.
+    let (b64, g) = capturar_com_grade(PedidoDeGrade::Mesma, Some((rx, ry)))?;
+    let (dx, dy) = (rx - x, ry - y);
+    let veredito = if dx == 0 && dy == 0 { "posicao exata do pedido".to_string() } else { format!("DIFERENTE do pedido (diferenca {dx},{dy})") };
+    Ok(ComputerOutcome {
+        text: format!(
+            "Mouse movido ao centro da celula {cell} ({x},{y}) SEM clicar. Posicao reportada: ({rx},{ry}) - {veredito}. A cruz vermelha marca essa posicao na mesma grade. Se estiver sobre o alvo, use computer_use_grid_click({cell}); senao escolha outra celula ou refine. {}",
+            texto_da_grade(&g)
         ),
         screenshot_base64: Some(b64),
     })

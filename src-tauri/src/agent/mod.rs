@@ -11,6 +11,8 @@ pub mod task_queue;
 pub mod plain_queue;
 pub mod background;
 pub mod computer;
+#[cfg(feature = "computer_use")]
+mod computer_grid;
 #[cfg(all(target_os = "linux", feature = "computer_use"))]
 mod computer_atspi;
 #[cfg(all(target_os = "linux", feature = "computer_use"))]
@@ -669,6 +671,12 @@ Ordem para clicar num elemento da tela, do metodo mais confiavel pro menos. Pass
 so se o anterior falhar, e diga ao usuario qual metodo deu certo: \
 (1) computer_use_get_window_state + computer_use_click_element pelo indice: aciona pelo UI Automation, \
 sem mexer no mouse real. \
+(1b) Se nao houver arvore, ou voce nao consegue estimar pixels com confianca (modelos locais costumam \
+errar): use a GRADE. computer_use_grid_screenshot mostra a tela com uma grade numerada; escolha o NUMERO \
+da celula que contem o centro do alvo e use computer_use_grid_click(cell) (double=true para duplo clique) \
+ou computer_use_grid_move(cell) para conferir antes. Se o alvo for pequeno para a celula, chame \
+computer_use_grid_screenshot(cell=N) para ampliar so aquela celula com uma grade nova e escolha a celula \
+fina. Nao calcule pixels: o codigo calcula o centro da celula. \
 (2) Se o elemento nao aparecer na arvore, ou o clique nao tiver efeito: tire computer_use_screenshot e \
 estime (x,y) do alvo. O resultado do screenshot traz a resolucao do monitor e a formula pra converter \
 um ponto da imagem enviada em coordenada de clique; use essa formula, nao suponha a escala. \
